@@ -119,6 +119,7 @@ pub struct Ai {
     defending: bool,
     pending: Vec<(DefId, u32)>,
     scouted: bool,
+    last_fields_rebuild: Option<u32>,
 }
 
 impl Ai {
@@ -146,6 +147,7 @@ impl Ai {
             defending: false,
             pending: Vec::new(),
             scouted: false,
+            last_fields_rebuild: None,
         }
     }
 }
@@ -199,14 +201,15 @@ impl Controller for Ai {
         }
         let mut out = Vec::new();
         let v = self.view(w);
-        self.scout(w, &v, &mut out);
         self.observe(w);
         self.economy(w, &v, &mut out);
         if (w.tick / interval) % 3 == (self.phase % 3) {
             self.build(w, &v, &mut out);
         }
         self.produce(w, &v, &mut out);
+        self.rebuild_fields(w, &v, &mut out);
         self.military(w, &v, &mut out);
+        self.scout(w, &v, &mut out);
         out
     }
 }
@@ -224,35 +227,22 @@ impl Ai {
         }
     }
 
-    /// Early on, walk a citizen around the home island so the coast is explored
-    /// (buildings can only be placed on explored ground).
+    /// Explore the coast with one early citizen, then return it to the economy.
     fn scout(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
-        if self.scouted || w.tick < 40 {
+        if w.tick >= 20 * 120 {
+            let scouts: Vec<_> = v.citizens.iter().copied()
+                .filter(|&id| w.get(id).is_some_and(|e| matches!(e.order, Order::Scout { .. })))
+                .collect();
+            if !scouts.is_empty() {
+                out.push(CommandKind::Stop { units: scouts });
+            }
             return;
         }
-        self.scouted = true;
-        let Some(&c) = v.citizens.first() else { return };
-        let (bx, by) = self.base_tile;
-        let mut first = true;
-        for k in 0..10 {
-            let ang = k * 36;
-            let (cs, sn) = ee_sim::mapgen::sincos_deg(ang);
-            // walk outward until the next step would be water
-            let mut best = None;
-            for r in (8..34).step_by(2) {
-                let (x, y) = (bx + cs * r / 1024, by + sn * r / 1024);
-                if w.map.passable(x, y, ee_sim::defs::Layer::Land) {
-                    best = Some((x, y));
-                } else if w.map.is_water(x, y) {
-                    break;
-                }
-            }
-            if let Some((x, y)) = best {
-                out.push(CommandKind::Move { units: vec![c], to: FVec::tile_center(x, y), attack_move: false, queue: !first });
-                first = false;
-            }
+        if self.scouted || w.tick < 40 { return; }
+        if let Some(&c) = v.citizens.iter().find(|c| !v.builders.contains(c)) {
+            self.scouted = true;
+            out.push(CommandKind::Scout { units: vec![c] });
         }
-        out.push(CommandKind::Move { units: vec![c], to: self.base, attack_move: false, queue: true });
     }
 
     pub(crate) fn view(&self, w: &World) -> View {
@@ -480,3 +470,6 @@ impl Ai {
         near_base.or_else(|| w.nearest_resource(r as u8, from, 40, false))
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -32,11 +32,26 @@ def tree(pal):
     for k in range(3):
         a = k * 2.1 + 0.4
         P.append(L.cyl("branch", 0.1, 2.0, (math.cos(a) * 0.6, math.sin(a) * 0.6, 3.6), pal["bark"], 6, (0.9 * math.sin(a), -0.9 * math.cos(a), 0), r2=0.05))
-    blobs = [(0, 0, 5.6, 2.4), (1.4, 0.3, 4.9, 1.7), (-1.3, 0.6, 5.0, 1.8), (0.3, -1.4, 5.0, 1.7), (-0.4, 1.3, 6.4, 1.6), (0.7, -0.4, 6.8, 1.5)]
-    for i, (x, y, z, r) in enumerate(blobs):
-        P.append(crown_blob(r, (x, y, z), pal["leaf"] if i % 2 == 0 else pal["leaf_light"], i + 1))
+    # Broken, asymmetric branch clusters leave gaps through the canopy.
+    # Smaller angular lobes avoid the old six overlapping spherical crowns.
+    for i in range(17):
+        a = i * 2.399
+        r = rnd.uniform(0.8, 2.1)
+        z = rnd.uniform(4.3, 6.8)
+        x, y = math.cos(a) * r, math.sin(a) * r
+        end = Vector((x, y, z))
+        start = Vector((0, 0, 3.0 + i % 3 * 0.45))
+        branch = L.cyl("branch", 0.08, (end-start).length, (start+end)/2, pal["bark"], 6, r2=0.025)
+        branch.rotation_euler = (end-start).to_track_quat("Z", "Y").to_euler()
+        P.append(branch)
+        for j in range(2):
+            radius = rnd.uniform(0.65, 1.05)
+            pos = (x + rnd.uniform(-0.45, 0.45), y + rnd.uniform(-0.45, 0.45), z + j * 0.45)
+            crown = L.ico("leaves", radius, pos, pal["leaf_light"] if i % 4 == 0 else pal["leaf"], 1, (1.0, 0.8, 0.7))
+            displace(crown, radius * 0.5, 2.0 / radius, i * 2 + j)
+            P.append(crown)
     ob = L.join(P, "body")
-    L.smooth(ob, 80)
+    L.smooth(ob, 35)
     return [ob]
 
 

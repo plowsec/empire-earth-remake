@@ -531,3 +531,142 @@ fn every_mine_is_reachable_from_its_island() {
         }
     }
 }
+
+#[test]
+fn airfield_rally_launches_trained_and_refuelled_planes_and_can_be_cleared() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let home = w.spawn_static(data().id("airport"), 0, (s.0 + 8, s.1 + 8), true);
+    let dest = FVec::tile_center(s.0 + 16, s.1);
+    w.apply_command(&Command { player: 0, kind: CommandKind::SetRally { buildings: vec![home], to: dest, target: 0 } });
+    w.apply_command(&Command { player: 0, kind: CommandKind::Train { building: home, def: data().id("fighter"), count: 1 } });
+    w.get_mut(home).unwrap().prod_progress = data().def(data().id("fighter")).build_ticks - 1;
+    run(&mut w, 2, vec![]);
+    let plane = units_of(&w, 0, "fighter")[0];
+    assert_eq!(w.get(plane).unwrap().sortie, Some(dest));
+    assert!(matches!(w.get(plane).unwrap().order, Order::Patrol { at } if at == dest));
+    w.apply_command(&Command { player: 0, kind: CommandKind::ReturnToBase { units: vec![plane] } });
+    run(&mut w, 20 * 20, vec![]);
+    assert_eq!(w.get(plane).unwrap().inside, 0);
+    assert_eq!(w.get(plane).unwrap().sortie, Some(dest));
+    let pos = w.get(home).unwrap().pos;
+    w.apply_command(&Command { player: 0, kind: CommandKind::SetRally { buildings: vec![home], to: pos, target: 0 } });
+    w.apply_command(&Command { player: 0, kind: CommandKind::ReturnToBase { units: vec![plane] } });
+    run(&mut w, 20 * 20, vec![]);
+    assert_eq!(w.get(home).unwrap().rally, None);
+    assert_eq!(w.get(plane).unwrap().inside, home, "no rally: park after refuelling");
+}
+
+#[test]
+fn offshore_transport_approaches_boarders_and_loads_them() {
+    use ee_sim::{defs::Layer, fixed::Fx};
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let shore = ee_sim::orders::shore_water_near(&w, FVec::tile_center(s.0, s.1), 50).unwrap();
+    let (x, y) = shore.tile();
+    let land = w.map.nearest_passable(x, y, Layer::Land, 3).unwrap();
+    let offshore = (-10..=10).flat_map(|dy| (-10..=10).map(move |dx| (x + dx, y + dy)))
+        .find(|&(tx, ty)| w.map.passable(tx, ty, Layer::Water)
+            && FVec::tile_center(tx, ty).within(shore, Fx::from_int(10))
+            && !FVec::tile_center(tx, ty).within(shore, Fx::from_int(7))).unwrap();
+    let ship = w.spawn(data().id("transport"), 0, FVec::tile_center(offshore.0, offshore.1));
+    let soldier = w.spawn(data().id("rifleman"), 0, FVec::tile_center(land.0, land.1));
+    w.apply_command(&Command { player: 0, kind: CommandKind::Target { units: vec![soldier], target: ship, queue: false } });
+    assert!(matches!(w.get(ship).unwrap().order, Order::Move { .. }));
+    run(&mut w, 20 * 60, vec![]);
+    assert_eq!(w.get(soldier).unwrap().inside, ship);
+    assert!(w.get(ship).unwrap().cargo.contains(&soldier));
+}
+
+#[test]
+fn nuclear_bomber_drops_payload_damages_area_and_flattens_trees() {
+    use ee_sim::{defs::DamageType, fixed::Fx, world::SimEvent};
+    let mut cfg = MatchConfig::skirmish(5, 2);
+    cfg.reveal = true;
+    let mut w = World::new(cfg);
+    let tree = data().id("tree");
+    let pos = w.entities.iter().find(|e| e.alive && e.def == tree).unwrap().pos;
+    let victim = w.spawn(data().id("tank"), 1, pos);
+    let nearby = w.spawn(data().id("tank"), 1, pos + FVec::new(Fx::from_int(2), Fx::ZERO));
+    let bomber = w.spawn(data().id("nuke_bomber"), 0, pos + FVec::new(Fx::from_int(2), Fx::ZERO));
+    let before = w.entities.iter().filter(|e| e.alive && e.def == tree).count();
+    w.apply_command(&Command { player: 0, kind: CommandKind::Attack { units: vec![bomber], target: victim, queue: false } });
+    let mut impact = false;
+    for _ in 0..20 * 10 {
+        run(&mut w, 1, vec![]);
+        impact |= w.events.iter().any(|e| matches!(e, SimEvent::Impact { dmg_type, .. } if *dmg_type == DamageType::Nuclear as u8));
+    }
+    assert!(impact, "real weapon emitted a nuclear impact");
+    assert!(w.get(victim).is_none());
+    assert!(w.get(nearby).is_none());
+    assert_eq!(w.get(bomber).unwrap().ammo, 0);
+    assert!(w.entities.iter().filter(|e| e.alive && e.def == tree).count() < before);
+}
+
+#[test]
+fn death_event_preserves_motion_after_entity_slot_is_reused() {
+    use ee_sim::{fixed::Fx, world::SimEvent};
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let pos = FVec::tile_center(w.starts[0].0, w.starts[0].1);
+    let plane = w.spawn(data().id("fighter"), 0, pos);
+    let facing = FVec::new(Fx::ONE, Fx::ZERO);
+    let prev = pos - FVec::new(Fx::from_ratio(1, 5), Fx::ZERO);
+    w.get_mut(plane).unwrap().facing = facing;
+    w.get_mut(plane).unwrap().prev_pos = prev;
+    w.kill(plane, 1);
+    w.spawn(data().id("citizen"), 0, pos);
+    assert!(w.events.iter().any(|e| matches!(e, SimEvent::Died { id, facing: f, velocity, inside, .. }
+        if *id == plane && *f == facing && *velocity == (pos - prev).scale(Fx::from_int(20)) && *inside == 0)));
+}
+
+#[test]
+fn nuclear_front_propagates_once_pushes_survivors_and_topples_trees() {
+    use ee_sim::{fixed::Fx, world::{Shockwave, SimEvent}};
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = open_spot(&w, w.starts[0], 15, 30);
+    let center = FVec::tile_center(s.0, s.1);
+    let near_pos = center + FVec::new(Fx::from_int(2), Fx::ZERO);
+    let far_pos = center + FVec::new(Fx::from_int(8), Fx::ZERO);
+    let near = w.spawn(data().id("tank"), 0, near_pos);
+    let far = w.spawn(data().id("tank"), 0, far_pos);
+    let outside = w.spawn(data().id("tank"), 0, center + FVec::new(Fx::from_int(14), Fx::ZERO));
+    let tree = w.spawn_static(data().id("tree"), 255, (s.0 + 6, s.1 + 2), true);
+    for id in [near, far, outside] { w.get_mut(id).unwrap().hp = 10000; }
+    w.shockwaves.push(Shockwave { pos: center, radius: Fx::from_ratio(950, 100), age: 0, damage: 2600, owner: 1, src: 0, hit: vec![] });
+    let with_wave = w.checksum();
+    w.shockwaves[0].age = 1;
+    assert_ne!(with_wave, w.checksum(), "wave progress is lockstep state");
+    w.shockwaves[0].age = 0;
+    run(&mut w, 8, vec![]);
+    let near_hp = w.get(near).unwrap().hp;
+    assert!(near_hp < 10000);
+    assert_eq!(w.get(far).unwrap().hp, 10000, "outer units wait for the front");
+    assert!(w.get(tree).is_some(), "trees wait for the front too");
+    assert!(w.get(near).unwrap().pos.dist2_raw(center) > near_pos.dist2_raw(center), "survivor moves away from blast");
+    let mut toppled = false;
+    for _ in 0..32 {
+        run(&mut w, 1, vec![]);
+        toppled |= w.events.iter().any(|e| matches!(e, SimEvent::TreeFelled { id, away, .. } if *id == tree && away.x > Fx::ZERO));
+    }
+    assert!(toppled);
+    assert!(w.get(tree).is_none());
+    assert!(w.get(far).unwrap().hp < 10000);
+    assert_eq!(w.get(near).unwrap().hp, near_hp, "one damage application per wave");
+    assert_eq!(w.get(outside).unwrap().hp, 10000);
+    assert!(w.shockwaves.is_empty());
+}
+
+#[test]
+fn shockwave_push_cannot_cross_blocked_terrain() {
+    use ee_sim::fixed::Fx;
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = open_spot(&w, w.starts[0], 10, 25);
+    let pos = FVec::tile_center(s.0, s.1);
+    let unit = w.spawn(data().id("rifleman"), 0, pos);
+    let tile = w.map.idx(s.0 + 1, s.1);
+    w.map.pass[tile] = 0;
+    w.get_mut(unit).unwrap().knockback = FVec::new(Fx::from_ratio(28, 100), Fx::ZERO);
+    run(&mut w, 40, vec![]);
+    assert_eq!(w.get(unit).unwrap().pos.tile(), s);
+    assert_eq!(w.get(unit).unwrap().knockback, FVec::ZERO);
+}

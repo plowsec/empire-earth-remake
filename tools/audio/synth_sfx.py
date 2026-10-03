@@ -219,6 +219,37 @@ def explosion(v, size):
     return reverb(mix(body, sub, crackle), 1.5 + size, 0.35, 1800)
 
 
+def nuclear_blast():
+    """Pressure crack, broad low-frequency blast and a long rolling thunder tail."""
+    sec = 14.0
+    tt = t(sec)
+    pressure = sweep_lp(white(sec), 5200, 100, 0.7) * env_exp(sec, 1.25, 0.001)
+    low = lp(pink(sec), 220) * (1 - np.exp(-tt / 0.06)) * np.exp(-tt / 4.2)
+    thump = chirp(65, 28, sec) * env_exp(sec, 0.65, 0.004)
+    rumble = lp(brown(sec), 150) * (1 - np.exp(-tt / 0.35)) * np.exp(-tt / 5.0)
+    rolling = np.zeros(len(tt))
+    for delay, strength in [(0.32, 0.6), (0.85, 0.45), (1.7, 0.32), (3.0, 0.23), (4.6, 0.12)]:
+        wave = lp(pink(4.0), 280) * env_exp(4.0, 1.1, 0.05)
+        add_at(rolling, wave * strength, int(delay * SR))
+    return fade_out(mix(pressure * 1.6, low * 2.5, thump * 0.55, rumble * 2.0, rolling), 1.8)
+
+
+def aircraft_breakup():
+    sec = 2.8
+    tear = sweep_lp(white(sec), 7000, 500) * env_exp(sec, 0.4, 0.002)
+    metal = sum(chirp(f, f * 0.65, sec) / (i + 2) for i, f in enumerate([180, 287, 463, 719]))
+    return reverb(tear + metal * env_exp(sec, 0.6) * 0.4, 1.4, 0.2)
+
+
+def ship_sinking():
+    sec = 10.0
+    tt = t(sec)
+    groan = sum(chirp(f, f * 0.6, sec) / (i + 1) for i, f in enumerate([48, 77, 133, 219]))
+    groan *= (0.3 + 0.7 * np.sin(tt * 1.7) ** 2) * np.exp(-tt / 4.5) * np.clip(tt / 0.3, 0, 1)
+    water = bp(pink(sec), 180, 1800) * np.clip(tt / 1.2, 0, 1) * np.exp(-tt / 5.0)
+    return fade_out(groan * 0.35 + water, 1.0)
+
+
 def bullet_impact(v):
     return mix(bp(white(0.12), 500, 4000) * env_exp(0.12, 0.02), lp(white(0.12), 300) * env_exp(0.12, 0.03) * 0.5)
 
@@ -400,6 +431,9 @@ def main():
         save(f"flak_{v}", flak(v))
         save(f"explosion_big_{v}", explosion(v, 1.2))
         save(f"jet_{v}", jet_flyby(v))
+    save("nuclear_blast", nuclear_blast())
+    save("aircraft_breakup", aircraft_breakup())
+    save("ship_sinking", ship_sinking())
     save("torpedo", torpedo(0))
     save("collapse", collapse(0))
     save("heli_loop", heli_loop(0), 0.6)

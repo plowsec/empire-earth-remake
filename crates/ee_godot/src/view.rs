@@ -139,11 +139,11 @@ impl GameView {
         // per-layer tints (sand, grass, meadow, forest, dirt, grassrock, rock, seabed)
         let tints = PackedColorArray::from(&[
             Color::from_rgb(1.0, 0.95, 0.85),
-            Color::from_rgb(0.62, 0.86, 0.42),
-            Color::from_rgb(0.74, 0.92, 0.46),
-            Color::from_rgb(0.72, 0.78, 0.6),
+            Color::from_rgb(0.78, 0.82, 0.65),
+            Color::from_rgb(0.87, 0.87, 0.69),
+            Color::from_rgb(0.66, 0.69, 0.57),
             Color::from_rgb(0.86, 0.8, 0.68),
-            Color::from_rgb(0.74, 0.86, 0.6),
+            Color::from_rgb(0.78, 0.81, 0.69),
             Color::from_rgb(0.82, 0.8, 0.78),
             Color::from_rgb(0.85, 0.92, 0.85),
         ][..]);
@@ -946,6 +946,76 @@ impl GameView {
         Vector3::new(x, 0.0, z)
     }
 
+    /// Reproducible scenes for the opt-in feature verification harness.
+    #[func]
+    fn debug_feature_scene(&mut self, scenario: GString) -> Vector3 {
+        use ee_sim::{command::Command, defs::Layer, fixed::{FVec, Fx}};
+        let Some(c) = self.client.as_mut() else { return Vector3::ZERO };
+        let w = &mut c.session.world;
+        let s = w.starts[0];
+        let base = FVec::tile_center(s.0, s.1);
+        let mut destroy = Vec::new();
+        let center = match scenario.to_string().as_str() {
+            "airfield" => {
+                let def = data().id("airport");
+                let tile = (6i32..24).find_map(|r| (-r..=r).find_map(|dx| {
+                    [(s.0 + dx, s.1 + r), (s.0 + dx, s.1 - r)].into_iter()
+                        .find(|&t| w.can_place(0, def, t).is_ok())
+                })).expect("fixture needs an airfield plot");
+                let home = w.spawn_static(def, 0, tile, true);
+                let at = w.get(home).unwrap().pos;
+                w.players[0].res = [10000; 5];
+                c.selection = vec![home];
+                at
+            }
+            "landing" => {
+                let shore = ee_sim::orders::shore_water_near(w, base, 50).unwrap();
+                let (x, y) = shore.tile();
+                let land = w.map.nearest_passable(x, y, Layer::Land, 3).unwrap();
+                let offshore = (-10..=10).flat_map(|dy| (-10..=10).map(move |dx| (x + dx, y + dy)))
+                    .find(|&(tx, ty)| w.map.passable(tx, ty, Layer::Water)
+                        && FVec::tile_center(tx, ty).within(shore, Fx::from_int(10))
+                        && !FVec::tile_center(tx, ty).within(shore, Fx::from_int(7))).unwrap();
+                let ship = w.spawn(data().id("transport"), 0, FVec::tile_center(offshore.0, offshore.1));
+                let soldier = w.spawn(data().id("rifleman"), 0, FVec::tile_center(land.0, land.1));
+                c.selection = vec![soldier];
+                // The harness issues the boarding order through the normal right-click UI.
+                let _ = ship;
+                shore
+            }
+            "wrecks" => {
+                let shore = ee_sim::orders::shore_water_near(w, base, 50).unwrap();
+                let (x, y) = shore.tile();
+                let water = w.map.nearest_passable(x - 4, y - 4, Layer::Water, 12).unwrap();
+                let land = w.map.nearest_passable(x + 6, y + 6, Layer::Land, 12).unwrap();
+                destroy.push(w.spawn(data().id("battleship"), 0, FVec::tile_center(water.0, water.1)));
+                destroy.push(w.spawn(data().id("fighter"), 0, FVec::tile_center(land.0, land.1)));
+                destroy.push(w.spawn(data().id("bomber"), 0, FVec::tile_center(water.0 + 3, water.1)));
+                for &id in &destroy {
+                    let e = w.get_mut(id).unwrap();
+                    e.facing = FVec::new(Fx::ONE, Fx::ZERO);
+                }
+                shore
+            }
+            "nuclear" => {
+                let pos = w.entities.iter().filter(|e| e.alive && e.def == data().id("tree"))
+                    .min_by_key(|e| e.pos.dist2_raw(base)).unwrap().pos;
+                let victim = w.spawn(data().id("tank"), 1, pos);
+                let bomber = w.spawn(data().id("nuke_bomber"), 0, pos + FVec::new(Fx::from_int(3), Fx::ZERO));
+                w.apply_command(&Command { player: 0, kind: CommandKind::Attack { units: vec![bomber], target: victim, queue: false } });
+                // An actual hit on a local unit also exercises minimap and audio alerts.
+                w.spawn(data().id("tank"), 0, pos + FVec::new(Fx::from_int(4), Fx::ZERO));
+                c.selection = vec![bomber];
+                pos
+            }
+            _ => base,
+        };
+        w.recount_pop();
+        let (x, z) = crate::client::to_world2(center);
+        if !destroy.is_empty() { c.issue(CommandKind::Delete { units: destroy }); }
+        Vector3::new(x, 0.0, z)
+    }
+
     /// Wall-clock milliseconds the last frame's simulation took (perf HUD).
     #[func]
     fn sim_stats(&self) -> VarDictionary {
@@ -957,6 +1027,10 @@ impl GameView {
         d.set("projectiles", w.projectiles.len() as i64);
         d.set("tick", w.tick as i64);
         d.set("sim_ms", c.last_sim_ms);
+        let (air, ships, total) = c.wreck_counts();
+        d.set("falling_aircraft", air as i64);
+        d.set("sinking_ships", ships as i64);
+        d.set("wrecks", total as i64);
         d
     }
 
@@ -1045,7 +1119,7 @@ impl GameView {
         let Some(def) = data().try_id(&key.to_string()) else { return GString::new() };
         for e in &c.world().entities {
             if e.alive && e.owner == c.me && e.def == def {
-                return GString::from(&format!("{} pos {:?} order {:?} action {:?} hp {} progress {} complete {} goal {:?} stuck {}", key, e.pos.tile(), e.order, e.action, e.hp, e.progress, e.complete, e.goal.map(|g| g.tile()), e.stuck));
+                return GString::from(&format!("{} pos {:?} order {:?} action {:?} hp {} progress {} complete {} goal {:?} stuck {} inside {} rally {:?} sortie {:?} cargo {}", key, e.pos.tile(), e.order, e.action, e.hp, e.progress, e.complete, e.goal.map(|g| g.tile()), e.stuck, e.inside, e.rally, e.sortie, e.cargo.len()));
             }
         }
         GString::from("none")

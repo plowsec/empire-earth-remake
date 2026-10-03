@@ -14,7 +14,7 @@ static func apply(world_env: WorldEnvironment, sun: DirectionalLight3D) -> void:
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_sky_contribution = 1.0
-	env.ambient_light_energy = 0.55
+	env.ambient_light_energy = 0.48
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
 	env.tonemap_exposure = 0.92
@@ -28,9 +28,9 @@ static func apply(world_env: WorldEnvironment, sun: DirectionalLight3D) -> void:
 	env.ssil_radius = 6.0
 	env.ssil_intensity = 0.8
 	env.glow_enabled = true
-	env.glow_intensity = 0.45
+	env.glow_intensity = 0.22
 	env.glow_strength = 0.9
-	env.glow_bloom = 0.05
+	env.glow_bloom = 0.0
 	env.glow_hdr_threshold = 1.1
 	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SOFTLIGHT
 	env.fog_enabled = true
@@ -44,11 +44,11 @@ static func apply(world_env: WorldEnvironment, sun: DirectionalLight3D) -> void:
 	env.fog_aerial_perspective = 0.55
 	env.fog_sky_affect = 0.0
 	env.adjustment_enabled = true
-	env.adjustment_saturation = 1.18
-	env.adjustment_contrast = 1.08
+	env.adjustment_saturation = 0.90
+	env.adjustment_contrast = 1.03
 	world_env.environment = env
-	sun.light_color = Color(1.0, 0.95, 0.86)
-	sun.light_energy = 1.7
+	sun.light_color = Color(1.0, 0.97, 0.92)
+	sun.light_energy = 1.45
 	sun.shadow_enabled = true
 	sun.shadow_blur = 1.2
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS

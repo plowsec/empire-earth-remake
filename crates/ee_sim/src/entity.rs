@@ -60,6 +60,8 @@ pub struct Entity {
     pub pos: FVec,
     /// position at the start of the tick (render interpolation; not hashed)
     pub prev_pos: FVec,
+    /// Per-tick pressure-wave displacement, decays without replacing the order.
+    pub knockback: FVec,
     /// unit-length heading
     pub facing: FVec,
     pub hp: i32,
@@ -138,6 +140,7 @@ impl Entity {
             owner,
             pos,
             prev_pos: pos,
+            knockback: FVec::ZERO,
             facing: FVec::new(crate::fixed::Fx::ZERO, crate::fixed::Fx::ONE),
             hp,
             tile: pos.tile(),

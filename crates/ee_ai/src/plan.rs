@@ -41,15 +41,6 @@ impl Ai {
         if cits >= 15 && have(id("naval_yard")) == 0 {
             wants.push(id("naval_yard"));
         }
-        // farms when berries are gone
-        if v.count(id("granary")) > 0 {
-            let berries_left = w.nearest_resource(0, self.base, 20, false).map_or(false, |n| !d.def(w.get(n).unwrap().def).is_building());
-            let farms = have(id("farm"));
-            let food_workers_wanted = (cits as i32 * 30 / 100).max(4) as usize;
-            if !berries_left && farms < food_workers_wanted.min(10 * v.count(id("granary"))) {
-                wants.push(id("farm"));
-            }
-        }
         if cits >= 20 && have(id("tank_factory")) == 0 {
             wants.push(id("tank_factory"));
         }
@@ -77,7 +68,7 @@ impl Ai {
         if cits >= 40 && have(id("naval_yard")) < 2 {
             wants.push(id("naval_yard"));
         }
-        if cits >= 40 && have(id("granary")) < 2 && have(id("farm")) >= 9 {
+        if cits >= 40 && have(id("granary")) < 2 && have(id("farm")) >= 8 {
             wants.push(id("granary"));
         }
         if cits >= 24 && have(id("settlement")) < 1 + cits / 30 {
@@ -124,6 +115,7 @@ impl Ai {
                 .citizens
                 .iter()
                 .filter(|c| !v.builders.contains(c))
+                .filter(|&&c| !matches!(w.get(c).map(|e| e.order), Some(Order::Scout { .. })))
                 .filter_map(|&c| w.get(c).map(|e| (e.pos.dist2_raw(center) + if e.carry > 0 { 1 << 40 } else { 0 }, c)))
                 .collect();
             pool.sort();
@@ -145,6 +137,7 @@ impl Ai {
                     .citizens
                     .iter()
                     .filter(|c| !v.builders.contains(c))
+                    .filter(|&&c| !matches!(w.get(c).map(|e| e.order), Some(Order::Scout { .. })))
                     .filter_map(|&c| w.get(c).map(|e| (e.pos.dist2_raw(site.pos), c)))
                     .collect();
                 pool.sort();
@@ -225,7 +218,7 @@ impl Ai {
     }
 
     /// Find a placement tile for `def` near the base.
-    fn find_site(&mut self, w: &World, def: DefId) -> Option<(i32, i32)> {
+    pub(crate) fn find_site(&mut self, w: &World, def: DefId) -> Option<(i32, i32)> {
         let d = data();
         let dd = d.def(def);
         let (sw, sh) = dd.size();
@@ -535,6 +528,7 @@ impl Ai {
         };
 
         let mut reserve = [0i32; 5];
+        let mut nuclear_queued = false;
         for (bkey, mix) in [("airport", &air), ("naval_yard", &navy), ("tank_factory", &land), ("barracks", &land)] {
             let Some(bs) = v.buildings.get(&id(bkey)) else { continue };
             for &b in bs {
@@ -553,6 +547,19 @@ impl Ai {
                     if v.navy.len() >= 6 + self.wave as usize * 2 {
                         continue;
                     }
+                }
+                // Maintain one strategic bomber after the economy matures. It gets
+                // its own slot so an existing conventional air force cannot block it.
+                let nuclear = id("nuke_bomber");
+                let nuclear_cost = d.def(nuclear).data.cost.arr();
+                if bkey == "airport" && self.diff >= Difficulty::Hard && econ_ready
+                    && w.tick >= self.diff.first_attack() && !nuclear_queued
+                    && count_of("nuke_bomber") == 0
+                    && nuclear_cost.iter().enumerate().all(|(r, c)| pl.res[r] - reserve[r] >= c + 200) {
+                    out.push(CommandKind::Train { building: b, def: nuclear, count: 1 });
+                    for r in 0..5 { reserve[r] += nuclear_cost[r]; }
+                    nuclear_queued = true;
+                    continue;
                 }
                 if bkey == "airport" && v.air.len() >= 8 + self.wave as usize * 3 {
                     continue;
@@ -651,7 +658,7 @@ impl Ai {
                 out.push(CommandKind::Move { units: defenders, to: tpos, attack_move: true, queue: false });
             }
             // air support at home
-            let air_idle: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).map_or(false, |e| e.order == Order::Idle)).collect();
+            let air_idle: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).map_or(false, |e| e.order == Order::Idle && e.def != d.id("nuke_bomber"))).collect();
             if !air_idle.is_empty() && threat_count >= 3 {
                 out.push(CommandKind::Move { units: air_idle, to: tpos, attack_move: true, queue: false });
             }
@@ -683,6 +690,27 @@ impl Ai {
         }
 
         let attack_time = w.tick >= self.diff.first_attack();
+        // Nuclear aircraft get an explicit target instead of joining home defense.
+        if attack_time {
+            if let Some(target) = self.nuclear_target(w) {
+                let bombers: Vec<_> = v.air.iter().copied().filter(|&id| w.get(id).is_some_and(|e|
+                    e.def == d.id("nuke_bomber") && e.ammo > 0
+                    && e.fuel * 10 >= d.def(e.def).fuel_ticks * 9
+                    && matches!(e.order, Order::Idle | Order::Patrol { .. })
+                )).collect();
+                if !bombers.is_empty() {
+                    out.push(CommandKind::Attack { units: bombers, target, queue: false });
+                }
+            }
+        }
+        // One idle reconnaissance vehicle patrols the home island between waves.
+        if threat.is_none() && !v.land_army.iter().any(|&id| w.get(id).is_some_and(|e| matches!(e.order, Order::Scout { .. }))) {
+            if let Some(&id) = v.land_army.iter().find(|&&id| !invading.contains(&id)
+                && w.get(id).is_some_and(|e| e.def == d.id("recon") && e.inside == 0
+                    && e.order == Order::Idle && e.pos.within(self.base, Fx::from_int(30)))) {
+                out.push(CommandKind::Scout { units: vec![id] });
+            }
+        }
         // ---- air strikes
         let strike_every = 20 * 60 * 2;
         if attack_time && w.tick.wrapping_sub(self.last_air_strike) > strike_every {
@@ -690,7 +718,7 @@ impl Ai {
                 .air
                 .iter()
                 .copied()
-                .filter(|&a| w.get(a).map_or(false, |e| matches!(e.order, Order::Idle) && e.fuel * 10 >= d.def(e.def).fuel_ticks * 9))
+                .filter(|&a| w.get(a).map_or(false, |e| e.def != d.id("nuke_bomber") && matches!(e.order, Order::Idle | Order::Patrol { .. }) && e.fuel * 10 >= d.def(e.def).fuel_ticks * 9))
                 .collect();
             if ready.len() >= 4 {
                 self.last_air_strike = w.tick;
@@ -738,7 +766,7 @@ impl Ai {
             if my_army >= 30 && enemy_buildings <= 6 || my_army >= 60 {
                 if let Some(t) = self.pick_strike_target(w) {
                     if let Some(tp) = self.known.get(&t).map(|k| k.pos) {
-                        let air: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).map_or(false, |e| e.order == Order::Idle)).collect();
+                        let air: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).map_or(false, |e| e.order == Order::Idle && e.def != d.id("nuke_bomber"))).collect();
                         if !air.is_empty() {
                             out.push(CommandKind::Move { units: air, to: tp, attack_move: true, queue: false });
                         }
@@ -752,7 +780,7 @@ impl Ai {
                     }
                 } else if let Some(es) = self.enemy_start(w) {
                     // nothing known: scout their start with aircraft
-                    let air: Vec<EntityId> = v.air.iter().copied().take(3).collect();
+                    let air: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).is_some_and(|e| e.def != d.id("nuke_bomber"))).take(3).collect();
                     if !air.is_empty() {
                         out.push(CommandKind::Move { units: air, to: es, attack_move: true, queue: false });
                     }
@@ -762,6 +790,45 @@ impl Ai {
 
         // ---- amphibious invasion
         self.invasion_tick(w, v, out, attack_time);
+    }
+
+    /// Score only visible targets: dense enemy bases justify the expensive payload.
+    fn nuclear_target(&self, w: &World) -> Option<EntityId> {
+        let radius = data().def(data().id("nuke_bomber")).weapons[0].splash;
+        w.entities.iter().filter(|e| e.on_map() && w.is_enemy(self.player, e.owner)
+            && data().def(e.def).is_building() && w.can_see(self.player, e))
+            .map(|e| {
+                let score: i32 = w.entities.iter().filter(|o| o.on_map()
+                    && w.is_enemy(self.player, o.owner) && w.can_see(self.player, o)
+                    && o.pos.within(e.pos, radius)).map(|o| {
+                        if data().def(o.def).is_building() { 5 } else { 1 }
+                    }).sum();
+                (score, std::cmp::Reverse(e.id))
+            }).max().filter(|(score, _)| *score >= 10).map(|(_, id)| id.0)
+    }
+
+    /// Build a full granary ring once the economy can support eight farmers.
+    pub(crate) fn rebuild_fields(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
+        let d = data();
+        if v.citizens.len() < 24 || self.last_fields_rebuild.is_some_and(|t| w.tick.wrapping_sub(t) < 600) {
+            return;
+        }
+        let farm = d.id("farm");
+        let farms = v.count(farm) + v.sites.iter().filter(|&&id| w.get(id).is_some_and(|e| e.def == farm)).count();
+        let wanted = (v.citizens.len() / 3).min(8 * v.count(d.id("granary")));
+        let cost = d.def(farm).data.cost.arr();
+        if farms >= wanted || cost.iter().enumerate().any(|(r, c)| w.players[self.player as usize].res[r] < c * 8 + if r == 1 { 150 } else { 0 }) {
+            return;
+        }
+        for &building in v.buildings.get(&d.id("granary")).map(Vec::as_slice).unwrap_or(&[]) {
+            let (x, y) = w.get(building).unwrap().tile;
+            if [(-3, 0), (3, 0), (0, -3), (0, 3), (-3, -3), (3, -3), (-3, 3), (3, 3)]
+                .iter().any(|&(dx, dy)| w.can_place(self.player, farm, (x + dx, y + dy)).is_ok()) {
+                out.push(CommandKind::RebuildFarms { building });
+                self.last_fields_rebuild = Some(w.tick);
+                break;
+            }
+        }
     }
 
     fn rally_point(&mut self, w: &World) -> FVec {

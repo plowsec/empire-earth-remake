@@ -109,12 +109,13 @@ pub enum SimEvent {
     Shot { from: EntityId, to: EntityId, from_pos: FVec, to_pos: FVec, weapon: u8 },
     Impact { pos: FVec, dmg_type: u8, splash: Fx, owner: u8 },
     Damaged { id: EntityId, owner: u8, attacker_owner: u8, pos: FVec },
-    Died { id: EntityId, def: DefId, owner: u8, pos: FVec, killer_owner: u8 },
+    Died { id: EntityId, def: DefId, owner: u8, pos: FVec, facing: FVec, velocity: FVec, inside: EntityId, killer_owner: u8 },
     Spawned { id: EntityId, def: DefId, owner: u8 },
     BuildingPlaced { id: EntityId, def: DefId, owner: u8 },
     BuildingComplete { id: EntityId, def: DefId, owner: u8 },
     ResearchComplete { owner: u8, tech: u16 },
     ResourceDepleted { id: EntityId, pos: FVec },
+    TreeFelled { id: EntityId, def: DefId, pos: FVec, away: FVec },
     /// a sapling became a tree
     Grown { id: EntityId },
     Gathered { owner: u8, res: u8, amount: i32 },
@@ -144,6 +145,18 @@ pub struct Proj {
     pub id: u32,
 }
 
+/// Expanding nuclear pressure front; resolved once per entity in lockstep.
+#[derive(Clone, Debug)]
+pub struct Shockwave {
+    pub pos: FVec,
+    pub radius: Fx,
+    pub age: u32,
+    pub damage: i32,
+    pub owner: u8,
+    pub src: EntityId,
+    pub hit: Vec<EntityId>,
+}
+
 pub struct World {
     pub tick: u32,
     pub config: MatchConfig,
@@ -153,6 +166,7 @@ pub struct World {
     pub players: Vec<Player>,
     pub rng: SimRng,
     pub projectiles: Vec<Proj>,
+    pub shockwaves: Vec<Shockwave>,
     pub next_proj: u32,
     /// per player, per tile: 0 unexplored, 1 explored, 2 visible
     pub vision: Vec<Vec<u8>>,
@@ -213,6 +227,7 @@ impl World {
             players,
             rng: SimRng::new(config.seed, 0xe3),
             projectiles: Vec::new(),
+            shockwaves: Vec::new(),
             next_proj: 1,
             vision: vec![vec![0u8; n]; np],
             events: Vec::new(),
@@ -399,6 +414,8 @@ impl World {
         let owner = e.owner;
         let pos = e.pos;
         let tile = e.tile;
+        let facing = e.facing;
+        let velocity = (e.pos - e.prev_pos).scale(Fx::from_int(20));
         let cargo = e.cargo.clone();
         let inside = e.inside;
         let d = data().def(def);
@@ -443,7 +460,7 @@ impl World {
                 }
             }
         }
-        self.events.push(SimEvent::Died { id, def, owner, pos, killer_owner });
+        self.events.push(SimEvent::Died { id, def, owner, pos, facing, velocity, inside, killer_owner });
         // planes landed at a destroyed airfield are lost
         if d.data.airport {
             let landed: Vec<EntityId> = self
@@ -522,6 +539,7 @@ impl World {
             crate::combat::apply_damage(self, target, dmg, dt, owner, src);
         }
         self.update_projectiles();
+        self.update_shockwaves();
         if self.tick % 4 == 0 {
             self.update_vision();
         }
@@ -640,6 +658,7 @@ impl World {
             mix(e.def as u64 | (e.owner as u64) << 16);
             mix(e.pos.x.0 as u32 as u64 | (e.pos.y.0 as u32 as u64) << 32);
             mix(e.hp as u32 as u64);
+            mix(e.knockback.x.0 as u32 as u64 | (e.knockback.y.0 as u32 as u64) << 32);
             mix(e.carry as u64 | (e.amount as u32 as u64) << 32);
             mix(e.progress as u32 as u64 | (e.inside as u64) << 32);
         }
@@ -650,6 +669,13 @@ impl World {
         }
         for pr in &self.projectiles {
             mix(pr.pos.x.0 as u32 as u64 | (pr.pos.y.0 as u32 as u64) << 32);
+        }
+        for wave in &self.shockwaves {
+            mix(wave.pos.x.0 as u32 as u64 | (wave.pos.y.0 as u32 as u64) << 32);
+            mix(wave.radius.0 as u32 as u64 | (wave.age as u64) << 32);
+            mix(wave.damage as u32 as u64 | (wave.owner as u64) << 32);
+            mix(wave.src as u64);
+            for id in &wave.hit { mix(*id as u64); }
         }
         mix(self.map.checksum());
         h

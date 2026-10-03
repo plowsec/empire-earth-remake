@@ -224,8 +224,50 @@ impl World {
         self.projectiles = keep;
     }
 
+    pub(crate) fn update_shockwaves(&mut self) {
+        const DURATION: u32 = 30; // 1.5 seconds at 20 Hz, matching the visible dust front.
+        let mut waves = std::mem::take(&mut self.shockwaves);
+        for wave in &mut waves {
+            wave.age += 1;
+            let front = Fx((wave.radius.0 as i64 * wave.age.min(DURATION) as i64 / DURATION as i64) as i32);
+            let hits: Vec<_> = self.entities.iter().filter(|e| e.on_map() && !wave.hit.contains(&e.id))
+                .filter(|e| data().def(e.def).layer != Layer::Air && self.edge_dist(wave.pos, e) <= front)
+                .map(|e| (e.id, e.def, e.pos, e.owner, self.edge_dist(wave.pos, e))).collect();
+            for (id, def, pos, owner, dist) in hits {
+                wave.hit.push(id);
+                let d = data().def(def);
+                let away = (pos - wave.pos).normalized();
+                if d.data.resource == Some(crate::defs::Res::Wood) || d.data.plantable {
+                    self.kill(id, GAIA);
+                    self.events.push(SimEvent::TreeFelled { id, def, pos, away });
+                    continue;
+                }
+                if d.is_resource() { continue; }
+                if self.is_enemy(wave.owner, owner) {
+                    let falloff = 100 - (dist.0 as i64 * 50 / wave.radius.0.max(1) as i64) as i32;
+                    apply_damage(self, id, wave.damage * falloff / 100, crate::defs::DamageType::Nuclear, wave.owner, wave.src);
+                }
+                // Pressure moves surviving friendly and enemy units. Damage follows
+                // the game's existing splash-team rules; buildings stay anchored.
+                if d.is_unit() {
+                    if let Some(e) = self.get_mut(id) {
+                        let strength = if d.class() == Class::Ship { 9 } else if d.class() == Class::Vehicle { 16 } else { 28 };
+                        e.knockback = away.scale(Fx::from_ratio(strength, 100));
+                    }
+                }
+            }
+        }
+        waves.retain(|wave| wave.age < DURATION);
+        self.shockwaves = waves;
+    }
+
     fn impact(&mut self, p: &Proj) {
         self.events.push(SimEvent::Impact { pos: p.pos, dmg_type: p.dmg_type as u8, splash: p.splash, owner: p.owner });
+        if p.dmg_type == crate::defs::DamageType::Nuclear && p.splash > Fx::ZERO {
+            self.shockwaves.push(crate::world::Shockwave { pos: p.pos, radius: p.splash, age: 0,
+                damage: p.damage, owner: p.owner, src: p.src, hit: Vec::new() });
+            return;
+        }
         // heavy ordnance flattens forests: wood is the resource wars consume
         use crate::defs::DamageType as D;
         if p.splash.0 > 0 && matches!(p.dmg_type, D::Explosive | D::Bomb | D::NavalGun | D::Nuclear) {

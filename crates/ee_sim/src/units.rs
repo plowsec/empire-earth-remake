@@ -42,6 +42,20 @@ impl World {
                 self.update_inside(i);
                 continue;
             }
+            if self.entities[i].knockback != FVec::ZERO {
+                let e = &self.entities[i];
+                let next = e.pos + e.knockback;
+                let clear = self.map.passable_at(next, d.layer);
+                let e = &mut self.entities[i];
+                if clear { e.pos = next; }
+                e.knockback = if clear { e.knockback.scale(Fx::from_ratio(84, 100)) } else { FVec::ZERO };
+                if e.knockback.len() < Fx::from_ratio(1, 100) { e.knockback = FVec::ZERO; }
+                e.path.clear();
+                e.goal = None;
+                e.flow = None;
+                e.action = Action::Move;
+                continue;
+            }
             self.behave(i);
             if !self.entities[i].alive {
                 continue;

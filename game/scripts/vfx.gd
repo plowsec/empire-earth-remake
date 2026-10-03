@@ -12,6 +12,8 @@ var markers: Array = []
 var decals: Array[Decal] = []
 var decal_i := 0
 var audio: Node
+var last_nuclear_msec := -1
+var blast_smoke_textures: Array[Texture2D] = []
 
 const EXPLOSIVE := [1, 2, 5, 6, 7, 9]   # Cannon, Explosive, Torpedo, NavalGun, Bomb, Missile
 
@@ -20,6 +22,8 @@ func bind(game_view: Node, camera_rig: Node) -> void:
 	rig = camera_rig
 	soft_tex = _radial_tex(Color(1, 1, 1, 1), Color(1, 1, 1, 0))
 	smoke_tex = _smoke_tex()
+	for i in 4:
+		blast_smoke_textures.append(_blast_smoke_texture(31 + i * 7))
 	pools["fire"] = _make_pool(20, _fireball)
 	pools["smoke"] = _make_pool(28, _smoke)
 	pools["sparks"] = _make_pool(20, _sparks)
@@ -366,7 +370,17 @@ func on_event(e: Dictionary) -> void:
 				_flash(pos, 8.0, 25.0)
 				if audio: audio.play_explosion(3.0, pos)
 				if audio: audio._play3d(audio._load("collapse"), pos, 4.0)
-			elif t == 1 or t == 3:
+			elif t == 3:
+				_play("fire", pos, 0.9)
+				_play("smoke", pos, 0.8)
+				_play("sparks", pos, 1.4)
+				if audio: audio._play3d(audio._load("aircraft_breakup"), pos, -1.0)
+			elif t == 4:
+				_play("fire", pos + Vector3.UP * 2, 1.6)
+				_play("smoke", pos + Vector3.UP * 2, 2.0)
+				_play("splash", pos, 2.5)
+				if audio: audio._play3d(audio._load("ship_sinking"), pos, 0.0, 0.02)
+			elif t == 1:
 				var s: float = clamp(e["size"] / 3.0, 0.8, 3.0)
 				_play("fire", pos + Vector3.UP, s * 1.4)
 				_play("smoke", pos, s * 1.5)
@@ -374,6 +388,28 @@ func on_event(e: Dictionary) -> void:
 				_flash(pos, 10.0, 16.0)
 				_scorch(pos, 4.0 + s * 2.0)
 				if audio: audio.play_explosion(s * 1.3, pos)
+		"wreck_trail":
+			if _near_camera(pos):
+				_play("smoke", pos, 0.65)
+				_play("fire", pos, 0.45)
+		"wreck_foam":
+			if _near_camera(pos):
+				_play("splash", pos, clampf(e["size"] / 3.0, 0.7, 2.2))
+				_play("smoke", pos + Vector3.UP, 0.65)
+		"wreck_splash":
+			if _near_camera(pos):
+				_play("splash", pos, 3.0)
+				_play("smoke", pos, 1.3)
+				if audio: audio.play_splash(pos)
+		"wreck_impact":
+			if _near_camera(pos):
+				_play("fire", pos + Vector3.UP, 2.2)
+				_play("smoke", pos, 2.5)
+				_play("dust", pos, 2.0)
+				_play("sparks", pos, 2.0)
+				_flash(pos, 8.0, 22.0)
+				_scorch(pos, 8.0)
+				if audio: audio.play_explosion(2.0, pos)
 		"trail":
 			if randf() < 0.35 and _near_camera(pos, 180.0):
 				_play("puff", pos, 0.8)
@@ -393,7 +429,144 @@ func _emissive(col: Color, energy: float, alpha := 1.0) -> StandardMaterial3D:
 	m.disable_receive_shadows = true
 	return m
 
+func _blast_smoke_texture(seed_value: int) -> Texture2D:
+	var noise := FastNoiseLite.new()
+	noise.seed = seed_value
+	noise.frequency = 0.052
+	noise.fractal_octaves = 5
+	var img := Image.create(128, 128, false, Image.FORMAT_RGBA8)
+	for y in 128:
+		for x in 128:
+			var p := Vector2(x - 64, y - 64) / 62.0
+			var n := noise.get_noise_2d(x, y) * 0.5 + 0.5
+			var detail := noise.get_noise_2d(x * 2.7 + 90, y * 2.7) * 0.5 + 0.5
+			var edge := clampf((1.0 - p.length() + (n - 0.5) * 0.32) * 3.4, 0.0, 1.0)
+			var alpha := edge * edge * (0.48 + n * 0.5)
+			var shade := clampf(0.22 + n * 0.62 + detail * 0.18 - p.y * 0.13, 0.08, 1.0)
+			img.set_pixel(x, y, Color(shade, shade, shade, alpha))
+	return ImageTexture.create_from_image(img)
+
+func _nuclear_cloud(pos: Vector3, radius: float) -> void:
+	if get_tree().get_nodes_in_group("nuclear_cloud").size() >= 3: return
+	# Layered textured smoke has soft, broken edges instead of solid sphere lobes.
+	var stem := Node3D.new()
+	var cap := Node3D.new()
+	cap.add_to_group("nuclear_cloud")
+	add_child(stem)
+	add_child(cap)
+	stem.global_position = pos
+	cap.global_position = pos
+	stem.scale = Vector3.ONE * 0.02
+	cap.scale = Vector3.ONE * 0.02
+	var materials: Array[StandardMaterial3D] = []
+	for i in 8:
+		var mat := StandardMaterial3D.new()
+		mat.albedo_texture = blast_smoke_textures[i % 4]
+		mat.albedo_color = Color(0.82, 0.78, 0.69, 0.95) if i < 4 else Color(0.42, 0.38, 0.32, 0.95)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+		mat.billboard_keep_scale = true
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.disable_receive_shadows = true
+		materials.append(mat)
+	for i in 90:
+		var puff := MeshInstance3D.new()
+		puff.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var mesh := QuadMesh.new()
+		var a := i * 2.39996
+		if i < 30:
+			var h := float(i) / 29.0
+			mesh.size = Vector2.ONE * radius * (0.35 + 0.12 * sin(i * 1.7))
+			puff.mesh = mesh
+			puff.material_override = materials[4 + i % 4]
+			stem.add_child(puff)
+			puff.position = Vector3(cos(a) * radius * 0.08, h * radius * 1.85, sin(a) * radius * 0.08)
+		else:
+			var spread := sqrt(float(i - 30) / 60.0)
+			mesh.size = Vector2(1.0, 0.72) * radius * (0.42 + 0.18 * sin(i * 1.3) * sin(i * 1.3))
+			puff.mesh = mesh
+			puff.material_override = materials[i % 4]
+			cap.add_child(puff)
+			puff.position = Vector3(cos(a) * spread * radius * 0.65, radius * (0.15 * cos(i * 1.2) + 0.16 * (1.0 - spread)), sin(a) * spread * radius * 0.65)
+	var rise := create_tween().set_parallel(true)
+	rise.tween_property(stem, "scale", Vector3.ONE, 5.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	rise.tween_property(cap, "scale", Vector3.ONE, 5.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	rise.tween_property(cap, "global_position", pos + Vector3.UP * radius * 2.0, 5.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	var expansion := create_tween()
+	expansion.tween_interval(5.0)
+	expansion.tween_property(cap, "scale", Vector3(1.18, 1.05, 1.18), 13.0)
+	expansion.parallel().tween_property(cap, "global_position", pos + Vector3.UP * radius * 2.3, 13.0)
+	expansion.parallel().tween_property(stem, "scale", Vector3(1.05, 1.15, 1.05), 13.0)
+	var drift := create_tween().set_parallel(true)
+	drift.tween_property(cap, "rotation:y", 0.35, 18.0)
+	drift.tween_property(stem, "rotation:y", -0.2, 18.0)
+	for mat in materials:
+		var fade := create_tween()
+		fade.tween_interval(8.0)
+		fade.tween_property(mat, "albedo_color:a", 0.0, 11.0)
+	get_tree().create_timer(20.0).timeout.connect(func(): stem.queue_free(); cap.queue_free())
+
+func _nuclear_screen_flash(pos: Vector3) -> void:
+	if rig == null or not _near_camera(pos, 450.0): return
+	# Keep one overlay: simultaneous impacts refresh the flash without stacking
+	# screen-copy passes or obscuring the interface.
+	for old in get_tree().get_nodes_in_group("blast_overlay"):
+		old.queue_free()
+	var layer := CanvasLayer.new()
+	layer.layer = 8
+	layer.add_to_group("blast_overlay")
+	add_child(layer)
+	var screen := ColorRect.new()
+	screen.set_anchors_preset(Control.PRESET_FULL_RECT)
+	screen.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://shaders/blast_screen.gdshader")
+	var viewport_size := get_viewport().get_visible_rect().size
+	var center: Vector2 = rig.cam.unproject_position(pos) / viewport_size
+	mat.set_shader_parameter("center", center)
+	mat.set_shader_parameter("aspect", viewport_size.x / viewport_size.y)
+	mat.set_shader_parameter("flash", 1.0)
+	mat.set_shader_parameter("strength", clampf(1.1 - pos.distance_to(rig.target) / 700.0, 0.12, 1.0))
+	screen.material = mat
+	layer.add_child(screen)
+	var flash := layer.create_tween()
+	flash.tween_interval(0.09)
+	flash.tween_method(func(v: float): mat.set_shader_parameter("flash", v), 1.0, 0.55, 0.13)
+	flash.tween_method(func(v: float): mat.set_shader_parameter("flash", v), 0.55, 0.82, 0.09)
+	flash.tween_method(func(v: float): mat.set_shader_parameter("flash", v), 0.82, 0.0, 1.25).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	var wave := layer.create_tween()
+	wave.tween_interval(0.25)
+	wave.tween_method(func(v: float): mat.set_shader_parameter("wave", v), 0.0, 1.0, 2.4)
+	wave.tween_callback(layer.queue_free)
+
+func _nuclear_dust_front(pos: Vector3, radius: float) -> void:
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_RING
+	pm.emission_ring_axis = Vector3.UP
+	pm.emission_ring_radius = radius * 0.18
+	pm.emission_ring_inner_radius = radius * 0.12
+	pm.emission_ring_height = 0.6
+	pm.direction = Vector3.UP
+	pm.initial_velocity_min = 0.5
+	pm.initial_velocity_max = 1.5
+	pm.radial_velocity_min = radius / 1.5
+	pm.radial_velocity_max = radius / 1.5
+	pm.gravity = Vector3(0, 0.35, 0)
+	pm.scale_min = 1.0
+	pm.scale_max = 2.8
+	pm.scale_curve = _curve([[0.0, 0.15], [0.3, 0.7], [1.0, 1.5]])
+	pm.color_ramp = _ramp([[0.0, Color(0.7, 0.65, 0.52, 0)], [0.08, Color(0.65, 0.58, 0.45, 0.8)], [0.65, Color(0.45, 0.4, 0.32, 0.5)], [1.0, Color(0.5, 0.46, 0.38, 0)]])
+	var dust := _particles(180, 3.5, _quad(5.0), _mat(smoke_tex, false), pm)
+	dust.explosiveness = 1.0
+	dust.visibility_aabb = AABB(Vector3(-radius * 4, -10, -radius * 4), Vector3(radius * 8, radius * 3, radius * 8))
+	add_child(dust)
+	dust.global_position = pos + Vector3.UP
+	dust.restart()
+	get_tree().create_timer(4.0).timeout.connect(dust.queue_free)
+
 func _nuke(pos: Vector3, radius: float) -> void:
+	last_nuclear_msec = Time.get_ticks_msec()
+	_nuclear_screen_flash(pos)
 	var r: float = max(radius, 20.0)
 	# blinding flash
 	var flash := OmniLight3D.new()
@@ -418,64 +591,36 @@ func _nuke(pos: Vector3, radius: float) -> void:
 	add_child(fb)
 	fb.global_position = pos
 	var t2 := create_tween().set_parallel(true)
-	t2.tween_property(fb, "scale", Vector3.ONE * r * 0.55, 1.0).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_EXPO)
+	t2.tween_property(fb, "scale", Vector3.ONE * r * 0.4, 1.0).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_EXPO)
 	t2.tween_property(fb, "global_position", pos + Vector3.UP * r * 1.2, 6.0)
-	t2.tween_property(fmat, "emission_energy_multiplier", 0.2, 6.0)
-	t2.tween_property(fmat, "albedo_color", Color(0.25, 0.2, 0.18, 0.0), 8.0)
+	t2.tween_property(fmat, "emission_energy_multiplier", 0.2, 3.0)
+	t2.tween_property(fmat, "albedo_color", Color(0.25, 0.2, 0.18, 0.0), 3.0)
 	t2.chain().tween_callback(fb.queue_free)
-	# mushroom stem + cap
-	var smoke := StandardMaterial3D.new()
-	smoke.albedo_color = Color(0.42, 0.38, 0.34, 0.9)
-	smoke.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	smoke.albedo_texture = smoke_tex
-	var stem := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = 0.35
-	cm.bottom_radius = 0.6
-	cm.height = 1.0
-	stem.mesh = cm
-	stem.material_override = smoke
-	add_child(stem)
-	stem.global_position = pos
-	stem.scale = Vector3(r * 0.25, 0.1, r * 0.25)
-	var cap := MeshInstance3D.new()
-	var cs := SphereMesh.new()
-	cs.radius = 1.0
-	cs.height = 1.2
-	cap.mesh = cs
-	cap.material_override = smoke
-	add_child(cap)
-	cap.global_position = pos
-	cap.scale = Vector3.ONE * 0.1
-	var t3 := create_tween().set_parallel(true)
-	t3.tween_property(stem, "scale", Vector3(r * 0.22, r * 1.6, r * 0.22), 5.0).set_ease(Tween.EASE_OUT)
-	t3.tween_property(stem, "global_position", pos + Vector3.UP * r * 0.8, 5.0).set_ease(Tween.EASE_OUT)
-	t3.tween_property(cap, "scale", Vector3(r * 0.9, r * 0.5, r * 0.9), 5.0).set_ease(Tween.EASE_OUT)
-	t3.tween_property(cap, "global_position", pos + Vector3.UP * r * 1.7, 5.0).set_ease(Tween.EASE_OUT)
-	t3.chain().tween_property(smoke, "albedo_color:a", 0.0, 14.0)
-	t3.chain().tween_callback(func(): stem.queue_free(); cap.queue_free())
-	# shockwave ring along the ground
+	_nuclear_cloud(pos, r)
+	_nuclear_dust_front(pos, r)
+	# Thin condensation front and expanding ground dust.
+
 	var ring := MeshInstance3D.new()
 	var tm := TorusMesh.new()
-	tm.inner_radius = 0.92
+	tm.inner_radius = 0.985
 	tm.outer_radius = 1.0
 	ring.mesh = tm
-	var rmat := _emissive(Color(1.0, 0.9, 0.75), 2.0, 0.8)
+	var rmat := _emissive(Color(0.85, 0.83, 0.78), 0.15, 0.35)
 	ring.material_override = rmat
 	add_child(ring)
 	ring.global_position = pos + Vector3.UP * 1.0
 	var t4 := create_tween().set_parallel(true)
-	t4.tween_property(ring, "scale", Vector3(r * 2.4, 3.0, r * 2.4), 2.2).set_ease(Tween.EASE_OUT)
-	t4.tween_property(rmat, "albedo_color:a", 0.0, 2.2)
+	t4.tween_property(ring, "scale", Vector3(r, 2.0, r), 1.5).set_ease(Tween.EASE_OUT)
+	t4.tween_property(rmat, "albedo_color:a", 0.0, 1.5)
 	t4.chain().tween_callback(ring.queue_free)
-	for k in 6:
-		var a := k * TAU / 6.0
-		_play("fire", pos + Vector3(cos(a), 0.3, sin(a)) * r * 0.4, 6.0)
-		_play("smoke", pos + Vector3(cos(a), 0.0, sin(a)) * r * 0.6, 7.0)
+	for k in 8:
+		var a := k * TAU / 8.0
+		_play("dust", pos + Vector3(cos(a), 0.3, sin(a)) * r * 0.8, 3.0)
+		_play("fire", pos + Vector3(cos(a), 0.3, sin(a)) * r * 0.4, 3.0)
+		_play("smoke", pos + Vector3(cos(a), 0.0, sin(a)) * r * 0.6, 3.0)
 	_scorch(pos, r * 2.2)
 	if audio:
-		audio.ui("explosion_big_0", 6.0)
-		audio._play3d(audio._load("collapse"), pos, 10.0)
+		audio.nuclear_blast(pos)
 	if rig and rig.has_method("shake"):
 		rig.shake(1.6)
 

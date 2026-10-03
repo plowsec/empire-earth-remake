@@ -84,7 +84,7 @@ fn surface_for(name: &str, def: &Def) -> Option<(i32, i32, f32, f32)> {
 
 pub fn visual_scale(def: &Def) -> f32 {
     match def.class() {
-        Class::Citizen | Class::Infantry => 1.75,
+        Class::Citizen | Class::Infantry => 1.48,
         Class::Vehicle => 0.88,
         _ => 1.0,
     }
@@ -166,7 +166,7 @@ impl Models {
             m.set_shader_parameter("detail_noise", &n.to_variant());
         }
         let wear = match def.class() {
-            Class::Building => 0.35,
+            Class::Building => 0.62,
             Class::Vehicle | Class::Ship => 0.3,
             Class::Resource => 0.0,
             _ => 0.12,

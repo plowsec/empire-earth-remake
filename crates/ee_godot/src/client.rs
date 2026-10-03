@@ -58,8 +58,11 @@ struct Corpse {
     color: Color,
     t: f32,
     life: f32,
-    kind: u8, // 0 infantry, 1 vehicle wreck, 2 building collapse, 3 aircraft fall
+    kind: u8, // 0 infantry, 1 vehicle wreck, 2 building collapse, 3 aircraft, 4 ship
     vel: Vector3,
+    impacted: bool,
+    fx_at: f32,
+    roll: f32,
 }
 
 struct Tracer {
@@ -326,6 +329,11 @@ impl Client {
         }
     }
 
+    pub fn wreck_counts(&self) -> (usize, usize, usize) {
+        (self.corpses.iter().filter(|c| c.kind == 3).count(),
+         self.corpses.iter().filter(|c| c.kind == 4).count(), self.corpses.len())
+    }
+
     fn sees(&self, x: i32, y: i32) -> bool {
         self.session.world.visible(self.me, x, y)
     }
@@ -389,7 +397,7 @@ impl Client {
                 let water = self.session.world.map.is_water(tx, ty);
                 let p = self.world_pos3(*pos, if water { Layer::Water } else { Layer::Land }, 0);
                 self.events.push(ClientEvent {
-                    kind: if water { "splash" } else { "impact" },
+                    kind: if water && *dmg_type != DamageType::Nuclear as u8 { "splash" } else { "impact" },
                     pos: p,
                     to: p,
                     size: splash.to_f32() * TILE,
@@ -398,7 +406,9 @@ impl Client {
                     mine: false,
                 });
             }
-            SimEvent::Died { id, def, owner, pos, .. } => {
+            SimEvent::Died { id, def, owner, pos, facing, velocity, inside, .. } => {
+                // Cargo and parked aircraft disappear with their carrier/airfield.
+                if *inside != 0 { return; }
                 let d = data().def(*def);
                 let (tx, ty) = pos.tile();
                 if *owner == me && d.is_unit() {
@@ -413,24 +423,27 @@ impl Client {
                 let model = self.models.by_def[*def as usize];
                 let w = &self.session.world;
                 let color = w.players.get(*owner as usize).map(|pl| player_color(pl.color)).unwrap_or(Color::WHITE);
-                // last known facing isn't available after death: face a stable direction
-                let yaw = (*id as f32 * 1.618).fract() * std::f32::consts::TAU;
+                // Preserve the flight/course direction at the instant of destruction.
+                let yaw = if d.is_building() { 0.0 } else { facing.x.to_f32().atan2(facing.y.to_f32()) };
                 let xf = Transform3D::new(Basis::from_axis_angle(Vector3::UP, yaw), p);
                 let kind = match d.class() {
                     Class::Citizen | Class::Infantry => 0,
                     Class::Building => 2,
                     Class::Aircraft => 3,
+                    Class::Ship => 4,
                     _ => 1,
                 };
                 let life = match kind {
                     0 => 6.0,
                     1 => 9.0,
                     2 => 5.0,
-                    _ => 4.0,
+                    3 => 12.0,
+                    _ => 18.0,
                 };
                 if !d.is_resource() {
-                    let vel = if kind == 3 { Vector3::new(yaw.cos() * 18.0, -6.0, yaw.sin() * 18.0) } else { Vector3::ZERO };
-                    self.corpses.push(Corpse { model, xf, color, t: 0.0, life, kind, vel });
+                    let vel = Vector3::new(velocity.x.to_f32() * TILE, 0.0, velocity.y.to_f32() * TILE);
+                    self.corpses.push(Corpse { model, xf, color, t: 0.0, life, kind, vel,
+                        impacted: false, fx_at: 0.0, roll: if id % 2 == 0 { 1.0 } else { -1.0 } });
                     self.events.push(ClientEvent {
                         kind: "death",
                         pos: p,
@@ -447,6 +460,17 @@ impl Client {
                 } else {
                     self.static_dirty = true;
                 }
+            }
+            SimEvent::TreeFelled { id, def, pos, away } => {
+                let (tx, ty) = pos.tile();
+                if !self.sees(tx, ty) { return; }
+                let model = self.models.by_def[*def as usize];
+                let p = self.world_pos3(*pos, Layer::Land, *id);
+                let yaw = away.x.to_f32().atan2(away.y.to_f32());
+                self.corpses.push(Corpse { model, xf: Transform3D::new(Basis::from_axis_angle(Vector3::UP, yaw), p),
+                    color: Color::WHITE, t: 0.0, life: 4.0, kind: 5, vel: Vector3::ZERO,
+                    impacted: false, fx_at: 0.0, roll: 1.0 });
+                self.static_dirty = true;
             }
             SimEvent::ResourceDepleted { .. } | SimEvent::Grown { .. } => {
                 self.static_dirty = true;
@@ -870,19 +894,60 @@ impl Client {
                     xf.basis = xf.basis * Basis::from_axis_angle(Vector3::RIGHT, k * 0.12);
                     (0.0, 1.0, 4.0)
                 }
-                _ => {
-                    // aircraft spiral into the ground
-                    c.vel.y -= 9.0 * dt;
-                    xf.origin += c.vel * c.t;
-                    let gy = self.heights.at(xf.origin.x, xf.origin.z).max(0.0);
-                    if xf.origin.y < gy {
-                        xf.origin.y = gy;
+                3 => {
+                    if !c.impacted {
+                        // Ballistic descent preserves momentum; compute from elapsed
+                        // time so the trajectory does not depend on render framerate.
+                        xf.origin += c.vel * c.t + Vector3::DOWN * (2.5 * c.t + 4.9 * c.t * c.t);
+                        let gy = self.heights.at(xf.origin.x, xf.origin.z).max(0.0);
+                        xf.basis = xf.basis
+                            * Basis::from_axis_angle(Vector3::RIGHT, (c.t * 0.32).min(1.1))
+                            * Basis::from_axis_angle(Vector3::BACK, c.roll * c.t * 1.5);
+                        if xf.origin.y <= gy + 0.3 {
+                            xf.origin.y = gy + 0.3;
+                            c.impacted = true;
+                            c.xf = xf;
+                            let water = self.heights.at(xf.origin.x, xf.origin.z) < 0.0;
+                            c.kind = if water { 4 } else { 1 };
+                            c.vel = Vector3::ZERO;
+                            c.t = 0.0;
+                            c.life = if water { 7.0 } else { 10.0 };
+                            self.events.push(ClientEvent { kind: if water { "wreck_splash" } else { "wreck_impact" },
+                                pos: xf.origin, to: xf.origin, size: self.models.list[c.model].radius.max(2.0),
+                                text: String::new(), dmg: 0, mine: false });
+                        }
                     }
-                    xf.basis = xf.basis * Basis::from_axis_angle(Vector3::FORWARD, c.t * 3.0);
-                    (0.0, 1.0, 4.0)
+                    (0.0, 1.0, 16.0)
                 }
+                4 => {
+                    // Lose headway, list, then settle below the waterline. A ship
+                    // keeps its full silhouette until the hull actually submerges.
+                    xf.origin += c.vel * ((1.0 - (-c.t * 0.5).exp()) * 2.0);
+                    let settle = k * k;
+                    xf.origin.y -= settle * (self.models.list[c.model].radius * 2.0 + self.models.list[c.model].height + 3.0);
+                    xf.basis = xf.basis
+                        * Basis::from_axis_angle(Vector3::BACK, c.roll * k.powf(0.7) * 1.25)
+                        * Basis::from_axis_angle(Vector3::RIGHT, k * 0.38);
+                    (0.0, 1.0, 16.0)
+                }
+                5 => {
+                    let fall = (c.t / 0.85).min(1.0);
+                    xf.basis = xf.basis * Basis::from_axis_angle(Vector3::RIGHT, fall * fall * 1.5);
+                    xf.origin.y -= (c.t - 2.0).max(0.0) * 1.2;
+                    (0.0, 1.0, 16.0)
+                }
+                _ => (0.0, 1.0, 16.0),
             };
             let custom = [if c.kind == 0 { c.t * 1.5 } else { 0.0 }, action, prog, flags];
+            if matches!(c.kind, 3 | 4) && c.t >= c.fx_at && k < 0.7
+                && Vector2::new(xf.origin.x, xf.origin.z).distance_to(cull_c) < cull_r {
+                c.fx_at = c.t + if c.kind == 3 { 0.12 } else { 0.65 };
+                let mut pos = xf.origin;
+                if c.kind == 4 { pos.y = 0.15; }
+                self.events.push(ClientEvent { kind: if c.kind == 3 { "wreck_trail" } else { "wreck_foam" },
+                    pos, to: pos, size: self.models.list[c.model].radius.max(2.0),
+                    text: String::new(), dmg: 0, mine: false });
+            }
             self.push_model(c.model, xf, c.color, custom, 0.0, false);
         }
         corpses.retain(|c| c.t < c.life);

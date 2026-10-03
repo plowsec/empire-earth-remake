@@ -31,6 +31,10 @@ func _ready() -> void:
 		elif a.begins_with("--ai0"): start_cfg["ai_self"] = 1
 		elif a.begins_with("--stress="): stress = int(a.substr(9))
 		elif a.begins_with("--select="): select_key = a.substr(9)
+		elif a == "--featuretest":
+			var t = load("res://scripts/featuretest.gd").new()
+			t.name = "FeatureTest"
+			call_deferred("add_child", t)
 		elif a == "--autotest":
 			var t = load("res://scripts/autotest.gd").new()
 			t.name = "AutoTest"

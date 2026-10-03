@@ -204,12 +204,11 @@ func _build() -> void:
 	menu_btn.pressed.connect(_toggle_menu)
 	hb.add_child(menu_btn)
 
-	# --- bottom console
+	# Empire Earth-style shallow command strip, with raised side panels.
 	var console := PanelContainer.new()
 	console.add_theme_stylebox_override("panel", _console_style())
 	console.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	console.anchor_top = 1.0
-	console.offset_top = -224
+	console.offset_top = -112
 	console.offset_bottom = 0
 	console.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(console)
@@ -217,16 +216,48 @@ func _build() -> void:
 	row.add_theme_constant_override("separation", 12)
 	console.add_child(row)
 
-	# minimap
+	var utility := VBoxContainer.new()
+	utility.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	utility.add_theme_constant_override("separation", 8)
+	row.add_child(utility)
+	var strip := HBoxContainer.new()
+	strip.add_theme_constant_override("separation", 6)
+	utility.add_child(strip)
+	idle_btn = Button.new()
+	idle_btn.custom_minimum_size = Vector2(76, 36)
+	idle_btn.icon = _icon("citizen")
+	idle_btn.expand_icon = true
+	idle_btn.tooltip_text = "Idle citizens (;). Shift-click: select all idle citizens."
+	idle_btn.pressed.connect(_on_idle_pressed)
+	strip.add_child(idle_btn)
+	group_bar = HBoxContainer.new()
+	group_bar.add_theme_constant_override("separation", 4)
+	strip.add_child(group_bar)
+	utility.add_child(_label("SELECT  Left click / drag     COMMAND  Right click     ATTACK  A", 13, Color(0.60, 0.61, 0.57)))
+
+	var card_frame := PanelContainer.new()
+	card_frame.add_theme_stylebox_override("panel", _inset_style())
+	row.add_child(card_frame)
+	card_grid = GridContainer.new()
+	card_grid.columns = 10
+	card_grid.add_theme_constant_override("h_separation", 4)
+	card_grid.add_theme_constant_override("v_separation", 4)
+	card_grid.custom_minimum_size = Vector2(10 * 54 + 9 * 4, 2 * 42 + 4)
+	card_frame.add_child(card_grid)
+
+	# Raised left side: minimap. The center of the battlefield stays unobstructed.
 	var mm_frame := PanelContainer.new()
 	mm_frame.add_theme_stylebox_override("panel", _inset_style())
-	row.add_child(mm_frame)
+	mm_frame.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	mm_frame.position = Vector2(8, -322)
+	mm_frame.size = Vector2(210, 204)
+	root.add_child(mm_frame)
 	minimap = TextureRect.new()
 	minimap.texture = gv.minimap_texture()
 	minimap.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	minimap.stretch_mode = TextureRect.STRETCH_SCALE
 	minimap.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	minimap.custom_minimum_size = Vector2(194, 194)
+	minimap.custom_minimum_size = Vector2(194, 192)
 	minimap.mouse_filter = Control.MOUSE_FILTER_STOP
 	minimap.gui_input.connect(_on_minimap_input)
 	mm_frame.add_child(minimap)
@@ -236,50 +267,30 @@ func _build() -> void:
 	minimap_overlay.draw.connect(_draw_minimap_overlay)
 	minimap.add_child(minimap_overlay)
 
-	# selection + production queue
-	var mid := PanelContainer.new()
-	mid.add_theme_stylebox_override("panel", _inset_style())
-	mid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(mid)
+	# Raised right side: selection overview, aligned above the command icons.
+	sel_panel = PanelContainer.new()
+	sel_panel.add_theme_stylebox_override("panel", _inset_style())
+	sel_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	sel_panel.position = Vector2(-610, -322)
+	sel_panel.size = Vector2(602, 204)
+	root.add_child(sel_panel)
 	var sv := VBoxContainer.new()
 	sv.add_theme_constant_override("separation", 4)
-	mid.add_child(sv)
+	sel_panel.add_child(sv)
+	var overview := ScrollContainer.new()
+	overview.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	overview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sv.add_child(overview)
+	sel_box = VBoxContainer.new()
+	sel_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	overview.add_child(sel_box)
+	var queue_scroll := ScrollContainer.new()
+	queue_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	queue_scroll.custom_minimum_size.y = 40
+	sv.add_child(queue_scroll)
 	queue_box = HBoxContainer.new()
 	queue_box.add_theme_constant_override("separation", 4)
-	sv.add_child(queue_box)
-	sel_box = VBoxContainer.new()
-	sel_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	sv.add_child(sel_box)
-	sel_panel = mid
-
-	# command card
-	var card_frame := PanelContainer.new()
-	card_frame.add_theme_stylebox_override("panel", _inset_style())
-	row.add_child(card_frame)
-	card_grid = GridContainer.new()
-	card_grid.columns = 5
-	card_grid.add_theme_constant_override("h_separation", 5)
-	card_grid.add_theme_constant_override("v_separation", 5)
-	card_grid.custom_minimum_size = Vector2(5 * 70 + 4 * 5, 3 * 62 + 2 * 5)
-	card_frame.add_child(card_grid)
-
-	# --- idle citizens button + control group bar (just above the console)
-	var strip := HBoxContainer.new()
-	strip.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	strip.position = Vector2(10, -270)
-	strip.add_theme_constant_override("separation", 6)
-	strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(strip)
-	idle_btn = Button.new()
-	idle_btn.custom_minimum_size = Vector2(86, 40)
-	idle_btn.icon = _icon("citizen")
-	idle_btn.expand_icon = true
-	idle_btn.tooltip_text = "Idle citizens (;). Shift-click: select all idle citizens."
-	idle_btn.pressed.connect(_on_idle_pressed)
-	strip.add_child(idle_btn)
-	group_bar = HBoxContainer.new()
-	group_bar.add_theme_constant_override("separation", 4)
-	strip.add_child(group_bar)
+	queue_scroll.add_child(queue_box)
 
 	# --- tooltip
 	tooltip = PanelContainer.new()
@@ -417,6 +428,7 @@ func _refresh_selection() -> void:
 	var key := str(info.size())
 	for x in info:
 		key += "|%s:%d:%s:%s" % [x["id"], x["hp"], x.get("order", ""), x.get("progress", 0.0)]
+	sel_panel.visible = not info.is_empty()
 	var q: Array = gv.production_queue()
 	for item in q:
 		key += "|q%s%.2f" % [item["key"], item["progress"]]
@@ -453,18 +465,21 @@ func _refresh_selection() -> void:
 		var head := HBoxContainer.new()
 		head.add_theme_constant_override("separation", 14)
 		var sw := ColorRect.new()
-		sw.custom_minimum_size = Vector2(5, 64)
+		sw.custom_minimum_size = Vector2(4, 48)
 		sw.color = x["owner_color"]
 		head.add_child(sw)
 		var portrait := TextureRect.new()
 		portrait.texture = _icon(x["key"])
-		portrait.custom_minimum_size = Vector2(76, 76)
+		portrait.custom_minimum_size = Vector2(52, 52)
 		portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		head.add_child(portrait)
 		var nv := VBoxContainer.new()
-		nv.add_child(_label(x["name"], 24, ACCENT, true))
-		nv.add_child(_label(x.get("role", ""), 14, Color(0.75, 0.73, 0.68)))
+		nv.add_child(_label(x["name"], 20, ACCENT, true))
+		var role := _label(x.get("role", ""), 13, Color(0.75, 0.73, 0.68))
+		role.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		nv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		nv.add_child(role)
 		head.add_child(nv)
 		sel_box.add_child(head)
 		var hp := ProgressBar.new()
@@ -483,20 +498,22 @@ func _refresh_selection() -> void:
 		if x.has("fuel"): stats += "   Fuel %d%%" % int(x["fuel"] * 100)
 		if x.get("kills", 0) > 0: stats += "   Kills %d" % x["kills"]
 		if x.has("complete") and not x["complete"]: stats += "   Under construction %d%%" % int(x["progress"] * 100)
-		sel_box.add_child(_label(stats, 15))
+		var stats_label := _label(stats, 14)
+		stats_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		sel_box.add_child(stats_label)
 		if x.get("own", false) and x.has("order"):
 			sel_box.add_child(_label("Order: " + str(x["order"]), 13, Color(0.6, 0.62, 0.58)))
 		return
 	# multi-select grid
 	var grid := GridContainer.new()
-	grid.columns = 16
+	grid.columns = 12
 	grid.add_theme_constant_override("h_separation", 3)
 	grid.add_theme_constant_override("v_separation", 3)
 	sel_box.add_child(_label("%d selected" % info.size(), 15, ACCENT, true))
 	sel_box.add_child(grid)
 	for x in info:
 		var b := Button.new()
-		b.custom_minimum_size = Vector2(44, 44)
+		b.custom_minimum_size = Vector2(42, 40)
 		var ic: Texture2D = _icon(x["key"])
 		if ic:
 			b.icon = ic
@@ -568,7 +585,7 @@ func _refresh_card() -> void:
 	for c in card_grid.get_children(): c.queue_free()
 	for b in card:
 		var btn := Button.new()
-		btn.custom_minimum_size = Vector2(70, 62)
+		btn.custom_minimum_size = Vector2(54, 42)
 		btn.clip_text = true
 		var a: String = b["action"]
 		var k: String = b["key"]
@@ -577,7 +594,7 @@ func _refresh_card() -> void:
 			btn.icon = ic
 			btn.expand_icon = true
 			btn.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
-			btn.add_theme_constant_override("icon_max_width", 56)
+			btn.add_theme_constant_override("icon_max_width", 38)
 		else:
 			var label: String = b["label"]
 			btn.text = label if label.length() <= 10 else label.left(9) + "."
@@ -594,7 +611,7 @@ func _refresh_card() -> void:
 			btn.add_child(hl)
 		if a == "research":
 			var tl := _label("R", 11, Color(0.6, 0.85, 1.0), true)
-			tl.position = Vector2(58, 1)
+			tl.position = Vector2(43, 1)
 			tl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			btn.add_child(tl)
 		btn.pressed.connect(func(): _do_action(a, k))
@@ -621,8 +638,8 @@ func _show_tooltip(b: Dictionary, btn: Control) -> void:
 	var vs := get_viewport().get_visible_rect().size
 	tooltip.position = Vector2(min(btn.global_position.x, vs.x - tooltip.size.x - 8), btn.global_position.y - tooltip.size.y - 10)
 
-func _do_action(action: String, key: String) -> void:
-	if action == "train" and Input.is_key_pressed(KEY_SHIFT):
+func _do_action(action: String, key: String, shift := false) -> void:
+	if action == "train" and (shift or Input.is_key_pressed(KEY_SHIFT)):
 		action = "train_mass"
 	if main and main.has_node("Audio"):
 		main.get_node("Audio").ui("ui_click", -10.0)
@@ -861,7 +878,7 @@ func _on_key(k: InputEventKey) -> void:
 	var card: Array = gv.command_card()
 	for b in card:
 		if b["hotkey"] == hk and (b["enabled"] or b["action"] == "build"):
-			_do_action(b["action"], b["key"])
+			_do_action(b["action"], b["key"], k.shift_pressed)
 			return
 	if code == KEY_A and gv.selection_count() > 0:
 		mode = "attack_move"

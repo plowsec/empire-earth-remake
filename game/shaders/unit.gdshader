@@ -123,8 +123,8 @@ void vertex() {
 		float ph = wp.x * 0.13 + wp.z * 0.17;
 		float sway = sin(TIME * 1.3 + ph) * 0.5 + sin(TIME * 2.9 + ph * 1.7) * 0.25;
 		float k = pow(max(VERTEX.y, 0.0) / max(model_height, 0.1), 1.6);
-		VERTEX.x += sway * k * 0.10 * model_height;
-		VERTEX.z += sway * k * 0.05 * model_height;
+		VERTEX.x += sway * k * 0.035 * model_height;
+		VERTEX.z += sway * k * 0.02 * model_height;
 	}
 	v_local = VERTEX;
 	v_onormal = NORMAL;
@@ -147,11 +147,6 @@ void fragment() {
 	float lum = dot(base, vec3(0.299, 0.587, 0.114));
 	vec3 team = v_team * clamp(0.32 + lum * 0.85, 0.3, 1.0);
 	base = mix(base, team, team_mask);
-
-	// procedural grime / wear: darker toward the ground, noisy streaks
-	float n = texture(detail_noise, v_local.xz * 0.9 + v_local.yy * 0.35).r;
-	float grime = (1.0 - smoothstep(0.0, 0.35, v_height01)) * 0.5 + (n - 0.5) * 0.6;
-	base *= 1.0 - clamp(grime, 0.0, 1.0) * wear;
 
 	float srough = roughness;
 	if (surface_kind >= 0) {
@@ -183,6 +178,11 @@ void fragment() {
 			base *= mix(1.0, clamp(tl / 0.42, 0.55, 1.5), surface_strength);
 		}
 	}
+	// procedural grime / wear: darker toward the ground, noisy streaks
+	float n = texture(detail_noise, v_local.xz * 0.65 + v_local.yy * 0.12).r;
+	float grime = (1.0 - smoothstep(0.0, 0.35, v_height01)) * 0.5 + (n - 0.35) * 0.65;
+	base *= 1.0 - clamp(grime, 0.0, 1.0) * wear;
+
 	float flags = v_custom.w;
 	int fl = int(round(flags));
 	float progress = v_custom.z;
@@ -212,6 +212,10 @@ void fragment() {
 	if ((fl & 4) != 0) {
 		// remembered (fogged) building
 		base = mix(vec3(lum), base, 0.3) * 0.45;
+	}
+	if ((fl & 16) != 0) {
+		base = mix(base, vec3(0.055, 0.045, 0.035), 0.65);
+		srough = 0.98;
 	}
 	if (use_world_fog) {
 		vec2 fog = texture(fog_tex, v_world.xz / map_size).rg;

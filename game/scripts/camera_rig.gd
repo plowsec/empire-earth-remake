@@ -1,6 +1,6 @@
 extends Node3D
-## RTS camera: WASD/arrows/edge pan, wheel zoom (with smooth pitch), Q/E or
-## middle-drag rotate. Clamped to the map.
+## RTS camera: arrows/edge pan, wheel zoom, middle-drag/trackpad pan,
+## Shift+middle-drag or comma/period rotate. Clamped to the map.
 
 @export var pan_speed := 70.0
 @export var edge_margin := 14
@@ -41,7 +41,7 @@ func _unhandled_input(e: InputEvent) -> void:
 		elif e.button_index == MOUSE_BUTTON_MIDDLE:
 			_mid_drag = e.pressed
 	elif e is InputEventMouseMotion and _mid_drag:
-		if Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_ALT):
+		if e.shift_pressed or e.alt_pressed:
 			_yaw_goal -= e.relative.x * 0.006
 		else:
 			# grab-and-drag the map
@@ -84,6 +84,7 @@ func _process(dt: float) -> void:
 	dist = lerp(dist, _dist_goal, 1.0 - exp(-dt * 10.0))
 	yaw = lerp_angle(yaw, _yaw_goal, 1.0 - exp(-dt * 10.0))
 	_apply()
+	_shake *= exp(-dt * 4.0)
 
 func _apply() -> void:
 	# pitch flattens slightly as we zoom in for a more cinematic close-up
@@ -99,7 +100,6 @@ func _apply() -> void:
 	cam.look_at(target, Vector3.UP)
 	if _shake > 0.01:
 		cam.global_position += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * _shake
-		_shake *= 0.92
 	cam.fov = lerp(42.0, 38.0, t)
 	cam.far = 2400.0
 	cam.near = 0.5

@@ -89,6 +89,27 @@ func _play3d(stream: AudioStream, pos: Vector3, vol := 0.0, pitch_var := 0.08) -
 	v.pitch_scale = 1.0 + randf_range(-pitch_var, pitch_var)
 	v.play()
 
+func nuclear_blast(pos: Vector3) -> void:
+	# A dedicated voice preserves the long tail when combat/UI sounds arrive.
+	if get_tree().get_nodes_in_group("nuclear_audio").size() >= 3:
+		return
+	var voice := AudioStreamPlayer3D.new()
+	voice.add_to_group("nuclear_audio")
+	voice.bus = "SFX"
+	voice.stream = _load("nuclear_blast")
+	voice.unit_size = 180.0
+	voice.max_distance = 2200.0
+	voice.volume_db = -3.0
+	voice.panning_strength = 0.45
+	add_child(voice)
+	voice.global_position = pos
+	voice.finished.connect(voice.queue_free)
+	var distance: float = pos.distance_to(rig.cam.global_position) if rig else 0.0
+	await get_tree().create_timer(clampf(distance / 343.0, 0.08, 1.8)).timeout
+	if is_instance_valid(voice):
+		voice.play()
+
+
 func ui(name: String, vol := -6.0) -> void:
 	var s := _load(name)
 	if s:
@@ -119,7 +140,7 @@ func play_shot(dmg: int, pos: Vector3, unit := "") -> void:
 			s = _load("torpedo")
 		"bazooka", "stinger", "helicopter", "strike_fighter", "fighter", "aa_site":
 			s = _pick("missile", 3); cat = "missile"; vol = -2.0
-		"bomber":
+		"bomber", "nuke_bomber":
 			return
 		_:
 			s = _pick("rifle", 4)
