@@ -131,6 +131,18 @@ prints per-player economy/army/AI-state timelines (incl. units trapped in walled
 pockets; `--dump-trapped` draws the pocket), and verifies the recorded checksums
 (any divergence is reported with its tick).
 
+```sh
+ee_headless robust <file.eerep> [minutes_between_reports]
+```
+
+plays your recorded game against the *current* AI: the original game runs alongside,
+and each of your commands is translated into the new game (your units/buildings by "n-th
+of that kind you created", resources by tile, enemy targets by kind and position, building
+plots to the same or nearest free tile). Your economy and development track the original
+until combat makes the games differ; the report shows both side by side plus how many of
+your commands were replayed exactly, adapted or dropped. Replays record the simulation
+build that made them and the tools warn when it differs.
+
 ## Multiplayer readiness
 
 The game is lockstep-ready but has no network transport yet:

@@ -77,6 +77,9 @@ pub struct Replay {
     /// command latency the session ran with (AI commands land this many ticks later)
     #[serde(default = "one")]
     pub input_delay: u32,
+    /// simulation build that recorded it (see `ee_sim::SIM_VERSION`)
+    #[serde(default)]
+    pub sim_version: String,
 }
 
 fn one() -> u32 {
@@ -262,6 +265,7 @@ impl Session {
             checksums: self.checksums.iter().copied().filter(|(t, _)| t % 1200 == 0).collect(),
             end_tick: self.world.tick,
             input_delay: self.input_delay,
+            sim_version: ee_sim::SIM_VERSION.to_string(),
         }
     }
 }

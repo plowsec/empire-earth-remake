@@ -2,6 +2,8 @@ use ee_sim::map::Terrain;
 use ee_sim::mapgen::{generate, MapParams};
 use std::io::Write;
 
+mod robust;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
@@ -68,13 +70,19 @@ fn main() {
             let pop: i32 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(300);
             run_match(seed, players, minutes, diff, pop, args.get(7).cloned());
         }
+        Some("robust") => {
+            let path = args.get(2).cloned().unwrap_or_default();
+            let every: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(5);
+            let reveal_at: Option<u32> = args.iter().find_map(|a| a.strip_prefix("--reveal-at=").and_then(|v| v.parse().ok()));
+            robust::run(&path, every, reveal_at);
+        }
         Some("replay") => {
             let path = args.get(2).cloned().unwrap_or_default();
             let every: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2);
             let exact = args.iter().any(|a| a == "--exact");
             run_replay_file(&path, every, exact);
         }
-        _ => eprintln!("usage: ee_headless map <seed> <players> <out.ppm> | match <seed> <players> <minutes> <difficulty> [pop_limit] [record.eerep] | replay <file.eerep> [report_every_minutes]"),
+        _ => eprintln!("usage: ee_headless map <seed> <players> <out.ppm> | match <seed> <players> <minutes> <difficulty> [pop_limit] [record.eerep] | replay <file.eerep> [report_every_minutes] [--exact] | robust <file.eerep> [report_every_minutes]"),
     }
 }
 
@@ -260,6 +268,7 @@ fn run_replay_file(path: &str, every_min: u32, exact: bool) {
     if rep.data_hash != ee_sim::data().hash {
         println!("WARNING: game data changed since this replay was recorded; it will diverge");
     }
+    sim_version_check(&rep);
     let mut s = Session::single_player(cfg.clone());
     s.input_delay = rep.input_delay;
     // --reveal-at=<tick>: the player toggled the debug map reveal (diagnostics)
@@ -381,5 +390,14 @@ fn dump_trapped(w: &ee_sim::world::World) {
             }
             println!("  {row}");
         }
+    }
+}
+
+pub(crate) fn sim_version_check(rep: &ee_net::Replay) {
+    if rep.sim_version.is_empty() {
+        println!("note: replay predates sim build stamps; if the simulation changed since, playback drifts");
+    } else if rep.sim_version != ee_sim::SIM_VERSION {
+        println!("WARNING: recorded with sim build {} but this is {}: playback may drift from the real game", rep.sim_version, ee_sim::SIM_VERSION);
+        println!("         exact reproduction: git worktree add /tmp/sim {} && cargo run --release -p ee_headless ...", rep.sim_version.trim_end_matches("+dirty"));
     }
 }

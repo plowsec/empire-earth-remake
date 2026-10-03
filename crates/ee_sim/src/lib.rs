@@ -17,3 +17,7 @@ pub mod world;
 
 pub use command::{Command, CommandKind, TickCommands};
 pub use world::{data, MatchConfig, World};
+
+/// Simulation build stamp (git revision of the sim sources, "+dirty" for local edits).
+/// Replays record it: re-simulating with a different build may diverge.
+pub const SIM_VERSION: &str = env!("EE_SIM_VERSION");
