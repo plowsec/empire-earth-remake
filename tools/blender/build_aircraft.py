@@ -5,7 +5,7 @@ from mathutils import Vector
 
 import eelib as L
 
-KEYS = ["fighter", "strike_fighter", "bomber", "helicopter", "nuke_bomber"]
+KEYS = ["fighter", "strike_fighter", "bomber", "helicopter", "nuke_bomber", "icbm"]
 
 
 def fuselage(name, length, sections, mat):
@@ -194,11 +194,33 @@ def nuke_bomber(pal):
     return [ob]
 
 
+def icbm(pal):
+    """Three-stage ballistic missile lying along Y (nose -Y); the client pitches it."""
+    P = []
+    ln = 9.0
+    P.append(fuselage("body", ln, [
+        (0.0, 0.02, 0.02, 0.0), (0.06, 0.18, 0.18, 0.0), (0.16, 0.36, 0.36, 0.0), (0.22, 0.42, 0.42, 0.0),
+        (0.5, 0.46, 0.46, 0.0), (0.95, 0.5, 0.5, 0.0), (1.0, 0.44, 0.44, 0.0)], pal["white"]))
+    # stage bands and the warhead shroud
+    for t, mat in ((0.22, pal["air_dark"]), (0.5, pal["air_dark"]), (0.75, pal["air_dark"])):
+        y = -ln / 2 + t * ln
+        P.append(L.cyl("band", 0.49, 0.16, (0, y, 0), mat, 20, (math.pi / 2, 0, 0)))
+    P.append(L.cyl("shroud", 0.38, 1.2, (0, -ln / 2 + 1.2, 0), pal["team"], 20, (math.pi / 2, 0, 0), r2=0.2))
+    for k in range(4):
+        a = k * math.pi / 2 + math.pi / 4
+        fin = L.box("fin", (0.06, 1.1, 0.7), (math.cos(a) * 0.62, ln / 2 - 0.6, math.sin(a) * 0.62), pal["air_dark"], 0.02, rot=(0, -a + math.pi / 2, 0))
+        P.append(fin)
+    P.append(L.cyl("nozzle", 0.36, 0.5, (0, ln / 2 + 0.2, 0), pal["gunmetal"], 16, (math.pi / 2, 0, 0), r2=0.46))
+    ob = L.join(P, "body")
+    L.smooth(ob, 40)
+    return [ob]
+
+
 def build(key, out_dir, preview_dir=None):
     L.reset()
     L.clear_mat_cache()
     pal = L.P()
-    {"fighter": fighter, "strike_fighter": strike_fighter, "bomber": bomber, "helicopter": helicopter, "nuke_bomber": nuke_bomber}[key](pal)
+    {"fighter": fighter, "strike_fighter": strike_fighter, "bomber": bomber, "helicopter": helicopter, "nuke_bomber": nuke_bomber, "icbm": icbm}[key](pal)
     L.export_glb(f"{out_dir}/{key}.glb")
     if preview_dir:
         L.preview(f"{preview_dir}/{key}.png", 384, elev=35, azim=-40)

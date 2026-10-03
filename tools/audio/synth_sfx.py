@@ -433,6 +433,166 @@ def sting(major=True):
     return reverb(mix(x, timp), 2.5, 0.4)
 
 
+# ----------------------------------------------------------------------------- voices & big events
+
+def _glottal(f0, sec, jitter=0.012, shimmer=0.08):
+    """Band-limited glottal pulse train following the pitch contour f0 (array)."""
+    n = int(sec * SR)
+    f = f0 * (1 + jitter * lp(rng.standard_normal(n), 40) * 4)
+    phase = np.cumsum(f / SR)
+    ph = phase % 1.0
+    # Rosenberg-like pulse: open phase rise, quick closure
+    op = 0.6
+    g = np.where(ph < op, 0.5 * (1 - np.cos(np.pi * ph / op)), np.cos(np.pi * (ph - op) / (2 * (1 - op))))
+    g = np.diff(np.concatenate([[0], g]))  # flow derivative: brighter, voice-like
+    g *= 1 + shimmer * lp(rng.standard_normal(n), 30) * 4
+    return g
+
+
+def _formants(x, fs):
+    out = np.zeros_like(x)
+    for f, bw, gain in fs:
+        lo, hi = max(f - bw / 2, 40), min(f + bw / 2, SR / 2 - 100)
+        out += bp(x, lo, hi, 2) * gain
+    return out
+
+
+VOWELS = {
+    "a": [(800, 120, 1.0), (1200, 140, 0.6), (2600, 200, 0.25), (3400, 300, 0.12)],
+    "u": [(350, 90, 1.0), (700, 110, 0.45), (2400, 200, 0.12), (3300, 300, 0.06)],
+    "o": [(520, 100, 1.0), (900, 120, 0.55), (2500, 200, 0.15), (3300, 300, 0.07)],
+    "e": [(600, 110, 1.0), (1800, 160, 0.5), (2700, 200, 0.25), (3500, 300, 0.12)],
+}
+
+
+def death_cry(v):
+    """Empire Earth style death cries: short pained shouts/screams, each variant different."""
+    specs = [  # (sec, f_start, f_peak, f_end, vowel_a, vowel_b, growl)
+        (0.95, 210, 290, 120, "a", "u", 0.25),
+        (0.70, 160, 200, 95, "o", "u", 0.35),
+        (1.30, 330, 420, 180, "a", "a", 0.12),
+        (0.55, 190, 230, 110, "u", "o", 0.45),
+        (1.10, 250, 340, 140, "e", "a", 0.2),
+        (0.80, 140, 175, 85, "a", "o", 0.5),
+        (1.45, 280, 380, 150, "a", "e", 0.15),
+        (0.65, 230, 270, 120, "o", "a", 0.3),
+    ]
+    sec, fs, fp, fe, va, vb, growl = specs[v]
+    tt = t(sec)
+    k = tt / sec
+    peak = 0.18
+    f0 = np.where(k < peak, fs + (fp - fs) * (k / peak), fp + (fe - fp) * np.maximum((k - peak) / (1 - peak), 0) ** 1.4)
+    f0 *= 1 + 0.025 * np.sin(2 * np.pi * 6.5 * tt) * k  # strained vibrato toward the end
+    src = _glottal(f0, sec)
+    # growl: subharmonic amplitude modulation (vocal fry when the voice breaks)
+    src *= 1 + growl * np.sin(np.pi * np.cumsum(f0) / SR)
+    breath = hp(white(sec), 900) * (0.10 + 0.25 * k)
+    a = _formants(src + breath * 0.5, VOWELS[va])
+    b = _formants(src + breath * 0.5, VOWELS[vb])
+    blend = np.clip((k - 0.3) / 0.5, 0, 1)
+    voice = a * (1 - blend) + b * blend
+    env = np.clip(tt / 0.03, 0, 1) * np.clip((sec - tt) / (sec * 0.45), 0, 1) ** 1.3
+    voice = np.tanh(voice * env * 2.2 / (np.max(np.abs(voice)) + 1e-9))
+    return reverb(voice, 0.9, 0.18, 4000)
+
+
+def naval_gun(v):
+    """Battleship main battery: a deep concussive blast and a long rolling echo over water."""
+    sec = 4.5
+    tt = t(sec)
+    crack = bp(white(sec), 400, 7000) * env_exp(sec, 0.04, 0.0005) * 1.4
+    blast = sweep_lp(white(sec), 3500, 70, 1.0) * env_exp(sec, 0.5, 0.001)
+    sub = chirp(55 - v * 5, 26, sec) * env_exp(sec, 0.6, 0.003) * 1.6
+    echo = np.zeros(len(tt))
+    for d, g in ((0.45, 0.35), (1.1, 0.22), (1.9, 0.12)):
+        add_at(echo, lp(pink(2.0), 400) * env_exp(2.0, 0.5, 0.02) * g, int(d * SR))
+    return np.tanh(mix(crack, blast * 1.2, sub, echo) * 1.6)
+
+
+def bomb_whistle(v):
+    sec = 2.2
+    tt = t(sec)
+    f = 1700 * np.exp(-tt * 0.55) + 350
+    tone = np.sin(2 * np.pi * np.cumsum(f * (1 + 0.006 * np.sin(2 * np.pi * 9 * tt))) / SR)
+    wind = bp(pink(sec), 600, 3000) * 0.25
+    env = np.clip(tt / 0.4, 0, 1) * (0.4 + 0.6 * tt / sec)
+    return mix(tone * 0.5, wind) * env
+
+
+def ship_engine(v):
+    """Diesel turbines under way: a low throbbing chug with propeller wash."""
+    sec = 5.0
+    tt = t(sec)
+    rate = 7.5 + v * 2.0
+    chug = lp(brown(sec), 140) * (0.55 + 0.45 * np.sin(2 * np.pi * rate * tt) ** 2) * 2.5
+    hum = sine(48 + v * 6, sec) * 0.25 + sine(96 + v * 12, sec) * 0.1
+    wash = bp(pink(sec), 200, 1400) * 0.35
+    env = np.clip(tt / 0.8, 0, 1) * np.clip((sec - tt) / 1.2, 0, 1)
+    return mix(chug, hum, wash) * env
+
+
+def sonar_ping(v):
+    sec = 3.0
+    tt = t(sec)
+    ping = sine(1150, sec) * np.exp(-tt / 0.6) * np.clip(tt / 0.01, 0, 1)
+    return reverb(ping, 2.5, 0.55, 3000)
+
+
+def missile_launch(v):
+    """Rocket ignition and climb: hiss, thunderous roar, rumble fading upward."""
+    sec = 8.0
+    tt = t(sec)
+    ign = bp(white(sec), 1500, 8000) * env_exp(sec, 0.4, 0.002) * 0.6
+    env = np.clip((tt - 0.25) / 0.6, 0, 1) * np.exp(-np.maximum(tt - 2.0, 0) / 2.4)
+    roar = sweep_lp(pink(sec), 4500, 900, 1.2) * env * 1.5
+    crackle = np.zeros(len(tt))
+    for k in range(500):
+        i = int(rng.uniform(0.3, 6.0) * SR)
+        add_at(crackle, hp(white(0.006), 2000) * rng.uniform(0.1, 0.5) * np.exp(-i / SR / 2.5), i)
+    rumble = lp(brown(sec), 120) * env * 2.5
+    return reverb(np.tanh(mix(ign, roar, crackle * 0.5, rumble) * 1.3), 2.5, 0.3, 2500)
+
+
+def air_raid_siren(v):
+    sec = 7.0
+    tt = t(sec)
+    f = 320 + 380 * (0.5 - 0.5 * np.cos(2 * np.pi * tt / 3.5))
+    ph = np.cumsum(f) / SR
+    tone = np.sign(np.sin(2 * np.pi * ph)) * 0.3 + np.sin(2 * np.pi * ph * 2) * 0.3
+    tone = lp(tone, 2200)
+    env = np.clip(tt / 0.5, 0, 1) * np.clip((sec - tt) / 1.0, 0, 1)
+    return reverb(tone * env, 2.0, 0.35, 2500)
+
+
+def intercept_blast(v):
+    sec = 4.0
+    crack = bp(white(sec), 800, 9000) * env_exp(sec, 0.05, 0.0005) * 1.2
+    body = explosion(v, 1.4)
+    return np.tanh(mix(crack, body) * 1.4)
+
+
+def nuclear_boom():
+    """An astounding BOOM: supersonic crack, chest-crushing sub-bass and a
+    rolling thunder that goes on and on, then the long rumble of the firestorm."""
+    sec = 24.0
+    tt = t(sec)
+    crack = bp(white(sec), 300, 9000) * env_exp(sec, 0.09, 0.0003) * 2.5
+    # main blast: broadband roar opening up then closing down
+    blast = sweep_lp(white(sec), 9000, 60, 0.55) * np.clip(tt / 0.02, 0, 1) * np.exp(-tt / 2.2) * 2.4
+    # sub-bass body: a falling 45 -> 18 Hz sweep, long sustain
+    sub = chirp(46, 18, sec) * np.clip(tt / 0.05, 0, 1) * np.exp(-tt / 6.0) * 2.6
+    sub2 = chirp(70, 30, sec) * np.clip(tt / 0.03, 0, 1) * np.exp(-tt / 2.5) * 1.4
+    # thunder rolls: repeated low crashes over the next seconds
+    rolls = np.zeros(len(tt))
+    for d, g in ((0.6, 1.0), (1.3, 0.85), (2.2, 0.7), (3.4, 0.6), (5.0, 0.45), (7.2, 0.35), (9.8, 0.25), (13.0, 0.15)):
+        wave = lp(pink(5.0), 320) * env_exp(5.0, 1.2, 0.08)
+        add_at(rolls, wave * g * 1.6, int(d * SR))
+    firestorm = lp(brown(sec), 180) * np.clip((tt - 1.0) / 3.0, 0, 1) * np.exp(-np.maximum(tt - 6.0, 0) / 7.0) * 1.8
+    x = mix(crack, blast, sub, sub2, rolls, firestorm)
+    x = np.tanh(x * 1.8) * 0.9 + x * 0.1  # saturate: loud, dense, overwhelming
+    return fade_out(reverb(x, 4.0, 0.3, 1200), 3.0)
+
+
 def main():
     for v in range(4):
         save(f"rifle_{v}", rifle(v))
@@ -454,7 +614,17 @@ def main():
         save(f"flak_{v}", flak(v))
         save(f"explosion_big_{v}", explosion(v, 1.2))
         save(f"jet_{v}", jet_flyby(v))
-    save("nuclear_blast", nuclear_blast())
+    save("nuclear_blast", nuclear_boom(), 0.98)
+    for v in range(8):
+        save(f"death_{v}", death_cry(v), 0.8)
+    for v in range(2):
+        save(f"naval_gun_{v}", naval_gun(v), 0.95)
+        save(f"bomb_whistle_{v}", bomb_whistle(v), 0.6)
+        save(f"ship_engine_{v}", ship_engine(v), 0.6)
+    save("sonar_ping", sonar_ping(0), 0.5)
+    save("missile_launch", missile_launch(0), 0.95)
+    save("air_raid_siren", air_raid_siren(0), 0.7)
+    save("intercept_blast", intercept_blast(0), 0.95)
     save("nuclear_wind", nuclear_wind())
     save("debris_rain", debris_rain())
     save("aircraft_breakup", aircraft_breakup())

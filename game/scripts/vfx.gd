@@ -362,7 +362,9 @@ func on_event(e: Dictionary) -> void:
 		"death":
 			if not _near_camera(pos): return
 			var t: int = e["dmg"]
-			if t == 2:
+			if t == 0:
+				if audio: audio.play_death(pos)
+			elif t == 2:
 				var s: float = e["size"] / 10.0
 				_play("dust", pos, s * 1.4)
 				_play("fire", pos + Vector3.UP * 2.0, s * 2.5)
@@ -413,6 +415,30 @@ func on_event(e: Dictionary) -> void:
 		"trail":
 			if randf() < 0.35 and _near_camera(pos, 180.0):
 				_play("puff", pos, 0.8)
+		"missile_trail":
+			if _near_camera(pos, 400.0):
+				_play("smoke", pos, 1.1)
+				if randf() < 0.5: _play("fire", pos, 0.5)
+		"shell_trail":
+			if randf() < 0.3 and _near_camera(pos, 200.0):
+				_play("puff", pos, 0.45)
+		"wake":
+			if randf() < 0.45 and _near_camera(pos, 200.0):
+				_play("splash", pos, 0.35)
+		"missile_launch":
+			_play("smoke", pos, 5.0)
+			_play("dust", pos, 4.0)
+			_play("fire", pos + Vector3.UP * 2.0, 3.0)
+			_flash(pos + Vector3.UP * 4.0, 14.0, 60.0)
+			if audio: audio.play_big("missile_launch", pos, 6.0, 160.0)
+		"intercept":
+			_play("fire", pos, 4.0)
+			_play("smoke", pos, 4.0)
+			_play("sparks", pos, 3.0)
+			_flash(pos, 18.0, 90.0)
+			if audio: audio.play_big("intercept_blast", pos, 6.0, 200.0)
+		"engine":
+			if audio and _near_camera(pos, 160.0): audio.play_engine(e["text"], pos)
 		"contrail":
 			if _near_camera(pos, 220.0):
 				_play("puff", pos, 0.32)
@@ -465,7 +491,7 @@ func _nuclear_cloud(pos: Vector3, radius: float) -> void:
 	for i in 8:
 		var mat := StandardMaterial3D.new()
 		mat.albedo_texture = blast_smoke_textures[i % 4]
-		mat.albedo_color = Color(0.82, 0.78, 0.69, 0.95) if i < 4 else Color(0.42, 0.38, 0.32, 0.95)
+		mat.albedo_color = Color(0.97, 0.96, 0.93, 0.96) if i < 4 else Color(0.8, 0.78, 0.74, 0.95)
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
 		mat.billboard_keep_scale = true
@@ -483,7 +509,7 @@ func _nuclear_cloud(pos: Vector3, radius: float) -> void:
 			puff.mesh = mesh
 			puff.material_override = materials[4 + i % 4]
 			stem.add_child(puff)
-			puff.position = Vector3(cos(a) * radius * 0.08, h * radius * 1.85, sin(a) * radius * 0.08)
+			puff.position = Vector3(cos(a) * radius * 0.08, h * radius * 1.15, sin(a) * radius * 0.08)
 		else:
 			var spread := sqrt(float(i - 30) / 60.0)
 			mesh.size = Vector2(1.0, 0.72) * radius * (0.42 + 0.18 * sin(i * 1.3) * sin(i * 1.3))
@@ -494,11 +520,11 @@ func _nuclear_cloud(pos: Vector3, radius: float) -> void:
 	var rise := create_tween().set_parallel(true)
 	rise.tween_property(stem, "scale", Vector3.ONE, 12.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	rise.tween_property(cap, "scale", Vector3.ONE, 12.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	rise.tween_property(cap, "global_position", pos + Vector3.UP * radius * 2.0, 12.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	rise.tween_property(cap, "global_position", pos + Vector3.UP * radius * 1.25, 12.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	var expansion := create_tween()
 	expansion.tween_interval(12.0)
 	expansion.tween_property(cap, "scale", Vector3(1.3, 1.1, 1.3), 28.0)
-	expansion.parallel().tween_property(cap, "global_position", pos + Vector3.UP * radius * 2.5 + Vector3(radius * 0.4, 0, 0), 28.0)
+	expansion.parallel().tween_property(cap, "global_position", pos + Vector3.UP * radius * 1.5 + Vector3(radius * 0.3, 0, 0), 28.0)
 	expansion.parallel().tween_property(stem, "scale", Vector3(1.1, 1.2, 1.1), 28.0)
 	# the cap rolls and the stem twists as it climbs
 	var drift := create_tween().set_parallel(true)
@@ -508,7 +534,7 @@ func _nuclear_cloud(pos: Vector3, radius: float) -> void:
 		var mat := materials[i]
 		var base := mat.albedo_color
 		# lit from inside by the fireball at first, then cooling to ash grey
-		mat.albedo_color = Color(1.0, 0.62, 0.32, base.a) if i < 4 else Color(0.85, 0.42, 0.2, base.a)
+		mat.albedo_color = Color(1.0, 0.82, 0.6, base.a) if i < 4 else Color(1.0, 0.66, 0.4, base.a)
 		var cool := create_tween()
 		cool.tween_property(mat, "albedo_color", base, 11.0).set_trans(Tween.TRANS_SINE)
 		var fade := create_tween()
@@ -609,7 +635,7 @@ func _nuke(pos: Vector3, radius: float) -> void:
 	fb.add_child(glow)
 	var t2 := create_tween().set_parallel(true)
 	t2.tween_property(fb, "scale", Vector3.ONE * r * 0.42, 2.4).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_EXPO)
-	t2.tween_property(fb, "global_position", pos + Vector3.UP * r * 1.9, 13.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	t2.tween_property(fb, "global_position", pos + Vector3.UP * r * 1.2, 13.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	t2.tween_property(fmat, "emission_energy_multiplier", 1.2, 7.0)
 	t2.tween_property(glow, "light_energy", 0.0, 12.0)
 	t2.chain().tween_property(fmat, "albedo_color", Color(0.25, 0.2, 0.18, 0.0), 5.0)

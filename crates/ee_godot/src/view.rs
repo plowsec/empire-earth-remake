@@ -395,6 +395,10 @@ impl GameView {
         }
         let target = c.pick(cam, p);
         if units.is_empty() {
+            let silo = buildings.iter().any(|&b| w.get(b).map_or(false, |e| data().def(e.def).trains.iter().any(|&u| data().def(u).data.icbm) && !e.cargo.is_empty()));
+            if silo {
+                return "attack".into();
+            }
             return if target != 0 && w.get(target).map_or(false, |t| data().def(t.def).is_resource()) { "gather".into() } else { "rally".into() };
         }
         let Some(t) = w.get(target) else { return "move".into() };
@@ -706,6 +710,12 @@ impl GameView {
                 if d.data.airport && !b.cargo.is_empty() {
                     button("launch", "", "Launch Aircraft", "L", None, true, "Select the aircraft parked here.");
                 }
+                if d.data.garrison {
+                    button("ungarrison", "", &format!("Release Garrison ({})", b.cargo.len()), "U", None, !b.cargo.is_empty(), "Send the stored units back out (they walk to the rally point if set). Garrisoned units don't count toward population.");
+                }
+                if d.trains.iter().any(|&u| data().def(u).data.icbm) {
+                    button("icbm", "", &format!("Launch ICBM ({}/{})", b.cargo.len(), d.data.cargo), "L", None, !b.cargo.is_empty(), "Click the target point (or right-click it, also on the minimap). Enemy ABM sites backed by an early warning radar can shoot it down.");
+                }
                 if d.data.key == "granary" {
                     let fc = data().def(data().id("farm")).data.cost;
                     button("fields", "", "Rebuild Fields", "N", Some(&fc), true, "Lay out farms on every free plot around this granary (cost per field) and send citizens to work them.");
@@ -784,7 +794,14 @@ impl GameView {
             }
             "rtb" => c.issue(CommandKind::ReturnToBase { units }),
             "attack_move" => return "attack_move".into(),
-            "unload" => return "unload".into(),
+            "unload" | "ungarrison" => {
+                if units.is_empty() && !buildings.is_empty() {
+                    c.issue(CommandKind::Unload { units: buildings, at: ee_sim::fixed::FVec::ZERO });
+                    return GString::new();
+                }
+                return "unload".into();
+            }
+            "icbm" => return "nuke_target".into(),
             "delete" => {
                 let mut all = units;
                 all.extend(buildings);
@@ -805,6 +822,15 @@ impl GameView {
             _ => {}
         }
         GString::new()
+    }
+
+    #[func]
+    fn launch_click(&mut self, p: Vector2) {
+        let (Some(c), Some(cam)) = (self.client.as_mut(), self.camera.as_ref()) else { return };
+        if let Some(g) = c.ground_at(cam, p) {
+            let at = crate::client::from_world(g.x, g.z);
+            c.launch_at(at);
+        }
     }
 
     #[func]

@@ -6,7 +6,8 @@ from mathutils import Vector
 
 import eelib as L
 
-KEYS = ["capitol", "settlement", "house", "granary", "farm", "barracks", "tank_factory", "airport", "naval_yard", "hospital", "guard_tower", "aa_site"]
+KEYS = ["capitol", "settlement", "house", "granary", "farm", "barracks", "tank_factory", "airport", "naval_yard", "hospital", "guard_tower", "aa_site",
+        "apartments", "fortress", "radar_station", "abm_site", "missile_silo"]
 
 
 def flag(pos, pal, height=6.0, size=(1.6, 1.0)):
@@ -403,6 +404,141 @@ def aa_site(pal):
     t.location = (0, 0, 0.35)
     L.smooth(t, 30)
     return [body, t]
+
+
+def apartments(pal):
+    """Four-storey concrete housing block with balconies and a rooftop water tank."""
+    P = [ground_pad(11.6, 11.6, pal, pal["concrete_dark"], 0.15)]
+    w, d, h = 10.0, 7.5, 12.5
+    P.append(L.box("block", (w, d, h), (0, 0.6, h / 2 + 0.15), pal["concrete"], 0.05))
+    P.append(L.box("parapet", (w + 0.3, d + 0.3, 0.5), (0, 0.6, h + 0.4), pal["concrete_dark"], 0.03))
+    for f in range(4):
+        z = 1.8 + f * 3.0
+        P += windows_row(-4.2, 4.2, 0.6 - d / 2 - 0.02, z, 6, 0.9, 1.3, pal)
+        P += windows_row(-4.2, 4.2, 0.6 + d / 2 + 0.02, z, 6, 0.9, 1.3, pal)
+        if f > 0:
+            for x in (-3.0, 0.0, 3.0):
+                P.append(L.box("balcony", (2.0, 0.9, 0.12), (x, 0.6 - d / 2 - 0.45, z - 0.95), pal["concrete_dark"]))
+                P.append(L.box("rail", (2.0, 0.05, 0.7), (x, 0.6 - d / 2 - 0.88, z - 0.55), pal["steel"]))
+    P.append(L.box("door", (1.6, 0.1, 2.2), (0, 0.6 - d / 2 - 0.05, 1.25), pal["wood_dark"]))
+    P.append(L.box("canopy", (2.6, 1.2, 0.15), (0, 0.6 - d / 2 - 0.6, 2.6), pal["concrete_dark"]))
+    P.append(L.cyl("tank", 1.0, 1.8, (2.8, 1.6, h + 1.5), pal["metal_sheet"], 16))
+    for sx in (1, -1):
+        for sy in (1, -1):
+            P.append(L.cyl("leg", 0.06, 1.0, (2.8 + sx * 0.6, 1.6 + sy * 0.6, h + 0.6), pal["steel"], 6))
+    P.append(L.box("stairhouse", (2.2, 2.2, 2.0), (-3.0, 1.4, h + 1.15), pal["concrete"], 0.03))
+    P.append(L.box("vent", (0.6, 0.6, 0.8), (0.8, 2.8, h + 0.55), pal["metal_sheet"]))
+    P += flag((4.6, -3.8, 0.15), pal, 5.0)
+    body = L.join(P, "body")
+    L.smooth(body, 30)
+    return [body]
+
+
+def fortress(pal):
+    """Low concrete star fort: thick walls, four bastions, a keep with a gun turret."""
+    P = [ground_pad(15.6, 15.6, pal, pal["concrete_dark"], 0.15)]
+    s, t, h = 13.0, 1.4, 4.2
+    for sx, sy, ww, dd in ((0, -s / 2, s, t), (0, s / 2, s, t), (-s / 2, 0, t, s), (s / 2, 0, t, s)):
+        P.append(L.box("wall", (ww, dd, h), (sx, sy, h / 2 + 0.15), pal["concrete"], 0.08))
+    # crenellations
+    for k in range(9):
+        u = -s / 2 + (k + 0.5) * s / 9
+        for sx, sy in ((u, -s / 2), (u, s / 2), (-s / 2, u), (s / 2, u)):
+            P.append(L.box("merlon", (0.7, 0.7, 0.6), (sx, sy, h + 0.45), pal["concrete_dark"], 0.03))
+    for sx in (1, -1):
+        for sy in (1, -1):
+            P.append(L.cyl("bastion", 2.2, h + 0.8, (sx * s / 2, sy * s / 2, (h + 0.8) / 2 + 0.15), pal["concrete"], 8))
+            P.append(L.cyl("bastion_top", 2.35, 0.3, (sx * s / 2, sy * s / 2, h + 1.1), pal["concrete_dark"], 8))
+            P.append(L.box("slit", (1.0, 0.1, 0.25), (sx * s / 2, sy * s / 2 - sy * 2.2, h - 0.6), pal["glass"]))
+    # gate
+    P.append(L.box("gate", (3.0, 0.3, 3.0), (0, -s / 2 - 0.6, 1.65), pal["gunmetal"], 0.03))
+    P.append(L.box("lintel", (4.0, 1.8, 0.6), (0, -s / 2 - 0.2, 3.4), pal["concrete_dark"], 0.03))
+    # keep
+    P.append(L.box("keep", (6.0, 6.0, 7.0), (0, 1.0, 3.65), pal["concrete"], 0.06))
+    P.append(L.box("keep_top", (6.4, 6.4, 0.4), (0, 1.0, 7.3), pal["concrete_dark"], 0.03))
+    P += windows_row(-2.0, 2.0, 1.0 - 3.02, 5.2, 3, 0.8, 0.35, pal, frame=False)
+    P.append(L.cyl("antenna", 0.05, 4.0, (2.4, 3.4, 9.4), pal["steel"], 6))
+    P += sandbags(0, -s / 2 - 2.8, 2.2, 0.15, pal, 10, math.pi, math.pi, 2)
+    P += flag((-2.4, 3.4, 7.5), pal, 5.0)
+    body = L.join(P, "body")
+    L.smooth(body, 30)
+    T = [
+        L.cyl("turret_base", 1.3, 0.8, (0, 0, 0.4), pal["olive_dark"], 16),
+        L.box("mantlet", (1.6, 1.4, 0.9), (0, -0.3, 1.1), pal["olive"], 0.06),
+        L.cyl("barrel", 0.16, 3.4, (0, -2.4, 1.15), pal["gunmetal"], 12, (math.pi / 2, 0, 0)),
+    ]
+    tu = L.join(T, "turret")
+    tu.location = (0, 1.0, 7.5)
+    L.smooth(tu, 30)
+    return [body, tu]
+
+
+def radar_station(pal):
+    """Early warning radar: operations block, radome and a tall lattice mast with an array."""
+    P = [ground_pad(11.6, 11.6, pal, pal["concrete_dark"], 0.15)]
+    P.append(L.box("ops", (6.0, 4.0, 3.2), (-2.4, -2.6, 1.75), pal["concrete"], 0.05))
+    P += windows_row(-4.8, 0.0, -4.62, 2.0, 4, 0.7, 0.6, pal)
+    P.append(L.box("ops_roof", (6.3, 4.3, 0.25), (-2.4, -2.6, 3.45), pal["roof_gray"]))
+    P.append(L.cyl("radome_base", 1.8, 2.2, (-2.6, 2.4, 1.25), pal["concrete"], 20))
+    P.append(L.sphere("radome", 2.3, (-2.6, 2.4, 3.2), pal["white"], 24, 14))
+    # lattice mast
+    mh = 13.0
+    for sx in (1, -1):
+        for sy in (1, -1):
+            P.append(L.cyl("mast_leg", 0.09, mh, (3.0 + sx * 0.8, 2.2 + sy * 0.8, mh / 2 + 0.15), pal["steel"], 6))
+    for k in range(9):
+        z = 1.0 + k * 1.4
+        for a, b in (((-0.8, -0.8), (0.8, 0.8)), ((0.8, -0.8), (-0.8, 0.8))):
+            mid = ((a[0] + b[0]) / 2 + 3.0, (a[1] + b[1]) / 2 + 2.2, z)
+            P.append(L.box("brace", (2.2, 0.06, 0.06), mid, pal["steel"], rot=(0, 0, math.atan2(b[1] - a[1], b[0] - a[0]))))
+    P.append(L.box("array", (5.0, 0.4, 2.4), (3.0, 2.2, mh + 1.3), pal["white"], 0.05, rot=(0.25, 0, 0.6)))
+    P.append(L.box("array_frame", (5.2, 0.2, 0.2), (3.0, 2.2, mh + 0.1), pal["steel"], rot=(0, 0, 0.6)))
+    P.append(L.sphere("beacon", 0.18, (3.0, 2.2, mh + 2.8), pal["hull_red"], 8, 6))
+    P.append(L.box("generator", (2.2, 1.4, 1.4), (3.4, -3.6, 0.85), pal["olive_dark"], 0.05))
+    body = L.join(P, "body")
+    L.smooth(body, 30)
+    return [body]
+
+
+def abm_site(pal):
+    """Interceptor battery: vertical launch cells and a fire-control radar."""
+    P = [ground_pad(7.6, 7.6, pal, pal["concrete_dark"], 0.15)]
+    P.append(L.box("vls", (4.2, 4.2, 1.2), (-0.6, -0.6, 0.75), pal["concrete"], 0.05))
+    for i in range(3):
+        for j in range(3):
+            x, y = -1.8 + i * 1.2, -1.8 + j * 1.2
+            P.append(L.cyl("cell", 0.42, 0.12, (x, y, 1.4), pal["gunmetal"], 12))
+            P.append(L.cyl("hatch", 0.36, 0.06, (x, y, 1.48), pal["team"] if (i + j) % 2 == 0 else pal["steel"], 12))
+    P.append(L.box("stripe", (4.4, 0.25, 0.05), (-0.6, -2.85, 1.37), pal["yellow_paint"]))
+    P.append(L.cyl("mast", 0.12, 3.6, (2.6, 2.6, 1.95), pal["steel"], 8))
+    P.append(L.box("fcr", (1.6, 0.25, 1.6), (2.6, 2.6, 4.0), pal["white"], 0.04, rot=(0.25, 0, 0.8)))
+    P.append(L.box("shelter", (1.6, 1.2, 1.2), (2.4, -2.4, 0.75), pal["olive_dark"], 0.05))
+    body = L.join(P, "body")
+    L.smooth(body, 30)
+    return [body]
+
+
+def missile_silo(pal):
+    """Hardened silo: blast doors in a concrete apron, launch control bunker, vents."""
+    P = [ground_pad(11.6, 11.6, pal, pal["concrete_dark"], 0.15)]
+    P.append(L.cyl("apron", 4.2, 0.5, (0, 0.6, 0.35), pal["concrete"], 32))
+    P.append(L.cyl("rim", 3.0, 0.3, (0, 0.6, 0.7), pal["concrete_dark"], 32))
+    for sx in (1, -1):
+        P.append(L.box("door", (2.6, 5.0, 0.35), (sx * 1.35, 0.6, 0.95), pal["gunmetal"], 0.04))
+        P.append(L.box("hinge", (0.4, 5.2, 0.5), (sx * 2.85, 0.6, 0.95), pal["steel"], 0.03))
+    for k in range(10):
+        a = k * 2 * math.pi / 10
+        P.append(L.box("hazard", (0.7, 0.25, 0.05), (math.cos(a) * 3.6, 0.6 + math.sin(a) * 3.6, 0.62), pal["yellow_paint"], rot=(0, 0, a + math.pi / 2)))
+    P.append(L.box("bunker", (3.6, 2.4, 1.6), (-3.4, -4.0, 0.95), pal["concrete"], 0.1))
+    P.append(L.box("bunker_door", (0.9, 0.1, 1.2), (-3.4, -5.22, 0.75), pal["gunmetal"]))
+    P.append(L.cyl("vent", 0.35, 1.6, (3.8, -3.8, 0.95), pal["metal_sheet"], 12))
+    P.append(L.cyl("vent2", 0.35, 1.2, (4.4, -3.0, 0.75), pal["metal_sheet"], 12))
+    P.append(L.cyl("antenna", 0.05, 4.5, (-4.6, -3.2, 2.4), pal["steel"], 6))
+    P += [L.box("fence", (11.0, 0.05, 1.2), (0, sy * 5.6, 0.75), pal["steel"]) for sy in (1, -1)]
+    P += [L.box("fence", (0.05, 11.0, 1.2), (sx * 5.6, 0, 0.75), pal["steel"]) for sx in (1, -1)]
+    body = L.join(P, "body")
+    L.smooth(body, 30)
+    return [body]
 
 
 def build(key, out_dir, preview_dir=None):

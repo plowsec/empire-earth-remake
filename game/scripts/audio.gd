@@ -104,10 +104,27 @@ func nuclear_blast(pos: Vector3) -> void:
 	add_child(voice)
 	voice.global_position = pos
 	voice.finished.connect(voice.queue_free)
+	voice.volume_db = 6.0
+	# the body of the blast is felt everywhere, not just near the camera
+	var body := AudioStreamPlayer.new()
+	body.bus = "SFX"
+	body.stream = voice.stream
+	body.volume_db = -1.0
+	add_child(body)
+	body.finished.connect(body.queue_free)
 	var distance: float = pos.distance_to(rig.cam.global_position) if rig else 0.0
 	await get_tree().create_timer(clampf(distance / 343.0, 0.08, 1.8)).timeout
 	if is_instance_valid(voice):
 		voice.play()
+	body.play()
+	# duck the music under the blast, then bring it back
+	var mb := AudioServer.get_bus_index("Music")
+	if mb >= 0:
+		var base := AudioServer.get_bus_volume_db(mb)
+		var tw := create_tween()
+		tw.tween_method(func(v): AudioServer.set_bus_volume_db(mb, v), base, base - 24.0, 0.3)
+		tw.tween_interval(14.0)
+		tw.tween_method(func(v): AudioServer.set_bus_volume_db(mb, v), base - 24.0, base, 6.0)
 
 
 func ui(name: String, vol := -6.0) -> void:
@@ -130,7 +147,9 @@ func play_shot(dmg: int, pos: Vector3, unit := "") -> void:
 			s = _pick("sniper", 2)
 		"tank", "at_gun":
 			s = _pick("cannon", 3); cat = "cannon"; vol = 0.0
-		"howitzer", "battleship":
+		"battleship":
+			s = _pick("naval_gun", 2); cat = "naval"; vol = 6.0
+		"howitzer":
 			s = _pick("artillery", 2); cat = "cannon"; vol = 2.0
 		"mortar":
 			s = _pick("mortar", 2); cat = "cannon"
@@ -138,10 +157,14 @@ func play_shot(dmg: int, pos: Vector3, unit := "") -> void:
 			s = _pick("flak", 2); cat = "flak"
 		"submarine":
 			s = _load("torpedo")
-		"bazooka", "stinger", "helicopter", "strike_fighter", "fighter", "aa_site":
+			if _allow("sonar", 1):
+				_play3d(_load("sonar_ping"), pos, -6.0, 0.02)
+		"fighter":
+			s = _pick("mg", 3); cat = "mg"; vol = 0.0
+		"bazooka", "stinger", "helicopter", "strike_fighter", "aa_site", "abm_site":
 			s = _pick("missile", 3); cat = "missile"; vol = -2.0
 		"bomber", "nuke_bomber":
-			return
+			s = _pick("bomb_whistle", 2); cat = "whistle"; vol = 2.0
 		_:
 			s = _pick("rifle", 4)
 	if _allow(cat, 4):
@@ -158,6 +181,33 @@ func play_explosion(size: float, pos: Vector3) -> void:
 	else:
 		s = _pick("explosion_small", 3)
 	_play3d(s, pos, 2.0 + size)
+
+func play_death(pos: Vector3) -> void:
+	# Empire Earth style: every fallen soldier cries out (rate limited in big battles)
+	if _allow("death", 3):
+		_play3d(_pick("death", 8), pos, -3.0, 0.1)
+
+func play_engine(kind: String, pos: Vector3) -> void:
+	match kind:
+		"jet":
+			if _allow("jet", 2): _play3d(_pick("jet", 2), pos, 2.0, 0.12)
+		"heli":
+			if _allow("heli", 1): _play3d(_load("heli_loop"), pos, -2.0, 0.05)
+		"ship":
+			if _allow("ship", 1): _play3d(_pick("ship_engine", 2), pos, -4.0, 0.1)
+
+func play_big(name: String, pos: Vector3, vol := 4.0, unit := 120.0) -> void:
+	# long, loud one-shots (launches, interceptions) on their own voice
+	var voice := AudioStreamPlayer3D.new()
+	voice.bus = "SFX"
+	voice.stream = _load(name)
+	voice.unit_size = unit
+	voice.max_distance = 2000.0
+	voice.volume_db = vol
+	add_child(voice)
+	voice.global_position = pos
+	voice.finished.connect(voice.queue_free)
+	voice.play()
 
 func play_splash(pos: Vector3) -> void:
 	if _allow("splash", 3):
@@ -178,6 +228,7 @@ func on_event(e: Dictionary) -> void:
 			_last_alert = k
 			ui("alert_%d" % k, -8.0)
 		"notice": ui("notify", -10.0)
+		"nuke_alarm": ui("air_raid_siren", -2.0)
 		"trained": ui("ui_click", -14.0)
 		"placed": _play3d(_pick("hammer", 3), e["pos"], -4.0)
 		"game_over":

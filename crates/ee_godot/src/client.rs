@@ -112,6 +112,14 @@ pub struct Client {
     corpses: Vec<Corpse>,
     tracers: Vec<Tracer>,
     proj_prev: HashMap<u32, Vector3>,
+    /// last drawn position of each ICBM (for mid-air interceptions)
+    icbm_pos: HashMap<EntityId, Vector3>,
+    /// rendered position of every aircraft this frame (shots start/aim there)
+    air_pos: HashMap<EntityId, Vector3>,
+    /// launch height of each projectile
+    proj_start: HashMap<u32, f32>,
+    /// next time (s) each vehicle may play its engine sound
+    engine_next: HashMap<EntityId, f64>,
     pub events: Vec<ClientEvent>,
     pub time: f64,
     pub notices: Vec<String>,
@@ -265,6 +273,10 @@ impl Client {
             corpses: Vec::new(),
             tracers: Vec::new(),
             proj_prev: HashMap::new(),
+            icbm_pos: HashMap::new(),
+            air_pos: HashMap::new(),
+            proj_start: HashMap::new(),
+            engine_next: HashMap::new(),
             events: Vec::new(),
             time: 0.0,
             notices: Vec::new(),
@@ -351,7 +363,7 @@ impl Client {
         let (x, z) = to_world2(p);
         let y = match layer {
             Layer::Water => (self.time as f32 * 1.3 + id as f32 * 0.7).sin() * 0.08,
-            Layer::Air => AIR_ALT,
+            Layer::Air => self.air_pos.get(&id).map_or(AIR_ALT, |v| v.y),
             _ => self.heights.at(x, z).max(-0.3),
         };
         Vector3::new(x, y, z)
@@ -416,6 +428,7 @@ impl Client {
                 });
             }
             SimEvent::Died { id, def, owner, pos, facing, velocity, inside, .. } => {
+                let air_at = self.air_pos.remove(id);
                 // Cargo and parked aircraft disappear with their carrier/airfield.
                 if *inside != 0 { return; }
                 let d = data().def(*def);
@@ -423,12 +436,21 @@ impl Client {
                 if *owner == me && d.is_unit() {
                     // notified via UI counters only
                 }
-                if !self.sees(tx, ty) && *owner != me {
+                if !self.sees(tx, ty) && *owner != me && !d.data.icbm {
                     self.remembered.remove(id);
                     return;
                 }
                 self.remembered.remove(id);
-                let p = self.world_pos3(*pos, d.layer, *id);
+                if d.data.icbm {
+                    // intercepted high up (or detonated: the nuke covers that)
+                    if let Some(p) = self.icbm_pos.remove(id) {
+                        if p.y > 20.0 {
+                            self.events.push(ClientEvent { kind: "intercept", pos: p, to: p, size: 0.0, text: String::new(), dmg: 0, mine: *owner == me });
+                        }
+                    }
+                    return;
+                }
+                let p = air_at.unwrap_or_else(|| self.world_pos3(*pos, d.layer, *id));
                 let model = self.models.by_def[*def as usize];
                 let w = &self.session.world;
                 let color = w.players.get(*owner as usize).map(|pl| player_color(pl.color)).unwrap_or(Color::WHITE);
@@ -527,6 +549,19 @@ impl Client {
                     }
                 }
                 self.attack_marks.retain(|(_, t)| now - t < 30.0);
+            }
+            SimEvent::MissileLaunch { owner, from, to, .. } => {
+                let (fx, fy) = from.tile();
+                let detected = *owner == me || self.session.world.players[me as usize].radar;
+                if self.sees(fx, fy) || detected {
+                    let p = self.world_pos3(*from, Layer::Land, 0);
+                    let t = self.world_pos3(*to, Layer::Land, 0);
+                    self.events.push(ClientEvent { kind: "missile_launch", pos: p, to: t, size: 0.0, text: String::new(), dmg: 0, mine: *owner == me });
+                }
+                if *owner != me && detected {
+                    let t = self.world_pos3(*to, Layer::Land, 0);
+                    self.events.push(ClientEvent { kind: "nuke_alarm", pos: t, to: t, size: 0.0, text: String::new(), dmg: 0, mine: false });
+                }
             }
             SimEvent::Notice { owner, text } if *owner == me => {
                 self.events.push(ClientEvent { kind: "notice", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: text.to_string(), dmg: 0, mine: true });
@@ -771,7 +806,7 @@ impl Client {
                 continue;
             }
             let w = &self.session.world;
-            let visible = owner == me || w.can_see(me, &w.entities[i]);
+            let visible = owner == me || w.can_see(me, &w.entities[i]) || (d.data.icbm && w.players[me as usize].radar);
             if !visible {
                 continue;
             }
@@ -789,7 +824,17 @@ impl Client {
             let fz = facing.y.to_f32();
             let yaw = if d.is_building() { 0.0 } else { fx.atan2(fz) };
             let mut basis = Basis::from_axis_angle(Vector3::UP, yaw);
-            if d.layer == Layer::Air {
+            if d.data.icbm {
+                // ballistic arc from the silo to the aim point, nose along the trajectory
+                let e = &w.entities[i];
+                let (alt, slope) = icbm_arc(e.sortie, e.goal.or(match e.order { ee_sim::entity::Order::Strike { at } => Some(at), _ => None }), ip);
+                p.y = self.heights.at(p.x, p.z).max(0.0) + alt;
+                basis = basis * Basis::from_axis_angle(Vector3::RIGHT, -slope.atan());
+                self.icbm_pos.insert(id, p);
+                self.air_pos.insert(id, p);
+                let back = Vector3::new(-fx, -slope, -fz).normalized() * 4.5;
+                self.events.push(ClientEvent { kind: "missile_trail", pos: p + back, to: p, size: alt, text: String::new(), dmg: 0, mine: false });
+            } else if d.layer == Layer::Air {
                 // bank into turns, bob gently
                 let turn = ((facing.x.0 as f32 * 0.0) + (pos.x.0 - prev.x.0) as f32 * fz - (pos.y.0 - prev.y.0) as f32 * fx) / 65536.0;
                 basis = basis * Basis::from_axis_angle(Vector3::FORWARD, (turn * 25.0).clamp(-0.42, 0.42));
@@ -818,6 +863,7 @@ impl Client {
                     }
                 }
                 p.y = alt + (t * 1.7 + id as f32).sin() * 0.4;
+                self.air_pos.insert(id, p);
                 // engine trails behind moving jets
                 if !d.data.hover && (pos.x.0 != prev.x.0 || pos.y.0 != prev.y.0) && ((t * 12.0) as u32 + id) % 2 == 0 {
                     let back = Vector3::new(-fx, 0.0, -fz) * (self.models.list[model].radius * 0.9);
@@ -834,6 +880,17 @@ impl Client {
                 let ang = up.angle_to(nrm);
                 if axis.length() > 1e-4 {
                     basis = Basis::from_axis_angle(axis.normalized(), ang * 0.8) * basis;
+                }
+            }
+            // engines: jets roar past, rotors thump, ships chug (near the camera only)
+            let moving = pos.x.0 != prev.x.0 || pos.y.0 != prev.y.0;
+            if moving && !d.data.icbm && matches!(d.class(), Class::Aircraft | Class::Ship) && Vector2::new(p.x, p.z).distance_to(cull_c) < 120.0 {
+                let now = self.time;
+                let next = self.engine_next.get(&id).copied().unwrap_or(0.0);
+                if now >= next {
+                    let (kind, every) = if d.class() == Class::Ship { ("ship", 6.0) } else if d.data.hover { ("heli", 2.0) } else { ("jet", 5.0) };
+                    self.engine_next.insert(id, now + every + (id % 7) as f64 * 0.3);
+                    self.events.push(ClientEvent { kind: "engine", pos: p, to: p, size: 0.0, text: kind.into(), dmg: 0, mine: false });
                 }
             }
             let xf = Transform3D::new(basis, p);
@@ -1006,9 +1063,29 @@ impl Client {
                 let total = ((ax - sx).powi(2) + (az - sz).powi(2)).sqrt().max(0.01);
                 let done = ((x - sx).powi(2) + (z - sz).powi(2)).sqrt() / total;
                 let src_air = data().def(pr.src_def).layer == Layer::Air;
-                let base_y = if src_air { AIR_ALT * (1.0 - done) + self.heights.at(x, z).max(0.0) * done } else { self.heights.at(x, z).max(0.0) + 1.5 };
+                let torpedo = pr.dmg_type == DamageType::Torpedo;
+                // launch height: the shooter's real altitude / muzzle height
+                let start_y = *self.proj_start.entry(pr.id).or_insert_with(|| {
+                    if src_air {
+                        self.air_pos.get(&pr.src).map_or(AIR_ALT, |v| v.y - 1.0)
+                    } else if torpedo {
+                        -0.4
+                    } else {
+                        self.heights.at(sx, sz).max(0.0) + 2.0
+                    }
+                });
+                // end height: an aircraft target's altitude, else the ground/water
+                let tgt_air = w.get(pr.target).map_or(false, |t| data().def(t.def).layer == Layer::Air);
+                let end_y = if tgt_air {
+                    self.air_pos.get(&pr.target).map_or(AIR_ALT, |v| v.y)
+                } else if torpedo {
+                    -0.4
+                } else {
+                    self.heights.at(ax, az).max(0.0) + 1.0
+                };
+                let base_y = start_y + (end_y - start_y) * done.min(1.0);
                 // ballistic arc for shells
-                let arc = if pr.homing { 0.0 } else { (done * std::f32::consts::PI).sin() * (total * 0.18).min(25.0) };
+                let arc = if pr.homing || src_air { 0.0 } else { (done * std::f32::consts::PI).sin() * (total * 0.22).min(40.0) };
                 let pos = Vector3::new(x, base_y + arc, z);
                 let prevp = self.proj_prev.get(&pr.id).copied().unwrap_or(Vector3::new(sx, base_y, sz));
                 seen.insert(pr.id, pos);
@@ -1020,19 +1097,43 @@ impl Client {
                     let right = up.cross(fwd).normalized();
                     let up2 = fwd.cross(right);
                     let basis = Basis::from_cols(right, up2, fwd);
-                    let xf = Transform3D::new(basis, pos);
-                    let col = match pr.dmg_type {
-                        DamageType::Missile | DamageType::Flak => Color::from_rgba(1.0, 0.6, 0.25, 1.0),
-                        DamageType::Torpedo => Color::from_rgba(0.6, 0.9, 1.0, 0.6),
-                        _ => Color::from_rgba(1.0, 0.8, 0.4, 1.0),
+                    // size per munition: thick glowing shells, long missiles, dark bombs
+                    let (thick, long, col) = match pr.dmg_type {
+                        DamageType::NavalGun => (5.0, 4.5, Color::from_rgba(1.0, 0.75, 0.35, 1.0)),
+                        DamageType::Cannon | DamageType::Explosive => (3.0, 2.6, Color::from_rgba(1.0, 0.8, 0.4, 1.0)),
+                        DamageType::Missile | DamageType::Flak => (2.8, 3.2, Color::from_rgba(1.0, 0.62, 0.25, 1.0)),
+                        DamageType::Interceptor => (3.5, 5.0, Color::from_rgba(1.0, 0.95, 0.8, 1.0)),
+                        DamageType::AirGun => (1.8, 6.0, Color::from_rgba(1.0, 0.85, 0.45, 1.0)),
+                        DamageType::Bomb | DamageType::Nuclear => (6.0, 2.6, Color::from_rgba(0.25, 0.25, 0.22, 1.0)),
+                        DamageType::Torpedo => (2.5, 3.0, Color::from_rgba(0.5, 0.6, 0.65, 0.5)),
+                        _ => (1.5, 2.0, Color::from_rgba(1.0, 0.8, 0.4, 1.0)),
                     };
+                    let basis = Basis::from_cols(basis.col_a() * thick, basis.col_b() * thick, basis.col_c() * long);
+                    let xf = Transform3D::new(basis, pos);
                     self.proj_batch.push(&xf, col, [1.0, 0.0, 0.0, 0.0]);
-                    if pr.homing && pr.dmg_type != DamageType::Torpedo {
-                        self.events.push(ClientEvent { kind: "trail", pos, to: prevp, size: 0.0, text: String::new(), dmg: 0, mine: false });
+                    if pr.dmg_type == DamageType::NavalGun {
+                        // a battleship fires a full turret salvo
+                        let side = basis.col_a().normalized() * 1.8;
+                        for k in [-1.0f32, 1.0] {
+                            let o = pos + side * k + Vector3::new(0.0, (pr.id as f32 * k).sin() * 0.6, 0.0);
+                            self.proj_batch.push(&Transform3D::new(basis, o), col, [1.0, 0.0, 0.0, 0.0]);
+                        }
+                    }
+                    let kind = match pr.dmg_type {
+                        DamageType::Torpedo => "wake",
+                        DamageType::Interceptor => "missile_trail",
+                        DamageType::NavalGun | DamageType::Cannon => "shell_trail",
+                        _ if pr.homing => "trail",
+                        _ => "",
+                    };
+                    if !kind.is_empty() {
+                        let wpos = if torpedo { Vector3::new(pos.x, 0.12, pos.z) } else { pos };
+                        self.events.push(ClientEvent { kind, pos: wpos, to: prevp, size: 0.0, text: String::new(), dmg: 0, mine: false });
                     }
                 }
             }
         }
+        self.proj_start.retain(|k, _| seen.contains_key(k));
         self.proj_prev = seen;
 
         // tracers
@@ -1570,11 +1671,43 @@ impl Client {
         } else if !buildings.is_empty() {
             if let Some(g) = ground {
                 let to = from_world(g.x, g.z);
+                if self.launch_at(to) {
+                    return;
+                }
                 self.issue(CommandKind::SetRally { buildings, to, target });
                 self.events.push(ClientEvent { kind: "move_marker", pos: g, to: g, size: 0.0, text: String::new(), dmg: 0, mine: false });
             }
         }
     }
+}
+
+impl Client {
+    /// Fire one ICBM from the first selected silo that has one. Returns false if none.
+    pub fn launch_at(&mut self, at: FVec) -> bool {
+        let w = self.world();
+        let silo = self.my_selected_buildings().into_iter().find(|&b| {
+            w.get(b).map_or(false, |e| data().def(e.def).trains.iter().any(|&u| data().def(u).data.icbm) && !e.cargo.is_empty())
+        });
+        match silo {
+            Some(b) => {
+                self.issue(CommandKind::Launch { building: b, at });
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// ICBM height above ground (m) and climb slope at `at`, on a parabola from `from` to `to`.
+pub fn icbm_arc(from: Option<FVec>, to: Option<FVec>, at: FVec) -> (f32, f32) {
+    let (Some(a), Some(b)) = (from, to) else { return (40.0, 0.0) };
+    let (ax, az) = to_world2(a);
+    let (bx, bz) = to_world2(b);
+    let (px, pz) = to_world2(at);
+    let total = Vector2::new(bx - ax, bz - az).length().max(1.0);
+    let t = (Vector2::new(px - ax, pz - az).length() / total).clamp(0.0, 1.0);
+    let h = (total * 0.32).clamp(70.0, 260.0);
+    (4.0 * h * t * (1.0 - t) + 2.0, 4.0 * h * (1.0 - 2.0 * t) / total)
 }
 
 fn shader_mat(path: &str) -> Gd<ShaderMaterial> {

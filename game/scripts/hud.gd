@@ -417,6 +417,8 @@ func _update_hover() -> void:
 		ctx = "attack"
 	elif mode == "unload":
 		ctx = "board"
+	elif mode == "nuke_target":
+		ctx = "attack"
 	elif mode == "place":
 		ctx = "build"
 	elif gv.selection_count() > 0:
@@ -938,6 +940,10 @@ func _unhandled_input(e: InputEvent) -> void:
 					return
 				if mode == "unload":
 					gv.unload_click(mb.position)
+					mode = ""
+					return
+				if mode == "nuke_target":
+					gv.launch_click(mb.position)
 					mode = ""
 					return
 				dragging = true
