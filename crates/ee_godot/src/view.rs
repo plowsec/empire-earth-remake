@@ -1098,6 +1098,30 @@ impl GameView {
                 c.selection = vec![home];
                 at
             }
+            "icbm" | "icbm_abm" => {
+                // a silo with a missile in flight toward a target 40 tiles away
+                let def = data().id("missile_silo");
+                let tile = (6i32..24).find_map(|r| (-r..=r).find_map(|dx| {
+                    [(s.0 + dx, s.1 + r), (s.0 + dx, s.1 - r)].into_iter().find(|&t| w.can_place(0, def, t).is_ok())
+                })).expect("silo plot");
+                let silo = w.spawn_static(def, 0, tile, true);
+                let spos = w.get(silo).unwrap().pos;
+                let m = w.spawn(data().id("icbm"), 0, spos);
+                if let Some(e) = w.get_mut(m) { e.inside = silo; }
+                w.get_mut(silo).unwrap().cargo.push(m);
+                let e1 = w.starts[1];
+                let dir = (FVec::tile_center(e1.0, e1.1) - spos).normalized();
+                let at = spos + dir.scale(Fx::from_int(40));
+                if scenario.to_string() == "icbm_abm" {
+                    let (ax, ay) = at.tile();
+                    w.spawn_static(data().id("abm_site"), 1, (ax - 6, ay - 6), true);
+                    w.spawn_static(data().id("radar_station"), 1, (ax + 6, ay + 6), true);
+                    w.recount_pop();
+                }
+                w.apply_command(&Command { player: 0, kind: ee_sim::command::CommandKind::Launch { building: silo, at } });
+                let mid = FVec::new(Fx((spos.x.0 + at.x.0) / 2), Fx((spos.y.0 + at.y.0) / 2));
+                mid
+            }
             "landing" => {
                 let shore = ee_sim::orders::shore_water_near(w, base, 50).unwrap();
                 let (x, y) = shore.tile();

@@ -208,7 +208,7 @@ func _build_skirmish(root: Control) -> void:
 	_option(v, "Map size", ["Small", "Medium", "Large"], "map_size", [0, 1, 2])
 	_option(v, "Resources on map", ["Standard", "High", "Very high"], "resources", [100, 150, 220])
 	_option(v, "Starting resources", ["Low", "Standard", "High", "Deathmatch"], "start_res", [600, 1500, 3000, 10000])
-	_option(v, "Population limit", ["200", "300", "500", "1000"], "pop_limit", [200, 300, 500, 1000])
+	_option(v, "Population limit", ["200", "300", "500", "1000", "2000", "3000"], "pop_limit", [200, 300, 500, 1000, 2000, 3000])
 	_option(v, "Fog of war", ["On", "Revealed map"], "reveal", [0, 1])
 	var hb := HBoxContainer.new()
 	hb.alignment = BoxContainer.ALIGNMENT_END

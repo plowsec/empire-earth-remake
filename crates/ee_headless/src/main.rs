@@ -65,17 +65,19 @@ fn main() {
             let players: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2);
             let minutes: u32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(40);
             let diff: i32 = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(2);
-            run_match(seed, players, minutes, diff);
+            let pop: i32 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(300);
+            run_match(seed, players, minutes, diff, pop);
         }
-        _ => eprintln!("usage: ee_headless map <seed> <players> <out.ppm> | match <seed> <players> <minutes> <difficulty>"),
+        _ => eprintln!("usage: ee_headless map <seed> <players> <out.ppm> | match <seed> <players> <minutes> <difficulty> [pop_limit]"),
     }
 }
 
-fn run_match(seed: u64, players: usize, minutes: u32, diff: i32) {
+fn run_match(seed: u64, players: usize, minutes: u32, diff: i32, pop_limit: i32) {
     use ee_ai::{Ai, Difficulty};
     use ee_net::Session;
     use ee_sim::world::{data, MatchConfig};
     let mut cfg = MatchConfig::skirmish(seed, players);
+    cfg.pop_limit = pop_limit;
     for p in cfg.players.iter_mut() {
         p.is_ai = true;
     }

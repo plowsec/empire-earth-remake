@@ -28,8 +28,16 @@ impl Ai {
         let prod_buildings = v.count(id("barracks")) + v.count(id("tank_factory")) + v.count(id("airport")) + v.count(id("naval_yard"));
         let headroom = pl.pop_cap - pl.pop;
         let houses_building = sites_of(id("house")) + pending_count(&self.pending, id("house"));
-        if pl.pop_cap < w.config.pop_limit && headroom < 6 + prod_buildings as i32 * 3 && houses_building < 1 + cits / 30 {
-            wants.push(id("house"));
+        // housing ahead of demand: several at once, apartment blocks once established
+        let apartments_building = sites_of(id("apartments")) + pending_count(&self.pending, id("apartments"));
+        let want_room = 10 + prod_buildings as i32 * 4 + cits as i32 / 6;
+        if pl.pop_cap < w.config.pop_limit && headroom < want_room {
+            if cits >= 40 && apartments_building < 1 + cits / 60 {
+                wants.push(id("apartments"));
+            }
+            if houses_building < 2 + cits / 20 {
+                wants.push(id("house"));
+            }
         }
         let hard = self.diff >= Difficulty::Hard;
         if cits >= 10 && have(id("barracks")) == 0 {
@@ -68,7 +76,9 @@ impl Ai {
         if cits >= 40 && have(id("naval_yard")) < 2 {
             wants.push(id("naval_yard"));
         }
-        if cits >= 40 && have(id("granary")) < 2 && have(id("farm")) >= 8 {
+        // enough granaries (8 farms each) for the farmers the economy wants
+        let granaries_wanted = 1 + (self.food_wanted as usize).saturating_sub(12) / 8;
+        if cits >= 24 && have(id("granary")) < granaries_wanted.min(1 + cits / 20) && have(id("farm")) + 2 >= 6 * v.count(id("granary")) {
             wants.push(id("granary"));
         }
         if cits >= 24 && have(id("settlement")) < 1 + cits / 30 {
@@ -77,7 +87,10 @@ impl Ai {
         // swimming in resources: more production and defenses
         let rich = pl.res[1] > 2500 && pl.res[2] > 1500;
         if rich {
-            for (k, cap) in [("barracks", 3), ("tank_factory", 3), ("airport", 2), ("naval_yard", 3), ("guard_tower", 6), ("aa_site", 4)] {
+            // big population limits need more production lines
+            let hoard = pl.res[0] + pl.res[1] > 20000;
+            let extra = (w.config.pop_limit / 500) as usize + if hoard { 3 } else { 0 };
+            for (k, cap) in [("barracks", 3 + extra), ("tank_factory", 3 + extra), ("airport", 2 + extra / 2), ("naval_yard", 3), ("guard_tower", 6), ("aa_site", 4)] {
                 if have(id(k)) < cap {
                     wants.push(id(k));
                 }
@@ -91,11 +104,11 @@ impl Ai {
         // money set aside for the first big item we can't afford yet
         let mut reserve = [0i32; 5];
         for def in wants {
-            if started >= 2 {
+            if started >= 3 {
                 break;
             }
             let cost = d.def(def).data.cost;
-            let critical = def == id("farm") || def == id("house");
+            let critical = def == id("farm") || def == id("house") || def == id("apartments");
             let budget_ok = cost.arr().iter().enumerate().all(|(r, c)| pl.res[r] - if critical { 0 } else { reserve[r] } >= *c);
             if !budget_ok {
                 if !critical && reserve.iter().all(|&x| x == 0) {
@@ -283,21 +296,33 @@ impl Ai {
             "guard_tower" | "aa_site" => (9, 16),
             "settlement" => (16, 30),
             "house" => (5, 18),
+            "apartments" => (6, 22),
             _ => (6, 24),
         };
         if dd.data.key == "settlement" {
             // next to a mine cluster away from the capitol
             return self.settlement_site(w, def);
         }
-        for r in rmin..rmax {
-            let n = (r * 6).max(8);
-            for k in 0..n {
-                let ang = (start_ang * 45 + k * 360 / n) % 360;
-                let (c, s) = ee_sim::mapgen::sincos_deg(ang);
-                let x = bx + c * r / 1024 - sw / 2;
-                let y = by + s * r / 1024 - sh / 2;
-                if w.can_place(p, def, (x, y)).is_ok() && self.margin_clear(w, x, y, sw, sh) && self.reachable_by_land(w, x, y, sw, sh) {
-                    return Some((x, y));
+        // around the capitol first; when the core is full, spill out wider and then
+        // around our town centers on the home island
+        let mut centers = vec![((bx, by), rmin, rmax), ((bx, by), rmax, rmax + 18)];
+        let sett = data().id("settlement");
+        for e in &w.entities {
+            if e.alive && e.owner == p && e.def == sett && e.complete && self.island_at(w, e.tile) == Some(self.home_island) {
+                centers.push(((e.tile.0 + 1, e.tile.1 + 1), 4, 14));
+            }
+        }
+        for ((cx, cy), r0, r1) in centers {
+            for r in r0..r1 {
+                let n = (r * 6).max(8);
+                for k in 0..n {
+                    let ang = (start_ang * 45 + k * 360 / n) % 360;
+                    let (c, s) = ee_sim::mapgen::sincos_deg(ang);
+                    let x = cx + c * r / 1024 - sw / 2;
+                    let y = cy + s * r / 1024 - sh / 2;
+                    if w.can_place(p, def, (x, y)).is_ok() && self.margin_clear(w, x, y, sw, sh) && self.reachable_by_land(w, x, y, sw, sh) {
+                        return Some((x, y));
+                    }
                 }
             }
         }
@@ -309,7 +334,7 @@ impl Ai {
         let (bx, by) = self.base_tile;
         let start_ang = self.rng.below(8) as i32;
         let mut fallback = None;
-        for r in 7..26 {
+        for r in 7..44 {
             let n = (r * 6).max(8);
             for k in 0..n {
                 let ang = (start_ang * 45 + k * 360 / n) % 360;
@@ -437,7 +462,7 @@ impl Ai {
         if pl.pop >= pl.pop_cap {
             return;
         }
-        let econ_ready = v.citizens.len() * 100 >= self.diff.citizen_target() * 55;
+        let econ_ready = v.citizens.len() * 100 >= self.diff.econ_base() * 55;
         let id = |k: &str| d.id(k);
         // boats for fish
         if let Some(yards) = v.buildings.get(&id("naval_yard")) {
@@ -527,7 +552,7 @@ impl Ai {
             best.map(|b| b.1)
         };
 
-        let cit_target = self.diff.citizen_target();
+        let cit_target = self.diff.econ_base();
         let reserve_ok = |def: DefId| -> bool {
             // don't starve citizen production of food
             let c = d.def(def).data.cost;
@@ -826,7 +851,7 @@ impl Ai {
         }
         let farm = d.id("farm");
         let farms = v.count(farm) + v.sites.iter().filter(|&&id| w.get(id).is_some_and(|e| e.def == farm)).count();
-        let wanted = (v.citizens.len() / 3).min(8 * v.count(d.id("granary")));
+        let wanted = (self.food_wanted.max(0) as usize).max(v.citizens.len() / 3).min(8 * v.count(d.id("granary")));
         let cost = d.def(farm).data.cost.arr();
         if farms >= wanted || cost.iter().enumerate().any(|(r, c)| w.players[self.player as usize].res[r] < c * 8 + if r == 1 { 150 } else { 0 }) {
             return;

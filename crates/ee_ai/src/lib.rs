@@ -38,13 +38,24 @@ impl Difficulty {
             Difficulty::Hardest => 6,
         }
     }
-    fn citizen_target(self) -> usize {
+    /// workforce at which the military program kicks in
+    fn econ_base(self) -> usize {
         match self {
             Difficulty::Easy => 24,
             Difficulty::Normal => 42,
             Difficulty::Hard => 80,
             Difficulty::Hardest => 100,
         }
+    }
+    /// workforce goal: grows with the population limit so long games keep scaling
+    fn citizen_target(self, pop_limit: i32) -> usize {
+        let (base, pct) = match self {
+            Difficulty::Easy => (30, 18),
+            Difficulty::Normal => (60, 30),
+            Difficulty::Hard => (90, 36),
+            Difficulty::Hardest => (110, 40),
+        };
+        (base.max(pop_limit * pct / 100) as usize).min(700)
     }
     /// first attack, in ticks
     fn first_attack(self) -> u32 {
@@ -127,6 +138,8 @@ pub struct Ai {
     pub(crate) colony: Option<expand::Colony>,
     pub(crate) last_colony: u32,
     pub(crate) last_replant: u32,
+    /// food workers the economy would like (drives granary/farm expansion)
+    pub(crate) food_wanted: i32,
 }
 
 impl Ai {
@@ -161,6 +174,7 @@ impl Ai {
             colony: None,
             last_colony: 0,
             last_replant: 0,
+            food_wanted: 0,
         }
     }
 }
@@ -371,38 +385,63 @@ impl Ai {
     fn economy(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
         let d = data();
         let pl = &w.players[self.player as usize];
-        // train citizens
-        let target = self.diff.citizen_target();
+        // train citizens from every town center (unless some are standing around)
+        let target = self.diff.citizen_target(w.config.pop_limit);
+        let cid = d.id("citizen");
         let in_training: usize = w
             .entities
             .iter()
             .filter(|e| e.alive && e.owner == self.player)
-            .map(|e| e.production.iter().filter(|it| matches!(it, ProdItem::Unit(u) if *u == d.id("citizen"))).count())
+            .map(|e| e.production.iter().filter(|it| matches!(it, ProdItem::Unit(u) if *u == cid)).count())
             .sum();
-        if v.citizens.len() + in_training < target && pl.pop < pl.pop_cap {
-            let cid = d.id("citizen");
+        let per_tc = if self.diff == Difficulty::Easy { 1 } else { 3 };
+        if v.citizens.len() + in_training < target && pl.pop < pl.pop_cap && v.idle_citizens.len() < 4 {
+            let mut food = pl.res[0];
             for key in ["capitol", "settlement"] {
                 for &b in v.buildings.get(&d.id(key)).map(|x| x.as_slice()).unwrap_or(&[]) {
                     let q = w.get(b).map_or(9, |e| e.production.len());
-                    if q < 2 && pl.res[0] >= 50 {
+                    if q < per_tc && food >= 50 {
                         out.push(CommandKind::Train { building: b, def: cid, count: 1 });
+                        food -= 50;
                     }
                 }
             }
         }
+        // new citizens walk straight to an understaffed node near their town center
+        if w.tick % 200 == (self.phase * 13) % 200 {
+            self.rally_town_centers(w, v, out);
+        }
 
         // desired distribution: base weights scaled by scarcity (low stock -> more workers)
         let military_phase = v.count(d.id("barracks")) > 0;
-        let base: [i32; NUM_RES] = if military_phase { [24, 24, 9, 22, 21] } else { [38, 37, 10, 8, 7] };
+        let base: [i32; NUM_RES] = if military_phase { [31, 28, 8, 17, 16] } else { [40, 36, 10, 7, 7] };
         let mut want: [i32; NUM_RES] = [0; NUM_RES];
         for r in 0..NUM_RES {
             want[r] = base[r] * 1000 / (300 + pl.res[r] / 2);
         }
         let total_w: i32 = want.iter().sum();
         let workers = (v.citizens.len() - v.builders.len()) as i32;
+        // food work is limited by farms + berry bushes: excess workers go to the other resources
+        let food_slots = self.food_slots(w);
+        let mut target = [0i32; NUM_RES];
+        for r in 0..NUM_RES {
+            target[r] = workers * want[r] / total_w.max(1);
+        }
+        let f = Res::Food as usize;
+        if target[f] > food_slots {
+            let spare = target[f] - food_slots;
+            target[f] = food_slots;
+            let rest: i32 = (0..NUM_RES).filter(|&r| r != f).map(|r| want[r]).sum::<i32>().max(1);
+            for r in 0..NUM_RES {
+                if r != f {
+                    target[r] += spare * want[r] / rest;
+                }
+            }
+        }
+        self.food_wanted = workers * want[f] / total_w.max(1);
         let mut deficit: [i32; NUM_RES] = [0; NUM_RES];
         for r in 0..NUM_RES {
-            deficit[r] = workers * want[r] / total_w.max(1) - v.gatherers[r].len() as i32;
+            deficit[r] = target[r] - v.gatherers[r].len() as i32;
         }
         // assign idle citizens
         let mut assigned_farms: Vec<EntityId> = Vec::new();
@@ -439,7 +478,7 @@ impl Ai {
                 }
             }
             if deficit[hi] <= -2 && deficit[lo] >= 2 {
-                let n = (-deficit[hi]).min(deficit[lo]).min(3) as usize;
+                let n = (-deficit[hi]).min(deficit[lo]).min(3 + workers / 40) as usize;
                 let movers: Vec<EntityId> = v.gatherers[hi]
                     .iter()
                     .rev()
@@ -487,11 +526,77 @@ impl Ai {
             return None;
         }
         // nodes on the citizen's own island first (colonists stay where they are),
-        // otherwise near the capitol
+        // then around any of our town centers, then anywhere near the capitol
         let here = self.island_at(w, from.tile());
-        let near = w.nearest_resource(r as u8, from, 30, false)
-            .filter(|&n| w.get(n).map_or(false, |e| here.is_none() || self.island_at(w, (e.tile.0 - 1, e.tile.1)) == here || self.island_at(w, (e.tile.0 + 2, e.tile.1 + 1)) == here));
-        near.or_else(|| w.nearest_resource(r as u8, self.base, 34, false))
+        let same_island = |n: EntityId| w.get(n).map_or(false, |e| here.is_none() || self.island_at(w, (e.tile.0 - 1, e.tile.1)) == here || self.island_at(w, (e.tile.0 + 2, e.tile.1 + 1)) == here);
+        if let Some(n) = w.nearest_resource(r as u8, from, 30, false).filter(|&n| same_island(n)) {
+            return Some(n);
+        }
+        let sett = d.id("settlement");
+        let cap = d.id("capitol");
+        let mut centers: Vec<(i64, FVec)> = w.entities.iter()
+            .filter(|e| e.alive && e.owner == self.player && e.complete && (e.def == sett || e.def == cap))
+            .map(|e| (e.pos.dist2_raw(from), e.pos))
+            .collect();
+        centers.sort_by_key(|c| c.0);
+        for (_, c) in centers.iter().take(6) {
+            if let Some(n) = w.nearest_resource(r as u8, *c, 16, false).filter(|&n| same_island(n)) {
+                return Some(n);
+            }
+        }
+        w.nearest_resource(r as u8, self.base, 60, false)
+    }
+
+    /// Worker slots on our food sources: one per farm, three per berry bush near a town center.
+    fn food_slots(&self, w: &World) -> i32 {
+        let d = data();
+        let (farm, berries) = (d.id("farm"), d.id("berries"));
+        let centers: Vec<FVec> = w.entities.iter()
+            .filter(|e| e.alive && e.owner == self.player && e.complete && d.def(e.def).data.dropsite.len() >= 5)
+            .map(|e| e.pos)
+            .collect();
+        let mut n = 0;
+        for e in &w.entities {
+            if !e.alive {
+                continue;
+            }
+            if e.def == farm && e.owner == self.player && e.complete {
+                n += 1;
+            } else if e.def == berries && e.amount > 0 && centers.iter().any(|c| c.within(e.pos, Fx::from_int(16))) {
+                n += 3;
+            }
+        }
+        n
+    }
+
+    /// Point each town center's rally at the nearest node that still has free worker slots.
+    fn rally_town_centers(&self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
+        let d = data();
+        for key in ["capitol", "settlement"] {
+            for &b in v.buildings.get(&d.id(key)).map(|x| x.as_slice()).unwrap_or(&[]) {
+                let Some(be) = w.get(b) else { continue };
+                // mines first (the long-game resources), then wood, then berries
+                let mut pick = None;
+                for r in [Res::Gold, Res::Iron, Res::Stone, Res::Wood, Res::Food] {
+                    if let Some(n) = w.nearest_resource(r as u8, be.pos, 14, false) {
+                        let ok = w.get(n).map_or(false, |e| {
+                            let nd = d.def(e.def);
+                            !nd.is_building() && (e.gatherers as i32) < ee_sim::world::gather_cap(nd)
+                        });
+                        if ok {
+                            pick = Some(n);
+                            break;
+                        }
+                    }
+                }
+                if let Some(n) = pick {
+                    if be.rally_target != n {
+                        let to = w.get(n).unwrap().pos;
+                        out.push(CommandKind::SetRally { buildings: vec![b], to, target: n });
+                    }
+                }
+            }
+        }
     }
 }
 
