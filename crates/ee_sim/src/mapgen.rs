@@ -89,10 +89,10 @@ struct Island {
 pub fn generate(p: &MapParams) -> GenResult {
     let n = p.players.clamp(1, 8);
     let base = match n {
-        1 | 2 => 176,
-        3 => 208,
-        4 => 264,
-        _ => 320,
+        1 | 2 => 216,
+        3 => 250,
+        4 => 304,
+        _ => 360,
     };
     let size = base + p.size as i32 * 32;
     let mut map = Map::new(size, size);
@@ -106,7 +106,7 @@ pub fn generate(p: &MapParams) -> GenResult {
     let rot = rng.below(360) as i32;
     // adjacent player centres are 2*ring*sin(pi/n) apart; keep a generous channel
     let adj = if n >= 2 { 2 * ring * sincos_deg(180 / n as i32).1 / 1024 } else { size };
-    let player_r = (size * 17 / 100).min(adj * 33 / 100);
+    let player_r = (size * 19 / 100).min(adj * 35 / 100);
     for i in 0..n {
         let ang = rot + (i as i32) * 360 / n as i32;
         let (sx, sy) = sincos_deg(ang);
@@ -127,25 +127,25 @@ pub fn generate(p: &MapParams) -> GenResult {
         let ang = rot + (i as i32) * 360 / n.max(2) as i32 + half;
         let (sx, sy) = sincos_deg(ang);
         let d = if n == 2 { ring * 95 / 100 } else { ring * sincos_deg(half).0 / 1024 * 70 / 100 };
-        cands.push((c + d * sx / 1024, c + d * sy / 1024, size * 6 / 100));
+        cands.push((c + d * sx / 1024, c + d * sy / 1024, size * 75 / 1000));
         if n >= 3 {
             // a second, outer islet in the channel
             let d2 = ring * 118 / 100;
-            cands.push((c + d2 * sx / 1024, c + d2 * sy / 1024, size * 4 / 100));
+            cands.push((c + d2 * sx / 1024, c + d2 * sy / 1024, size * 5 / 100));
         }
     }
-    if n >= 5 {
+    if n >= 4 {
         cands.push((c, c, size * 7 / 100));
     }
     for (x, y, r) in cands {
         let ok_players = islands.iter().all(|is| {
             let d2 = ((x - is.cx).pow(2) + (y - is.cy).pow(2)) as i64;
-            let min = (is.r * 140 / 100 + r * 140 / 100 + 8) as i64;
+            let min = (is.r * 128 / 100 + r * 128 / 100 + 7) as i64;
             d2 >= min * min
         });
         let ok_neutral = neutral.iter().all(|is: &Island| {
             let d2 = ((x - is.cx).pow(2) + (y - is.cy).pow(2)) as i64;
-            let min = (is.r * 140 / 100 + r * 140 / 100 + 6) as i64;
+            let min = (is.r * 128 / 100 + r * 128 / 100 + 6) as i64;
             d2 >= min * min
         });
         let inside = x - r * 2 > 4 && y - r * 2 > 4 && x + r * 2 < size - 4 && y + r * 2 < size - 4;
@@ -338,24 +338,29 @@ pub fn generate(p: &MapParams) -> GenResult {
     let res_scale = p.resources.clamp(50, 300) as i32;
     for (pi, &(sx, sy)) in starts.iter().enumerate() {
         let _ = pi;
-        // berries: a cluster of 6
-        if let Some((bx, by)) = find_spot(&map, &reserved, &mut rng, sx, sy, 7, 9, 3, 2, 1) {
-            for k in 0..6 {
-                let (x, y) = (bx + k % 3, by + k / 3);
-                objects.push(Placement { key: "berries", owner: GAIA, x, y });
-                reserve(&mut reserved, x, y, 1, 1);
+        // berries: two clusters of 6
+        for (dmin, dmax) in [(7, 9), (14, 20)] {
+            if let Some((bx, by)) = find_spot(&map, &reserved, &mut rng, sx, sy, dmin, dmax, 3, 2, 1) {
+                for k in 0..6 {
+                    let (x, y) = (bx + k % 3, by + k / 3);
+                    objects.push(Placement { key: "berries", owner: GAIA, x, y });
+                    reserve(&mut reserved, x, y, 1, 1);
+                }
             }
         }
         let mines: &[(&'static str, i32, i32)] = &[
             ("gold_mine", 10, 15),
             ("gold_mine", 14, 20),
             ("gold_mine", 18, 26),
+            ("gold_mine", 24, 34),
             ("stone_mine", 10, 15),
-            ("stone_mine", 20, 28),
+            ("stone_mine", 15, 22),
+            ("stone_mine", 20, 30),
             ("iron_mine", 10, 15),
             ("iron_mine", 14, 20),
             ("iron_mine", 18, 24),
             ("iron_mine", 20, 28),
+            ("iron_mine", 26, 34),
         ];
         for &(key, dmin, dmax) in mines {
             let count = if res_scale >= 150 { 2 } else { 1 };
@@ -392,7 +397,7 @@ pub fn generate(p: &MapParams) -> GenResult {
     }
     // neutral island riches
     for is in &neutral {
-        for &key in &["gold_mine", "iron_mine", "stone_mine", "gold_mine"] {
+        for &key in &["gold_mine", "iron_mine", "stone_mine", "gold_mine", "iron_mine", "stone_mine"] {
             if let Some((x, y)) = find_spot(&map, &reserved, &mut rng, is.cx, is.cy, 0, is.r * 2 / 3, 2, 2, 2) {
                 objects.push(Placement { key, owner: GAIA, x, y });
                 reserve(&mut reserved, x, y, 2, 2);
@@ -458,7 +463,7 @@ pub fn generate(p: &MapParams) -> GenResult {
         .chain(neutral.iter().map(|i| (i.cx, i.cy, i.r)))
         .collect();
     for (ci, &(cx, cy, r)) in centers.iter().enumerate() {
-        let want = if ci < islands.len() { 6 } else { 3 };
+        let want = if ci < islands.len() { 9 } else { 5 };
         let mut placed = 0;
         let mut tries = 0;
         while placed < want && tries < 400 {
