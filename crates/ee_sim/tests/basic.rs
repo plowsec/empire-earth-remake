@@ -637,14 +637,14 @@ fn nuclear_front_propagates_once_pushes_survivors_and_topples_trees() {
     w.shockwaves[0].age = 1;
     assert_ne!(with_wave, w.checksum(), "wave progress is lockstep state");
     w.shockwaves[0].age = 0;
-    run(&mut w, 8, vec![]);
+    run(&mut w, 19, vec![]);
     let near_hp = w.get(near).unwrap().hp;
     assert!(near_hp < 10000);
     assert_eq!(w.get(far).unwrap().hp, 10000, "outer units wait for the front");
     assert!(w.get(tree).is_some(), "trees wait for the front too");
     assert!(w.get(near).unwrap().pos.dist2_raw(center) > near_pos.dist2_raw(center), "survivor moves away from blast");
     let mut toppled = false;
-    for _ in 0..32 {
+    for _ in 0..75 {
         run(&mut w, 1, vec![]);
         toppled |= w.events.iter().any(|e| matches!(e, SimEvent::TreeFelled { id, away, .. } if *id == tree && away.x > Fx::ZERO));
     }
@@ -669,4 +669,52 @@ fn shockwave_push_cannot_cross_blocked_terrain() {
     run(&mut w, 40, vec![]);
     assert_eq!(w.get(unit).unwrap().pos.tile(), s);
     assert_eq!(w.get(unit).unwrap().knockback, FVec::ZERO);
+}
+
+#[test]
+fn nuclear_front_flattens_buildings_of_any_owner() {
+    use ee_sim::{fixed::Fx, world::Shockwave};
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let cap = units_of(&w, 0, "capitol")[0];
+    let center = w.get(cap).unwrap().pos;
+    w.shockwaves.push(Shockwave { pos: center, radius: Fx::from_ratio(950, 100), age: 0, damage: 2600, owner: 0, src: 0, hit: vec![] });
+    run(&mut w, 80, vec![]);
+    assert!(w.get(cap).is_none(), "own capitol at ground zero is flattened");
+}
+
+#[test]
+fn mass_planted_grove_grows_with_many_planters() {
+    let mut cfg = MatchConfig::skirmish(9, 2);
+    cfg.reveal = true;
+    let mut w = World::new(cfg);
+    let cits = units_of(&w, 0, "citizen");
+    let s = w.starts[0];
+    let sap = data().id("sapling");
+    let c = open_spot(&w, s, 6, 25);
+    let mut cmds = vec![];
+    let mut first = true;
+    let mut tiles = vec![];
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let t = (c.0 + dx, c.1 + dy);
+            if w.can_place(0, sap, t).is_ok() {
+                cmds.push((0, Command { player: 0, kind: CommandKind::Build { units: cits[0..5].to_vec(), def: sap, tile: t, queue: !first } }));
+                first = false;
+                tiles.push(t);
+            }
+        }
+    }
+    run(&mut w, 1, cmds);
+    run(&mut w, 20 * 60, vec![]);
+    for &t in &tiles {
+        let occ = w.map.occupant[w.map.idx(t.0, t.1)];
+        let e = w.get(occ).expect("sapling");
+        println!("{:?} def {} complete {} progress {}", t, data().def(e.def).data.key, e.complete, e.progress);
+    }
+    run(&mut w, 20 * 130, vec![]);
+    let grown = tiles.iter().filter(|t| {
+        let occ = w.map.occupant[w.map.idx(t.0, t.1)];
+        w.get(occ).map_or(false, |e| e.def == data().id("tree"))
+    }).count();
+    assert_eq!(grown, tiles.len(), "every sapling of the grove grew");
 }

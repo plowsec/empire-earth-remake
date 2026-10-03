@@ -413,6 +413,9 @@ func on_event(e: Dictionary) -> void:
 		"trail":
 			if randf() < 0.35 and _near_camera(pos, 180.0):
 				_play("puff", pos, 0.8)
+		"contrail":
+			if _near_camera(pos, 220.0):
+				_play("puff", pos, 0.32)
 		"move_marker":
 			_marker(pos, Color(1, 0.3, 0.25) if e["mine"] else Color(0.4, 1.0, 0.5))
 		_:
@@ -489,22 +492,29 @@ func _nuclear_cloud(pos: Vector3, radius: float) -> void:
 			cap.add_child(puff)
 			puff.position = Vector3(cos(a) * spread * radius * 0.65, radius * (0.15 * cos(i * 1.2) + 0.16 * (1.0 - spread)), sin(a) * spread * radius * 0.65)
 	var rise := create_tween().set_parallel(true)
-	rise.tween_property(stem, "scale", Vector3.ONE, 5.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	rise.tween_property(cap, "scale", Vector3.ONE, 5.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	rise.tween_property(cap, "global_position", pos + Vector3.UP * radius * 2.0, 5.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	rise.tween_property(stem, "scale", Vector3.ONE, 12.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	rise.tween_property(cap, "scale", Vector3.ONE, 12.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	rise.tween_property(cap, "global_position", pos + Vector3.UP * radius * 2.0, 12.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	var expansion := create_tween()
-	expansion.tween_interval(5.0)
-	expansion.tween_property(cap, "scale", Vector3(1.18, 1.05, 1.18), 13.0)
-	expansion.parallel().tween_property(cap, "global_position", pos + Vector3.UP * radius * 2.3, 13.0)
-	expansion.parallel().tween_property(stem, "scale", Vector3(1.05, 1.15, 1.05), 13.0)
+	expansion.tween_interval(12.0)
+	expansion.tween_property(cap, "scale", Vector3(1.3, 1.1, 1.3), 28.0)
+	expansion.parallel().tween_property(cap, "global_position", pos + Vector3.UP * radius * 2.5 + Vector3(radius * 0.4, 0, 0), 28.0)
+	expansion.parallel().tween_property(stem, "scale", Vector3(1.1, 1.2, 1.1), 28.0)
+	# the cap rolls and the stem twists as it climbs
 	var drift := create_tween().set_parallel(true)
-	drift.tween_property(cap, "rotation:y", 0.35, 18.0)
-	drift.tween_property(stem, "rotation:y", -0.2, 18.0)
-	for mat in materials:
+	drift.tween_property(cap, "rotation:y", 1.1, 40.0)
+	drift.tween_property(stem, "rotation:y", -0.7, 40.0)
+	for i in materials.size():
+		var mat := materials[i]
+		var base := mat.albedo_color
+		# lit from inside by the fireball at first, then cooling to ash grey
+		mat.albedo_color = Color(1.0, 0.62, 0.32, base.a) if i < 4 else Color(0.85, 0.42, 0.2, base.a)
+		var cool := create_tween()
+		cool.tween_property(mat, "albedo_color", base, 11.0).set_trans(Tween.TRANS_SINE)
 		var fade := create_tween()
-		fade.tween_interval(8.0)
-		fade.tween_property(mat, "albedo_color:a", 0.0, 11.0)
-	get_tree().create_timer(20.0).timeout.connect(func(): stem.queue_free(); cap.queue_free())
+		fade.tween_interval(26.0)
+		fade.tween_property(mat, "albedo_color:a", 0.0, 20.0)
+	get_tree().create_timer(47.0).timeout.connect(func(): stem.queue_free(); cap.queue_free())
 
 func _nuclear_screen_flash(pos: Vector3) -> void:
 	if rig == null or not _near_camera(pos, 450.0): return
@@ -530,13 +540,13 @@ func _nuclear_screen_flash(pos: Vector3) -> void:
 	screen.material = mat
 	layer.add_child(screen)
 	var flash := layer.create_tween()
-	flash.tween_interval(0.09)
-	flash.tween_method(func(v: float): mat.set_shader_parameter("flash", v), 1.0, 0.55, 0.13)
-	flash.tween_method(func(v: float): mat.set_shader_parameter("flash", v), 0.55, 0.82, 0.09)
-	flash.tween_method(func(v: float): mat.set_shader_parameter("flash", v), 0.82, 0.0, 1.25).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	flash.tween_interval(0.45)
+	flash.tween_method(func(v: float): mat.set_shader_parameter("flash", v), 1.0, 0.7, 0.3)
+	flash.tween_method(func(v: float): mat.set_shader_parameter("flash", v), 0.7, 0.9, 0.15)
+	flash.tween_method(func(v: float): mat.set_shader_parameter("flash", v), 0.9, 0.0, 4.0).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	var wave := layer.create_tween()
-	wave.tween_interval(0.25)
-	wave.tween_method(func(v: float): mat.set_shader_parameter("wave", v), 0.0, 1.0, 2.4)
+	wave.tween_interval(0.6)
+	wave.tween_method(func(v: float): mat.set_shader_parameter("wave", v), 0.0, 1.0, 4.5)
 	wave.tween_callback(layer.queue_free)
 
 func _nuclear_dust_front(pos: Vector3, radius: float) -> void:
@@ -549,80 +559,115 @@ func _nuclear_dust_front(pos: Vector3, radius: float) -> void:
 	pm.direction = Vector3.UP
 	pm.initial_velocity_min = 0.5
 	pm.initial_velocity_max = 1.5
-	pm.radial_velocity_min = radius / 1.5
-	pm.radial_velocity_max = radius / 1.5
+	pm.radial_velocity_min = radius / 3.5
+	pm.radial_velocity_max = radius / 3.5
 	pm.gravity = Vector3(0, 0.35, 0)
 	pm.scale_min = 1.0
 	pm.scale_max = 2.8
 	pm.scale_curve = _curve([[0.0, 0.15], [0.3, 0.7], [1.0, 1.5]])
 	pm.color_ramp = _ramp([[0.0, Color(0.7, 0.65, 0.52, 0)], [0.08, Color(0.65, 0.58, 0.45, 0.8)], [0.65, Color(0.45, 0.4, 0.32, 0.5)], [1.0, Color(0.5, 0.46, 0.38, 0)]])
-	var dust := _particles(180, 3.5, _quad(5.0), _mat(smoke_tex, false), pm)
+	var dust := _particles(260, 6.0, _quad(6.0), _mat(smoke_tex, false), pm)
 	dust.explosiveness = 1.0
 	dust.visibility_aabb = AABB(Vector3(-radius * 4, -10, -radius * 4), Vector3(radius * 8, radius * 3, radius * 8))
 	add_child(dust)
 	dust.global_position = pos + Vector3.UP
 	dust.restart()
-	get_tree().create_timer(4.0).timeout.connect(dust.queue_free)
+	get_tree().create_timer(7.0).timeout.connect(dust.queue_free)
 
 func _nuke(pos: Vector3, radius: float) -> void:
 	last_nuclear_msec = Time.get_ticks_msec()
-	_nuclear_screen_flash(pos)
 	var r: float = max(radius, 20.0)
-	# blinding flash
+	_nuclear_screen_flash(pos)
+	# blinding light, held, then a long decay
 	var flash := OmniLight3D.new()
-	flash.light_color = Color(1.0, 0.92, 0.8)
-	flash.omni_range = r * 6.0
-	flash.light_energy = 40.0
+	flash.light_color = Color(1.0, 0.95, 0.85)
+	flash.omni_range = r * 8.0
+	flash.light_energy = 60.0
 	add_child(flash)
-	flash.global_position = pos + Vector3.UP * 15.0
+	flash.global_position = pos + Vector3.UP * 20.0
 	var tw := create_tween()
-	tw.tween_property(flash, "light_energy", 6.0, 0.4)
-	tw.tween_property(flash, "light_energy", 0.0, 3.0)
+	tw.tween_interval(0.5)
+	tw.tween_property(flash, "light_energy", 10.0, 1.2)
+	tw.tween_property(flash, "light_energy", 0.0, 4.0)
 	tw.tween_callback(flash.queue_free)
-	# fireball
+	# fireball: swells fast, then climbs slowly into the cap, cooling as it goes
 	var fb := MeshInstance3D.new()
 	var sm := SphereMesh.new()
 	sm.radius = 1.0
 	sm.height = 2.0
 	fb.mesh = sm
-	var fmat := _emissive(Color(1.0, 0.55, 0.15), 6.0)
+	var fmat := _emissive(Color(1.0, 0.62, 0.22), 9.0)
+	fmat.albedo_texture = smoke_tex
 	fb.material_override = fmat
 	fb.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(fb)
 	fb.global_position = pos
+	var glow := OmniLight3D.new()
+	glow.light_color = Color(1.0, 0.5, 0.18)
+	glow.omni_range = r * 3.0
+	glow.light_energy = 14.0
+	fb.add_child(glow)
 	var t2 := create_tween().set_parallel(true)
-	t2.tween_property(fb, "scale", Vector3.ONE * r * 0.4, 1.0).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_EXPO)
-	t2.tween_property(fb, "global_position", pos + Vector3.UP * r * 1.2, 6.0)
-	t2.tween_property(fmat, "emission_energy_multiplier", 0.2, 3.0)
-	t2.tween_property(fmat, "albedo_color", Color(0.25, 0.2, 0.18, 0.0), 3.0)
+	t2.tween_property(fb, "scale", Vector3.ONE * r * 0.42, 2.4).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_EXPO)
+	t2.tween_property(fb, "global_position", pos + Vector3.UP * r * 1.9, 13.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	t2.tween_property(fmat, "emission_energy_multiplier", 1.2, 7.0)
+	t2.tween_property(glow, "light_energy", 0.0, 12.0)
+	t2.chain().tween_property(fmat, "albedo_color", Color(0.25, 0.2, 0.18, 0.0), 5.0)
 	t2.chain().tween_callback(fb.queue_free)
 	_nuclear_cloud(pos, r)
 	_nuclear_dust_front(pos, r)
-	# Thin condensation front and expanding ground dust.
-
+	# condensation ring riding the pressure front (same 3.5 s as the simulation)
 	var ring := MeshInstance3D.new()
 	var tm := TorusMesh.new()
-	tm.inner_radius = 0.985
+	tm.inner_radius = 0.97
 	tm.outer_radius = 1.0
 	ring.mesh = tm
-	var rmat := _emissive(Color(0.85, 0.83, 0.78), 0.15, 0.35)
+	var rmat := _emissive(Color(0.92, 0.9, 0.86), 0.4, 0.55)
 	ring.material_override = rmat
 	add_child(ring)
-	ring.global_position = pos + Vector3.UP * 1.0
+	ring.global_position = pos + Vector3.UP * 1.5
 	var t4 := create_tween().set_parallel(true)
-	t4.tween_property(ring, "scale", Vector3(r, 2.0, r), 1.5).set_ease(Tween.EASE_OUT)
-	t4.tween_property(rmat, "albedo_color:a", 0.0, 1.5)
+	t4.tween_property(ring, "scale", Vector3(r, 3.0, r), 3.5).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_SINE)
+	t4.tween_property(rmat, "albedo_color:a", 0.0, 3.5)
 	t4.chain().tween_callback(ring.queue_free)
+	# the pressure front keeps travelling past the kill radius and shakes distant trees
+	var front_speed := r / 3.5
+	var shake := create_tween()
+	shake.tween_method(func(f: float):
+		var k: float = clampf(1.0 - f / (r * 4.0), 0.0, 1.0)
+		RenderingServer.global_shader_parameter_set("nuke_blast", Vector4(pos.x, pos.z, f, k)),
+		0.0, r * 4.0, r * 4.0 / front_speed)
+	shake.tween_callback(func(): RenderingServer.global_shader_parameter_set("nuke_blast", Vector4(0, 0, -1000, 0)))
 	for k in 8:
 		var a := k * TAU / 8.0
 		_play("dust", pos + Vector3(cos(a), 0.3, sin(a)) * r * 0.8, 3.0)
 		_play("fire", pos + Vector3(cos(a), 0.3, sin(a)) * r * 0.4, 3.0)
 		_play("smoke", pos + Vector3(cos(a), 0.0, sin(a)) * r * 0.6, 3.0)
+	# ground keeps burning for a while
+	for k in 14:
+		var delay := 1.5 + k * 0.8
+		var a2 := randf() * TAU
+		var d2 := randf_range(0.15, 0.7) * r
+		get_tree().create_timer(delay).timeout.connect(func():
+			var p2 := pos + Vector3(cos(a2) * d2, 0.5, sin(a2) * d2)
+			_play("fire", p2, 1.6)
+			_play("smoke", p2, 2.5))
 	_scorch(pos, r * 2.2)
 	if audio:
 		audio.nuclear_blast(pos)
-	if rig and rig.has_method("shake"):
-		rig.shake(1.6)
+	# the shock reaches the camera a moment later: wind, shake, then falling debris
+	var cam_dist := 0.0
+	if rig:
+		cam_dist = Vector2(rig.target.x, rig.target.z).distance_to(Vector2(pos.x, pos.z))
+	var arrive := clampf(cam_dist / front_speed, 0.3, 6.0)
+	get_tree().create_timer(arrive).timeout.connect(func():
+		if rig and rig.has_method("shake"):
+			rig.shake(2.2)
+		if audio:
+			audio._play3d(audio._load("nuclear_wind"), rig.target if rig else pos, 6.0, 0.02))
+	get_tree().create_timer(arrive + 3.0).timeout.connect(func():
+		if audio:
+			audio._play3d(audio._load("debris_rain"), pos, 0.0, 0.02))
 
 func _marker(pos: Vector3, col: Color) -> void:
 	var m := MeshInstance3D.new()

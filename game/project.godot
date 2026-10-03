@@ -30,3 +30,10 @@ Settings="*res://scripts/settings.gd"
 [audio]
 
 buses/default_bus_layout="res://default_bus_layout.tres"
+
+[shader_globals]
+
+nuke_blast={
+"type": "vec4",
+"value": Vector4(0, 0, -1000, 0)
+}

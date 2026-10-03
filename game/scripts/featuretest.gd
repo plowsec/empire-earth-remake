@@ -30,7 +30,7 @@ func card_button(label: String) -> Button:
 
 func _ready() -> void:
 	super._ready()
-	get_tree().create_timer(110.0).timeout.connect(func():
+	get_tree().create_timer(160.0).timeout.connect(func():
 		print("FAIL feature test timed out")
 		get_tree().quit(1))
 	DirAccess.make_dir_recursive_absolute(output)
@@ -210,9 +210,14 @@ func preview_nuclear() -> void:
 	rig._dist_goal = 290.0
 	while get_parent().get_node("VFX").last_nuclear_msec < 0:
 		await get_tree().process_frame
+	await get_tree().create_timer(0.25).timeout
 	await snapshot("nuclear-flash")
-	await get_tree().create_timer(1.0).timeout
+	await get_tree().create_timer(2.0).timeout
 	await snapshot("nuclear-shockwave")
 	await get_tree().create_timer(5.0).timeout
+	await snapshot("nuclear-rising")
+	await get_tree().create_timer(8.0).timeout
 	await snapshot("nuclear-cloud")
+	await get_tree().create_timer(15.0).timeout
+	await snapshot("nuclear-linger")
 	get_tree().quit()

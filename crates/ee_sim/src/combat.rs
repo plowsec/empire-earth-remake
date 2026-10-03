@@ -225,7 +225,7 @@ impl World {
     }
 
     pub(crate) fn update_shockwaves(&mut self) {
-        const DURATION: u32 = 30; // 1.5 seconds at 20 Hz, matching the visible dust front.
+        const DURATION: u32 = 70; // 3.5 seconds at 20 Hz, matching the visible pressure front.
         let mut waves = std::mem::take(&mut self.shockwaves);
         for wave in &mut waves {
             wave.age += 1;
@@ -243,6 +243,17 @@ impl World {
                     continue;
                 }
                 if d.is_resource() { continue; }
+                // the blast flattens every structure: inner core destroyed outright,
+                // heavy damage out to the edge, whoever owns it
+                if d.is_building() {
+                    if dist.0 as i64 * 10 <= wave.radius.0 as i64 * 7 {
+                        self.kill(id, wave.owner);
+                    } else {
+                        let falloff = 100 - (dist.0 as i64 * 60 / wave.radius.0.max(1) as i64) as i32;
+                        apply_damage(self, id, wave.damage * falloff / 100, crate::defs::DamageType::Nuclear, wave.owner, wave.src);
+                    }
+                    continue;
+                }
                 if self.is_enemy(wave.owner, owner) {
                     let falloff = 100 - (dist.0 as i64 * 50 / wave.radius.0.max(1) as i64) as i32;
                     apply_damage(self, id, wave.damage * falloff / 100, crate::defs::DamageType::Nuclear, wave.owner, wave.src);

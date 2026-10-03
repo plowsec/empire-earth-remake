@@ -750,12 +750,12 @@ impl Client {
         }
 
         for i in 1..n {
-            let (def, owner, pos, prev, facing, action, id, hp, complete, progress, target, inside, carry) = {
+            let (def, owner, pos, prev, facing, action, id, hp, complete, progress, target, inside, carry, home) = {
                 let e = &self.session.world.entities[i];
                 if !e.alive {
                     continue;
                 }
-                (e.def, e.owner, e.pos, e.prev_pos, e.facing, e.action, e.id, e.hp, e.complete, e.progress, e.target, e.inside, e.carry)
+                (e.def, e.owner, e.pos, e.prev_pos, e.facing, e.action, e.id, e.hp, e.complete, e.progress, e.target, e.inside, e.carry, e.home)
             };
             let d = data().def(def);
             if d.is_resource() || inside != 0 {
@@ -783,10 +783,36 @@ impl Client {
             if d.layer == Layer::Air {
                 // bank into turns, bob gently
                 let turn = ((facing.x.0 as f32 * 0.0) + (pos.x.0 - prev.x.0) as f32 * fz - (pos.y.0 - prev.y.0) as f32 * fx) / 65536.0;
-                basis = basis * Basis::from_axis_angle(Vector3::FORWARD, (turn * 40.0).clamp(-0.6, 0.6));
-                p.y += (t * 1.7 + id as f32).sin() * 0.4;
-                if d.data.hover {
-                    p.y -= 4.0;
+                basis = basis * Basis::from_axis_angle(Vector3::FORWARD, (turn * 25.0).clamp(-0.42, 0.42));
+                // cruise altitude by type, staggered per plane so they never share a level
+                let cruise = match d.data.key.as_str() {
+                    "helicopter" => 11.0,
+                    "bomber" => 30.0,
+                    "nuke_bomber" => 34.0,
+                    _ => 22.0,
+                } + ((id.wrapping_mul(37) % 7) as f32 - 3.0) * 1.3;
+                // climb out of / descend into the home airfield
+                let mut alt = cruise;
+                if let Some(h) = self.session.world.get(home) {
+                    let (hx, hz) = to_world2(h.pos);
+                    let hd = Vector2::new(p.x - hx, p.z - hz).length();
+                    let ground = self.heights.at(hx, hz).max(0.0);
+                    let k = ((hd - 6.0) / 55.0).clamp(0.0, 1.0);
+                    let k = k * k * (3.0 - 2.0 * k);
+                    alt = ground + 1.2 + (cruise - ground - 1.2) * k;
+                    // nose up while climbing, down while descending
+                    if k < 0.99 && !d.data.hover {
+                        let vel = Vector2::new((pos.x.0 - prev.x.0) as f32, (pos.y.0 - prev.y.0) as f32);
+                        let outbound = vel.dot(Vector2::new(p.x - hx, p.z - hz)) > 0.0;
+                        let pitch = if outbound { -0.18 } else { 0.1 } * (1.0 - k);
+                        basis = basis * Basis::from_axis_angle(Vector3::RIGHT, pitch);
+                    }
+                }
+                p.y = alt + (t * 1.7 + id as f32).sin() * 0.4;
+                // engine trails behind moving jets
+                if !d.data.hover && (pos.x.0 != prev.x.0 || pos.y.0 != prev.y.0) && ((t * 12.0) as u32 + id) % 2 == 0 {
+                    let back = Vector3::new(-fx, 0.0, -fz) * (self.models.list[model].radius * 0.9);
+                    self.events.push(ClientEvent { kind: "contrail", pos: p + back, to: p, size: 0.0, text: String::new(), dmg: 0, mine: false });
                 }
             } else if d.layer == Layer::Water {
                 let roll = (t * 1.1 + id as f32 * 0.37).sin() * 0.03;

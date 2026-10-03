@@ -86,6 +86,12 @@ pub fn visual_scale(def: &Def) -> f32 {
     match def.class() {
         Class::Citizen | Class::Infantry => 1.48,
         Class::Vehicle => 0.88,
+        Class::Aircraft => match def.data.key.as_str() {
+            "bomber" => 0.72,
+            "nuke_bomber" => 0.78,
+            "helicopter" => 0.95,
+            _ => 0.9,
+        },
         _ => 1.0,
     }
 }

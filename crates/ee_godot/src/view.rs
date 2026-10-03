@@ -997,6 +997,27 @@ impl GameView {
                 }
                 shore
             }
+            "planes" => {
+                let def = data().id("airport");
+                let tile = (6i32..24).find_map(|r| (-r..=r).find_map(|dx| {
+                    [(s.0 + dx, s.1 + r), (s.0 + dx, s.1 - r)].into_iter()
+                        .find(|&t| w.can_place(0, def, t).is_ok())
+                })).expect("fixture needs an airfield plot");
+                let home = w.spawn_static(def, 0, tile, true);
+                let hp = w.get(home).unwrap().pos;
+                let patrol = base + FVec::new(Fx::from_int(10), Fx::from_int(-6));
+                let mut air = Vec::new();
+                for (k, key) in ["fighter", "fighter", "strike_fighter", "helicopter", "bomber"].iter().enumerate() {
+                    let id = w.spawn(data().id(key), 0, hp + FVec::new(Fx::from_int(k as i32 * 2), Fx::ZERO));
+                    if let Some(e) = w.get_mut(id) { e.home = home; }
+                    air.push(id);
+                }
+                for k in 0..6 {
+                    w.spawn(data().id(if k % 2 == 0 { "tank" } else { "rifleman" }), 1, patrol + FVec::new(Fx::from_int(k % 3), Fx::from_int(k / 3)));
+                }
+                w.apply_command(&Command { player: 0, kind: CommandKind::Move { units: air, to: patrol, attack_move: true, queue: false } });
+                patrol
+            }
             "nuclear" => {
                 let pos = w.entities.iter().filter(|e| e.alive && e.def == data().id("tree"))
                     .min_by_key(|e| e.pos.dist2_raw(base)).unwrap().pos;

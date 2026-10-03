@@ -14,6 +14,7 @@ var follow_action := false
 var warp_ticks := 0
 var stress := 0
 var select_key := ""
+var feature_scene := ""
 var _perf_t := 0.0
 var _perf_frames := 0
 var _perf_sim := 0.0
@@ -31,6 +32,7 @@ func _ready() -> void:
 		elif a.begins_with("--ai0"): start_cfg["ai_self"] = 1
 		elif a.begins_with("--stress="): stress = int(a.substr(9))
 		elif a.begins_with("--select="): select_key = a.substr(9)
+		elif a.begins_with("--feature="): feature_scene = a.substr(10)
 		elif a == "--featuretest":
 			var t = load("res://scripts/featuretest.gd").new()
 			t.name = "FeatureTest"
@@ -80,6 +82,9 @@ func start_match(cfg: Dictionary) -> void:
 	vfx.bind(game_view, rig)
 
 func _process(dt: float) -> void:
+	if feature_scene != "" and game_view.is_running():
+		rig.focus(game_view.debug_feature_scene(feature_scene), true)
+		feature_scene = ""
 	if select_key != "" and game_view.is_running():
 		var parts := select_key.split(":")
 		game_view.select_all_of(parts[0], int(parts[1]) if parts.size() > 1 else 999)

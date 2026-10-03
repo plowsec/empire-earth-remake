@@ -385,7 +385,8 @@ impl World {
             Fx(tile.1 * ONE + sh * ONE / 2),
         );
         let id = self.spawn(def, owner, pos);
-        let walkable = d.data.walkable;
+        // saplings don't block movement until they've grown (planters walk among them)
+        let walkable = d.data.walkable || d.data.plantable;
         let e = self.get_mut(id).unwrap();
         e.tile = tile;
         e.complete = complete;
@@ -595,6 +596,10 @@ impl World {
                 e.hp = 1;
                 e.progress = 0;
                 e.gather_acc = 0;
+                let (tx, ty) = e.tile;
+                // a grown tree blocks its tile
+                self.map.occupy(tx, ty, 1, 1, id, false);
+                self.invalidate_flows();
                 self.events.push(SimEvent::Grown { id });
             }
         }

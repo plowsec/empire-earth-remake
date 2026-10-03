@@ -34,6 +34,8 @@ uniform bool use_world_fog = false;
 uniform sampler2D fog_tex : filter_linear, repeat_disable;
 uniform vec2 map_size = vec2(800.0);
 uniform float tint_by_color = 0.0;
+// nuclear pressure front: (x, z, front radius in m, intensity 0..1)
+global uniform vec4 nuke_blast;
 
 varying float v_part;
 varying vec4 v_custom;

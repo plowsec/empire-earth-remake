@@ -234,6 +234,29 @@ def nuclear_blast():
     return fade_out(mix(pressure * 1.6, low * 2.5, thump * 0.55, rumble * 2.0, rolling), 1.8)
 
 
+def nuclear_wind():
+    """The pressure front arriving: a roaring gust that peaks then dies away."""
+    sec = 7.0
+    tt = t(sec)
+    env = np.clip(tt / 0.25, 0, 1) * np.exp(-np.maximum(tt - 0.4, 0) / 1.8)
+    roar = sweep_lp(pink(sec), 2400, 260, 1.4) * env
+    rumble = lp(brown(sec), 120) * env * 1.4
+    return reverb(mix(roar, rumble), 2.5, 0.35, 1500)
+
+
+def debris_rain():
+    """Falling debris and crackling fires after the blast."""
+    sec = 10.0
+    out = np.zeros(int(sec * SR))
+    for k in range(260):
+        i = int(rng.uniform(0.0, 9.0) * SR)
+        f = rng.uniform(300, 2500)
+        c = bp(white(0.05), f, min(f * 3, 9000)) * env_exp(0.05, 0.01) * rng.uniform(0.05, 0.4) * np.exp(-i / SR / 6.0)
+        add_at(out, c, i)
+    rumble = lp(brown(sec), 150) * np.exp(-t(sec) / 4.0) * 0.5
+    return reverb(mix(out, rumble), 2.0, 0.3)
+
+
 def aircraft_breakup():
     sec = 2.8
     tear = sweep_lp(white(sec), 7000, 500) * env_exp(sec, 0.4, 0.002)
@@ -432,6 +455,8 @@ def main():
         save(f"explosion_big_{v}", explosion(v, 1.2))
         save(f"jet_{v}", jet_flyby(v))
     save("nuclear_blast", nuclear_blast())
+    save("nuclear_wind", nuclear_wind())
+    save("debris_rain", debris_rain())
     save("aircraft_breakup", aircraft_breakup())
     save("ship_sinking", ship_sinking())
     save("torpedo", torpedo(0))
