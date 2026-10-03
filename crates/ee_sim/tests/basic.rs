@@ -137,26 +137,35 @@ fn group_move_uses_flow_field_and_arrives() {
     let mut w = World::new(MatchConfig::skirmish(12, 2));
     let s = w.starts[0];
     let rifle = data().id("rifleman");
-    let mut ids = vec![];
-    for k in 0..40 {
-        let p = FVec::tile_center(s.0 + 5 + k % 8, s.1 + 5 + k / 8);
-        if w.map.passable_at(p, ee_sim::defs::Layer::Land) {
-            ids.push(w.spawn(rifle, 0, p));
-        }
-    }
-    // move to an open far point on the island
+    let land = ee_sim::defs::Layer::Land;
+    // an open destination that is reachable from the start
     let mut dest = None;
     'o: for r in (12..30).rev() {
         for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)] {
             let t = (s.0 + ox * r, s.1 + oy * r);
-            let open = (-3..=3).all(|dy| (-3..=3).all(|dx| w.map.passable(t.0 + dx, t.1 + dy, ee_sim::defs::Layer::Land)));
+            let open = (-3..=3).all(|dy| (-3..=3).all(|dx| w.map.passable(t.0 + dx, t.1 + dy, land)));
             if open {
-                dest = Some(FVec::tile_center(t.0, t.1));
-                break 'o;
+                let ff = ee_sim::path::FlowField::build(&w.map, t, land, 0);
+                if ff.reachable(&w.map, s.0 + 4, s.1) {
+                    dest = Some(FVec::tile_center(t.0, t.1));
+                    break 'o;
+                }
             }
         }
     }
-    let dest = dest.unwrap();
+    let dest = dest.expect("no reachable destination");
+    // spawn in the guaranteed-clear ring around the capitol
+    let mut ids = vec![];
+    for k in 0..40 {
+        let ang = k * 9;
+        let (c, sn) = ee_sim::mapgen::sincos_deg(ang);
+        let r = 4 + k % 3;
+        let p = FVec::tile_center(s.0 + c * r / 1024, s.1 + sn * r / 1024);
+        if w.map.passable_at(p, land) {
+            ids.push(w.spawn(rifle, 0, p));
+        }
+    }
+    assert!(ids.len() >= 25, "spawned {}", ids.len());
     run(&mut w, 1, vec![(0, Command { player: 0, kind: CommandKind::Move { units: ids.clone(), to: dest, attack_move: false, queue: false } })]);
     run(&mut w, 20 * 40, vec![]);
     let arrived = ids
@@ -164,6 +173,12 @@ fn group_move_uses_flow_field_and_arrives() {
         .filter(|&&id| w.get(id).map_or(false, |e| e.pos.within(dest, ee_sim::fixed::Fx::from_int(6)) && e.order == Order::Idle))
         .count();
     println!("arrived {arrived}/{}", ids.len());
+    for &id in &ids {
+        let e = w.get(id).unwrap();
+        if !e.pos.within(dest, ee_sim::fixed::Fx::from_int(6)) || e.order != Order::Idle {
+            println!("  stuck {:?} order {:?} goal {:?} stuck {} dest {:?}", e.pos.tile(), e.order, e.goal.map(|g| g.tile()), e.stuck, dest.tile());
+        }
+    }
     assert!(arrived * 10 >= ids.len() * 9);
 }
 
