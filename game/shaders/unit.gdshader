@@ -29,12 +29,18 @@ uniform float surface_scale = 0.5;  // repeats per meter
 uniform float surface_strength = 1.0;
 uniform sampler2DArray surface_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray surface_normal : filter_linear_mipmap_anisotropic, repeat_enable;
+// static scenery reads fog of war directly (so it never needs re-uploading)
+uniform bool use_world_fog = false;
+uniform sampler2D fog_tex : filter_linear, repeat_disable;
+uniform vec2 map_size = vec2(800.0);
+uniform float tint_by_color = 0.0;
 
 varying float v_part;
 varying vec4 v_custom;
 varying vec3 v_team;
 varying vec3 v_local;
 varying vec3 v_onormal;
+varying vec3 v_world;
 varying float v_height01;
 
 mat3 rot_x(float a) {
@@ -122,6 +128,7 @@ void vertex() {
 	}
 	v_local = VERTEX;
 	v_onormal = NORMAL;
+	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 void fragment() {
@@ -129,6 +136,13 @@ void fragment() {
 	if (use_tex) {
 		base *= texture(albedo_tex, UV).rgb;
 	}
+	if (use_world_fog) {
+		vec2 fog = texture(fog_tex, v_world.xz / map_size).rg;
+		if (fog.g < 0.03) {
+			discard;
+		}
+	}
+	base *= mix(vec3(1.0), v_team, tint_by_color);
 	// team color: keep the surface's shading, replace hue
 	float lum = dot(base, vec3(0.299, 0.587, 0.114));
 	vec3 team = v_team * (0.35 + lum * 1.3);
@@ -198,6 +212,11 @@ void fragment() {
 	if ((fl & 4) != 0) {
 		// remembered (fogged) building
 		base = mix(vec3(lum), base, 0.3) * 0.45;
+	}
+	if (use_world_fog) {
+		vec2 fog = texture(fog_tex, v_world.xz / map_size).rg;
+		float l2 = dot(base, vec3(0.299, 0.587, 0.114));
+		base = mix(mix(vec3(l2), base, 0.35) * 0.42, base, fog.r) * fog.g;
 	}
 	ALBEDO = base;
 	ROUGHNESS = srough;

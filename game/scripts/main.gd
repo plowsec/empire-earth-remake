@@ -24,6 +24,11 @@ func _ready() -> void:
 		elif a.begins_with("--players="): start_cfg["players"] = int(a.substr(10))
 		elif a.begins_with("--speed="): start_cfg["speed"] = float(a.substr(8))
 		elif a.begins_with("--ai0"): start_cfg["ai_self"] = 1
+		elif a.begins_with("--dist="): start_cfg["dist"] = float(a.substr(7))
+		elif a.begins_with("--yaw="): start_cfg["yaw"] = float(a.substr(6))
+		elif a.begins_with("--offset="):
+			var q = a.substr(9).split(",")
+			start_cfg["offset"] = Vector3(float(q[0]), 0, float(q[1]))
 		elif a.begins_with("--follow"): follow_action = true
 		elif a.begins_with("--warp="): warp_ticks = int(a.substr(7))
 		elif a.begins_with("--cam="):
@@ -46,7 +51,7 @@ func start_match(cfg: Dictionary) -> void:
 		rig.focus(cfg["cam"], true)
 	else:
 		var h: Vector3 = game_view.home_position()
-		rig.focus(h + Vector3(0, 0, 6), true)
+		rig.focus(h + Vector3(0, 0, 6) + cfg.get("offset", Vector3.ZERO), true)
 	if cfg.has("dist"):
 		rig.dist = cfg["dist"]; rig._dist_goal = cfg["dist"]
 	if cfg.has("yaw"):

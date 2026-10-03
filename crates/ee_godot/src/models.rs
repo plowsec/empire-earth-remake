@@ -51,6 +51,7 @@ pub struct Models {
     by_name: HashMap<String, usize>,
     unit_shader: Gd<Shader>,
     noise: Option<Gd<Texture2D>>,
+    fog: Option<(Gd<Texture2D>, Vector2)>,
 }
 
 /// Material name -> (surface kind, mode, repeats per meter, strength).
@@ -94,7 +95,7 @@ fn anim_mode_for(def: &Def) -> i32 {
 }
 
 impl Models {
-    pub fn new(noise: Option<Gd<Texture2D>>) -> Models {
+    pub fn new(noise: Option<Gd<Texture2D>>, fog: Option<(Gd<Texture2D>, Vector2)>) -> Models {
         let unit_shader = godot::tools::load::<Shader>("res://shaders/unit.gdshader");
         let load_arr = |p: &str| -> Option<Gd<godot::classes::TextureLayered>> {
             godot::tools::try_load::<godot::classes::CompressedTexture2DArray>(p).ok().map(|t| t.upcast())
@@ -107,6 +108,7 @@ impl Models {
             by_name: HashMap::new(),
             unit_shader,
             noise,
+            fog,
         }
     }
 
@@ -157,6 +159,14 @@ impl Models {
             _ => 0.12,
         };
         m.set_shader_parameter("wear", &(wear as f32).to_variant());
+        if def.is_resource() {
+            if let Some((tex, size)) = &self.fog {
+                m.set_shader_parameter("use_world_fog", &true.to_variant());
+                m.set_shader_parameter("fog_tex", &tex.to_variant());
+                m.set_shader_parameter("map_size", &size.to_variant());
+            }
+            m.set_shader_parameter("tint_by_color", &1.0f32.to_variant());
+        }
         if let (Some(a), Some(n)) = (&self.surf_albedo, &self.surf_normal) {
             m.set_shader_parameter("surface_albedo", &a.to_variant());
             m.set_shader_parameter("surface_normal", &n.to_variant());

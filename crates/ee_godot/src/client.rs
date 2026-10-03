@@ -117,6 +117,7 @@ pub struct Client {
     pine_model: usize,
     pub reveal: bool,
     shot_budget: i32,
+    deco_batches: Vec<Batch>,
 }
 
 pub struct StartOptions {
@@ -153,11 +154,22 @@ impl Client {
             session.add_controller(Box::new(Ai::new(p as u8, Difficulty::from_index(opt.difficulty), opt.seed)));
         }
         let heights = Heights::from_map(&session.world.map);
-        let mut models = Models::new(noise);
+        let map = &session.world.map;
+        let fog_w = map.w * 2;
+        let fog_h = map.h * 2;
+        let fog_buf = vec![0u8; (fog_w * fog_h * 2) as usize];
+        let fog_img = Image::create_from_data(fog_w, fog_h, false, Format::RG8, &PackedByteArray::from(&fog_buf[..])).unwrap();
+        let fog_tex = ImageTexture::create_from_image(&fog_img).unwrap();
+        let map_size = Vector2::new(map.w as f32 * TILE, map.h as f32 * TILE);
+        let mut models = Models::new(noise, Some((fog_tex.clone().upcast(), map_size)));
         models.load_all(&data().defs);
         let tree_def = data().def(data().id("tree"));
         let palm_model = models.variant("tree_palm", tree_def);
         let pine_model = models.variant("tree_pine", tree_def);
+        let deco_models: Vec<usize> = ["deco_grass", "deco_flowers", "deco_rock", "deco_bush", "deco_reeds"]
+            .iter()
+            .map(|n| models.variant(n, tree_def))
+            .collect();
 
         let quad = {
             let mut q = QuadMesh::new_gd();
@@ -190,11 +202,6 @@ impl Client {
         let proj_batch = Batch::new(&mut root, &proj_mesh.upcast(), false, Some(&tracer_mat));
 
         let map = &session.world.map;
-        let fog_w = map.w * 2;
-        let fog_h = map.h * 2;
-        let fog_buf = vec![0u8; (fog_w * fog_h * 2) as usize];
-        let fog_img = Image::create_from_data(fog_w, fog_h, false, Format::RG8, &PackedByteArray::from(&fog_buf[..])).unwrap();
-        let fog_tex = ImageTexture::create_from_image(&fog_img).unwrap();
         let minimap_base = terrain::minimap_base(map);
         let minimap_buf = vec![0u8; (map.w * map.h * 4) as usize];
         let mm_img = Image::create_from_data(map.w, map.h, false, Format::RGBA8, &PackedByteArray::from(&minimap_buf[..])).unwrap();
@@ -237,7 +244,9 @@ impl Client {
             pine_model,
             reveal: opt.reveal,
             shot_budget: 0,
+            deco_batches: Vec::new(),
         };
+        c.build_decorations(&deco_models);
         c.session.world.config.reveal = opt.reveal;
         c.update_fog(true);
         c
@@ -266,7 +275,6 @@ impl Client {
         let tick = w.tick;
         if tick != self.last_fog_tick && (tick % 4 == 1 || self.last_fog_tick == u32::MAX) {
             self.update_fog(false);
-            self.static_dirty = true;
         }
         self.selection.retain(|&id| self.session.world.get(id).map_or(false, |e| e.inside == 0 || data().def(e.def).is_building()));
         self.render(dt as f32, cam);
@@ -755,9 +763,9 @@ impl Client {
                 self.ring_batch.push(&rxf, ring_col, [0.0; 4]);
             }
             let damaged = hp < maxhp;
-            if selected || self.hover == id || (damaged && owner == me && d.is_unit()) || (!complete && d.is_building()) {
+            if selected || (self.hover == id && d.is_unit()) || (damaged && d.is_unit() && owner == me) || (damaged && d.is_building()) || (!complete && d.is_building()) {
                 let h = self.models.list[model].height;
-                let bw = (r * 1.4).clamp(1.2, 9.0);
+                let bw = (r * 1.2).clamp(1.2, 4.5);
                 let bxf = Transform3D::new(Basis::from_scale(Vector3::new(bw, bw, bw)), Vector3::new(p.x, p.y + h + 0.8, p.z));
                 let sec = if !complete { prog } else { 0.0 };
                 self.bar_batch.push(&bxf, Color::WHITE, [hp as f32 / maxhp as f32, sec, 0.0, 0.0]);
@@ -928,10 +936,7 @@ impl Client {
             }
             let (tx, ty) = pos.tile();
             let w = &self.session.world;
-            if !w.explored(me, tx, ty) {
-                continue;
-            }
-            let fog = if w.visible(me, tx, ty) { 0.0 } else { 4.0 };
+            let fog = 0.0;
             let (x, z) = to_world2(pos);
             // jitter trees inside their tile so forests don't look gridded
             let hsh = (id.wrapping_mul(2654435761)) >> 8;
@@ -965,12 +970,95 @@ impl Client {
             for pi in 0..nparts {
                 let local = self.models.list[model].parts[pi].local;
                 let b = self.batch(model, pi, true);
-                b.push(&(xf * local), Color::WHITE, [0.0, 0.0, 1.0, fog]);
+                let v = ((hsh >> 3) & 0xff) as f32 / 255.0;
+                let tint = if def == tree { Color::from_rgb(0.85 + v * 0.3, 0.9 + v * 0.15, 0.8 + (1.0 - v) * 0.25) } else { Color::WHITE };
+                b.push(&(xf * local), tint, [0.0, 0.0, 1.0, fog]);
             }
         }
         for b in self.static_batches.values_mut() {
             b.finish();
         }
+    }
+
+    /// Grass, flowers, pebbles and bushes: client-only scenery, built once.
+    fn build_decorations(&mut self, deco: &[usize]) {
+        use ee_sim::map::Terrain;
+        let w = &self.session.world;
+        let map = &w.map;
+        let mut inst: Vec<(usize, Transform3D, Color)> = Vec::new();
+        let hash = |x: i32, y: i32, k: u32| -> u32 {
+            let mut h = (x as u32).wrapping_mul(0x9e37_79b9) ^ (y as u32).wrapping_mul(0x85eb_ca6b) ^ k.wrapping_mul(0xc2b2_ae35);
+            h ^= h >> 13;
+            h = h.wrapping_mul(0x27d4_eb2d);
+            h ^= h >> 15;
+            h
+        };
+        for ty in 0..map.h {
+            for tx in 0..map.w {
+                let i = map.idx(tx, ty);
+                if map.occupant[i] != 0 {
+                    continue;
+                }
+                let t = map.terrain[i];
+                let near_water = (-1..=1).any(|dy| (-1..=1).any(|dx| map.is_water(tx + dx, ty + dy)));
+                let (count, pick): (u32, &[(usize, u32)]) = match t {
+                    Terrain::Grass => (3, &[(0, 70), (1, 12), (2, 8), (3, 10)]),
+                    Terrain::Meadow => (4, &[(0, 50), (1, 40), (3, 10)]),
+                    Terrain::Forest => (2, &[(0, 40), (3, 40), (2, 20)]),
+                    Terrain::Dirt => (1, &[(2, 50), (0, 50)]),
+                    Terrain::Rock => (2, &[(2, 70), (0, 30)]),
+                    Terrain::Beach if near_water => (1, &[(4, 40), (2, 60)]),
+                    _ => (0, &[]),
+                };
+                for k in 0..count {
+                    let h = hash(tx, ty, k + 1);
+                    if h % 100 > 55 {
+                        continue;
+                    }
+                    let roll = (h >> 8) % 100;
+                    let mut acc = 0;
+                    let mut which = pick[0].0;
+                    for &(m, p) in pick {
+                        acc += p;
+                        if roll < acc {
+                            which = m;
+                            break;
+                        }
+                    }
+                    let fx = ((h >> 16) & 0xff) as f32 / 255.0;
+                    let fz = ((h >> 24) & 0xff) as f32 / 255.0;
+                    let x = (tx as f32 + fx) * TILE;
+                    let z = (ty as f32 + fz) * TILE;
+                    let y = self.heights.at(x, z);
+                    if y < 0.05 && which != 4 {
+                        continue;
+                    }
+                    let yaw = ((h >> 4) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
+                    let s = 0.7 + ((h >> 12) & 0x3f) as f32 / 63.0 * 0.8;
+                    let v = ((h >> 20) & 0xff) as f32 / 255.0;
+                    let tint = Color::from_rgb(0.8 + v * 0.35, 0.85 + v * 0.2, 0.7 + (1.0 - v) * 0.3);
+                    inst.push((deco[which], Transform3D::new(Basis::from_axis_angle(Vector3::UP, yaw).scaled(Vector3::splat(s)), Vector3::new(x, y - 0.03, z)), tint));
+                }
+            }
+        }
+        let mut batches: HashMap<(usize, usize), Batch> = HashMap::new();
+        for (model, xf, tint) in inst {
+            let nparts = self.models.list[model].parts.len();
+            for pi in 0..nparts {
+                let b = batches.entry((model, pi)).or_insert_with(|| {
+                    let mesh: Gd<Mesh> = self.models.list[model].parts[pi].mesh.clone();
+                    let mut b = Batch::new(&mut self.root, &mesh, false, None);
+                    b.begin();
+                    b
+                });
+                let local = self.models.list[model].parts[pi].local;
+                b.push(&(xf * local), tint, [0.0, 0.0, 1.0, 0.0]);
+            }
+        }
+        for b in batches.values_mut() {
+            b.finish();
+        }
+        self.deco_batches = batches.into_values().collect();
     }
 
     // ------------------------------------------------------------------ picking

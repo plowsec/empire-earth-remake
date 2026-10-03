@@ -6,7 +6,7 @@ from mathutils import Vector, noise
 
 import eelib as L
 
-KEYS = ["tree", "tree_pine", "tree_palm", "berries", "gold_mine", "stone_mine", "iron_mine"]
+KEYS = ["tree", "tree_pine", "tree_palm", "berries", "gold_mine", "stone_mine", "iron_mine", "deco_grass", "deco_flowers", "deco_rock", "deco_bush", "deco_reeds"]
 
 
 def displace(ob, amount, scale=1.0, seed=0):
@@ -153,6 +153,85 @@ def iron_mine(pal):
     P = rock_pile(pal, pal["rock_dark"], pal["iron_ore"], 13, 9, 12)
     ob = L.join(P, "body")
     L.smooth(ob, 30)
+    return [ob]
+
+
+def blade(pos, h, w, lean, yaw, mat):
+    x, y, z = pos
+    secs = []
+    for i in range(4):
+        t = i / 3
+        bw = w * (1 - t * 0.85)
+        cx = x + math.cos(yaw) * lean * t * t
+        cy = y + math.sin(yaw) * lean * t * t
+        cz = z + h * t
+        px, py = -math.sin(yaw) * bw, math.cos(yaw) * bw
+        secs.append([(cx + px, cy + py, cz), (cx, cy, cz + 0.004), (cx - px, cy - py, cz), (cx, cy, cz - 0.004)])
+    return L.loft("blade", secs, mat, closed_ends=False)
+
+
+def grass_tuft(pal, n=14, seed=1, h=(0.35, 0.75)):
+    rnd = random.Random(seed)
+    mats = [pal["leaf"], pal["leaf_light"], pal["crop_green"]]
+    P = []
+    for i in range(n):
+        a = rnd.uniform(0, 2 * math.pi)
+        r = rnd.uniform(0.0, 0.25)
+        P.append(blade((math.cos(a) * r, math.sin(a) * r, 0), rnd.uniform(*h), rnd.uniform(0.025, 0.045), rnd.uniform(0.1, 0.3), a + rnd.uniform(-0.5, 0.5), mats[i % 3]))
+    return P
+
+
+def deco_grass(pal):
+    ob = L.join(grass_tuft(pal, 16, 2), "body")
+    L.smooth(ob, 80)
+    return [ob]
+
+
+def deco_flowers(pal):
+    rnd = random.Random(9)
+    P = grass_tuft(pal, 10, 4, (0.25, 0.5))
+    cols = [L.mat("flower_y", (0.95, 0.78, 0.1), 0.5), L.mat("flower_w", (0.9, 0.9, 0.85), 0.5), L.mat("flower_p", (0.55, 0.2, 0.75), 0.5)]
+    for i in range(6):
+        a = rnd.uniform(0, 2 * math.pi)
+        r = rnd.uniform(0.05, 0.3)
+        hz = rnd.uniform(0.35, 0.6)
+        P.append(L.cyl("stem", 0.008, hz, (math.cos(a) * r, math.sin(a) * r, hz / 2), pal["leaf"], 4))
+        P.append(L.sphere("flower", 0.05, (math.cos(a) * r, math.sin(a) * r, hz), cols[i % 3], 6, 4, (1, 1, 0.5)))
+    ob = L.join(P, "body")
+    L.smooth(ob, 80)
+    return [ob]
+
+
+def deco_rock(pal):
+    P = []
+    for i, (x, y, r) in enumerate([(0, 0, 0.45), (0.45, 0.2, 0.25)]):
+        b = L.ico("rock", r, (x, y, r * 0.3), pal["rock"], 1, (1.0, 0.85, 0.6))
+        displace(b, r * 0.25, 1.2 / r, i + 50)
+        P.append(b)
+    ob = L.join(P, "body")
+    L.smooth(ob, 40)
+    return [ob]
+
+
+def deco_bush(pal):
+    P = []
+    for i, (x, y, r) in enumerate([(0, 0, 0.6), (0.4, 0.2, 0.42), (-0.35, 0.25, 0.4)]):
+        P.append(crown_blob(r, (x, y, r * 0.65), pal["leaf"] if i else pal["leaf_light"], i + 60, 0.8))
+    ob = L.join(P, "body")
+    L.smooth(ob, 80)
+    return [ob]
+
+
+def deco_reeds(pal):
+    rnd = random.Random(12)
+    P = []
+    m = L.mat("reed", (0.32, 0.36, 0.14), 0.8)
+    for i in range(18):
+        a = rnd.uniform(0, 2 * math.pi)
+        r = rnd.uniform(0.0, 0.35)
+        P.append(blade((math.cos(a) * r, math.sin(a) * r, 0), rnd.uniform(0.8, 1.4), 0.02, rnd.uniform(0.05, 0.2), a, m))
+    ob = L.join(P, "body")
+    L.smooth(ob, 80)
     return [ob]
 
 
