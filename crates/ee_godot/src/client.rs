@@ -1,0 +1,1223 @@
+//! Client-side game state: owns the lockstep session, renders the world through
+//! MultiMesh batches, maintains fog/minimap textures, selection, and translates
+//! UI intent into sim commands. Nothing here mutates the World directly.
+use crate::batch::Batch;
+use crate::models::{Models, Role};
+use crate::terrain::{self, Heights, TILE};
+use ee_ai::{Ai, Difficulty};
+use ee_net::Session;
+use ee_sim::command::CommandKind;
+use ee_sim::defs::{Class, DamageType, DefId, Layer};
+use ee_sim::entity::{Action, Entity, EntityId, Order, ProdItem};
+use ee_sim::fixed::{FVec, Fx};
+use ee_sim::mapgen::GAIA;
+use ee_sim::world::{data, MatchConfig, SimEvent, World};
+use godot::classes::image::Format;
+use godot::classes::{Camera3D, Image, ImageTexture, Mesh, Node, QuadMesh, Shader, ShaderMaterial, Texture2D, BoxMesh};
+use godot::prelude::*;
+use std::collections::{BTreeMap, HashMap};
+
+pub const PLAYER_COLORS: [(f32, f32, f32); 8] = [
+    (0.16, 0.42, 0.95),
+    (0.90, 0.16, 0.14),
+    (0.20, 0.75, 0.25),
+    (0.95, 0.80, 0.15),
+    (0.15, 0.80, 0.85),
+    (0.62, 0.25, 0.85),
+    (0.98, 0.52, 0.12),
+    (0.92, 0.92, 0.92),
+];
+
+pub fn player_color(c: u8) -> Color {
+    let (r, g, b) = PLAYER_COLORS[(c as usize) % 8];
+    Color::from_rgb(r, g, b)
+}
+
+#[inline]
+pub fn to_world2(p: FVec) -> (f32, f32) {
+    (p.x.to_f32() * TILE, p.y.to_f32() * TILE)
+}
+
+pub fn from_world(x: f32, z: f32) -> FVec {
+    FVec::new(Fx((x / TILE * 65536.0) as i32), Fx((z / TILE * 65536.0) as i32))
+}
+
+const AIR_ALT: f32 = 16.0;
+
+#[derive(Clone)]
+struct Remembered {
+    def: DefId,
+    owner: u8,
+    pos: FVec,
+    progress: f32,
+}
+
+struct Corpse {
+    model: usize,
+    xf: Transform3D,
+    color: Color,
+    t: f32,
+    life: f32,
+    kind: u8, // 0 infantry, 1 vehicle wreck, 2 building collapse, 3 aircraft fall
+    vel: Vector3,
+}
+
+struct Tracer {
+    a: Vector3,
+    b: Vector3,
+    t: f32,
+    life: f32,
+    color: Color,
+}
+
+pub struct ClientEvent {
+    pub kind: &'static str,
+    pub pos: Vector3,
+    pub to: Vector3,
+    pub size: f32,
+    pub text: String,
+    pub dmg: i32,
+    pub mine: bool,
+}
+
+pub struct Client {
+    pub session: Session,
+    pub me: u8,
+    pub heights: Heights,
+    pub models: Models,
+    batches: HashMap<(usize, usize), Batch>,
+    static_batches: HashMap<(usize, usize), Batch>,
+    static_dirty: bool,
+    ring_batch: Batch,
+    bar_batch: Batch,
+    tracer_batch: Batch,
+    proj_batch: Batch,
+    root: Gd<Node>,
+    pub fog_tex: Gd<ImageTexture>,
+    fog_w: i32,
+    fog_h: i32,
+    fog_buf: Vec<u8>,
+    last_fog_tick: u32,
+    pub minimap_tex: Gd<ImageTexture>,
+    minimap_base: Vec<[u8; 3]>,
+    minimap_buf: Vec<u8>,
+    minimap_timer: f32,
+    pub selection: Vec<EntityId>,
+    pub groups: Vec<Vec<EntityId>>,
+    pub hover: EntityId,
+    remembered: BTreeMap<EntityId, Remembered>,
+    corpses: Vec<Corpse>,
+    tracers: Vec<Tracer>,
+    proj_prev: HashMap<u32, Vector3>,
+    pub events: Vec<ClientEvent>,
+    pub time: f64,
+    pub notices: Vec<String>,
+    last_attack_notice: f64,
+    palm_model: usize,
+    pine_model: usize,
+    pub reveal: bool,
+    shot_budget: i32,
+}
+
+pub struct StartOptions {
+    pub seed: u64,
+    pub players: usize,
+    pub difficulty: i32,
+    pub map_size: u8,
+    pub resources: u32,
+    pub pop_limit: i32,
+    pub reveal: bool,
+    pub start_res: i32,
+    /// AI also controls the local player (demo / screenshots)
+    pub ai_self: bool,
+}
+
+impl Client {
+    pub fn new(mut root: Gd<Node>, opt: StartOptions, noise: Option<Gd<Texture2D>>) -> Client {
+        let mut cfg = MatchConfig::skirmish(opt.seed, opt.players.clamp(2, 8));
+        cfg.map_size = opt.map_size;
+        cfg.resources = opt.resources;
+        cfg.pop_limit = opt.pop_limit;
+        let sr = opt.start_res;
+        cfg.start_res = [sr, sr, sr * 6 / 10, sr * 2 / 3, sr * 2 / 3];
+        cfg.players[0].name = "You".into();
+        for (i, p) in cfg.players.iter_mut().enumerate().skip(1) {
+            p.name = format!("AI {}", i);
+        }
+        let mut session = Session::single_player(cfg);
+        session.collect_events = true;
+        if opt.ai_self {
+            session.add_controller(Box::new(Ai::new(0, Difficulty::from_index(opt.difficulty.max(2)), opt.seed ^ 0x55)));
+        }
+        for p in 1..opt.players.clamp(2, 8) {
+            session.add_controller(Box::new(Ai::new(p as u8, Difficulty::from_index(opt.difficulty), opt.seed)));
+        }
+        let heights = Heights::from_map(&session.world.map);
+        let mut models = Models::new(noise);
+        models.load_all(&data().defs);
+        let tree_def = data().def(data().id("tree"));
+        let palm_model = models.variant("tree_palm", tree_def);
+        let pine_model = models.variant("tree_pine", tree_def);
+
+        let quad = {
+            let mut q = QuadMesh::new_gd();
+            q.set_size(Vector2::new(1.0, 1.0));
+            q.set_orientation(godot::classes::plane_mesh::Orientation::Y);
+            q
+        };
+        let ring_mat = shader_mat("res://shaders/ring.gdshader");
+        let ring_batch = Batch::new(&mut root, &quad.clone().upcast(), false, Some(&ring_mat));
+        let bar_quad = {
+            let mut q = QuadMesh::new_gd();
+            q.set_size(Vector2::new(1.0, 0.14));
+            q
+        };
+        let bar_mat = shader_mat("res://shaders/bar.gdshader");
+        let bar_batch = Batch::new(&mut root, &bar_quad.upcast(), false, Some(&bar_mat));
+        let tracer_mat = shader_mat("res://shaders/tracer.gdshader");
+        let tracer_quad = {
+            let mut q = QuadMesh::new_gd();
+            q.set_size(Vector2::new(1.0, 1.0));
+            q.set_center_offset(Vector3::new(0.5, 0.0, 0.0));
+            q
+        };
+        let tracer_batch = Batch::new(&mut root, &tracer_quad.upcast(), false, Some(&tracer_mat));
+        let proj_mesh = {
+            let mut b = BoxMesh::new_gd();
+            b.set_size(Vector3::new(0.12, 0.12, 0.7));
+            b
+        };
+        let proj_batch = Batch::new(&mut root, &proj_mesh.upcast(), false, Some(&tracer_mat));
+
+        let map = &session.world.map;
+        let fog_w = map.w * 2;
+        let fog_h = map.h * 2;
+        let fog_buf = vec![0u8; (fog_w * fog_h * 2) as usize];
+        let fog_img = Image::create_from_data(fog_w, fog_h, false, Format::RG8, &PackedByteArray::from(&fog_buf[..])).unwrap();
+        let fog_tex = ImageTexture::create_from_image(&fog_img).unwrap();
+        let minimap_base = terrain::minimap_base(map);
+        let minimap_buf = vec![0u8; (map.w * map.h * 4) as usize];
+        let mm_img = Image::create_from_data(map.w, map.h, false, Format::RGBA8, &PackedByteArray::from(&minimap_buf[..])).unwrap();
+        let minimap_tex = ImageTexture::create_from_image(&mm_img).unwrap();
+
+        let mut c = Client {
+            session,
+            me: 0,
+            heights,
+            models,
+            batches: HashMap::new(),
+            static_batches: HashMap::new(),
+            static_dirty: true,
+            ring_batch,
+            bar_batch,
+            tracer_batch,
+            proj_batch,
+            root,
+            fog_tex,
+            fog_w,
+            fog_h,
+            fog_buf,
+            last_fog_tick: u32::MAX,
+            minimap_tex,
+            minimap_base,
+            minimap_buf,
+            minimap_timer: 0.0,
+            selection: Vec::new(),
+            groups: vec![Vec::new(); 10],
+            hover: 0,
+            remembered: BTreeMap::new(),
+            corpses: Vec::new(),
+            tracers: Vec::new(),
+            proj_prev: HashMap::new(),
+            events: Vec::new(),
+            time: 0.0,
+            notices: Vec::new(),
+            last_attack_notice: -100.0,
+            palm_model,
+            pine_model,
+            reveal: opt.reveal,
+            shot_budget: 0,
+        };
+        c.session.world.config.reveal = opt.reveal;
+        c.update_fog(true);
+        c
+    }
+
+    pub fn world(&self) -> &World {
+        &self.session.world
+    }
+
+    pub fn issue(&mut self, kind: CommandKind) {
+        let me = self.me;
+        self.session.issue(me, kind);
+    }
+
+    // ------------------------------------------------------------------ frame
+
+    pub fn update(&mut self, dt: f64, cam: Option<&Gd<Camera3D>>) {
+        self.time += dt;
+        self.session.advance(dt);
+        let evs = std::mem::take(&mut self.session.event_log);
+        self.shot_budget = 60;
+        for e in &evs {
+            self.handle_event(e);
+        }
+        let w = &self.session.world;
+        let tick = w.tick;
+        if tick != self.last_fog_tick && (tick % 4 == 1 || self.last_fog_tick == u32::MAX) {
+            self.update_fog(false);
+            self.static_dirty = true;
+        }
+        self.selection.retain(|&id| self.session.world.get(id).map_or(false, |e| e.inside == 0 || data().def(e.def).is_building()));
+        self.render(dt as f32, cam);
+        self.minimap_timer -= dt as f32;
+        if self.minimap_timer <= 0.0 {
+            self.minimap_timer = 0.25;
+            self.update_minimap();
+        }
+    }
+
+    fn sees(&self, x: i32, y: i32) -> bool {
+        self.session.world.visible(self.me, x, y)
+    }
+
+    fn world_pos3(&self, p: FVec, layer: Layer, id: u32) -> Vector3 {
+        let (x, z) = to_world2(p);
+        let y = match layer {
+            Layer::Water => (self.time as f32 * 1.3 + id as f32 * 0.7).sin() * 0.08,
+            Layer::Air => AIR_ALT,
+            _ => self.heights.at(x, z).max(-0.3),
+        };
+        Vector3::new(x, y, z)
+    }
+
+    fn handle_event(&mut self, ev: &SimEvent) {
+        let me = self.me;
+        match ev {
+            SimEvent::Shot { from, to, from_pos, to_pos, weapon } => {
+                let (fx, fy) = from_pos.tile();
+                let (tx, ty) = to_pos.tile();
+                if !(self.sees(fx, fy) || self.sees(tx, ty)) {
+                    return;
+                }
+                let w = &self.session.world;
+                let Some(src) = w.get(*from) else { return };
+                let sd = data().def(src.def);
+                let Some(wp) = sd.weapons.get(*weapon as usize) else { return };
+                let mut a = self.world_pos3(*from_pos, sd.layer, *from);
+                let tlayer = w.get(*to).map(|t| data().def(t.def).layer).unwrap_or(Layer::Land);
+                let mut b = self.world_pos3(*to_pos, tlayer, *to);
+                let sh = self.models.list[self.models.by_def[src.def as usize]].height;
+                a.y += if sd.is_building() { sh * 0.8 } else { sh * 0.55 };
+                b.y += 0.8;
+                let instant = matches!(wp.projectile, ee_sim::defs::Projectile::Instant);
+                if instant && self.shot_budget > 0 {
+                    self.shot_budget -= 1;
+                    let col = match wp.dmg_type {
+                        DamageType::Flak => Color::from_rgba(1.0, 0.75, 0.35, 1.0),
+                        _ => Color::from_rgba(1.0, 0.85, 0.5, 0.9),
+                    };
+                    for k in 0..wp.burst.min(4) {
+                        let jitter = Vector3::new(((k * 37 % 7) as f32 - 3.0) * 0.08, 0.0, ((k * 53 % 5) as f32 - 2.0) * 0.08);
+                        self.tracers.push(Tracer { a, b: b + jitter, t: -(k as f32) * 0.05, life: 0.09, color: col });
+                    }
+                }
+                self.events.push(ClientEvent {
+                    kind: "shot",
+                    pos: a,
+                    to: b,
+                    size: wp.damage as f32,
+                    text: format!("{:?}", wp.dmg_type),
+                    dmg: wp.dmg_type as i32,
+                    mine: src.owner == me,
+                });
+            }
+            SimEvent::Impact { pos, dmg_type, splash, .. } => {
+                let (tx, ty) = pos.tile();
+                if !self.sees(tx, ty) {
+                    return;
+                }
+                let water = self.session.world.map.is_water(tx, ty);
+                let p = self.world_pos3(*pos, if water { Layer::Water } else { Layer::Land }, 0);
+                self.events.push(ClientEvent {
+                    kind: if water { "splash" } else { "impact" },
+                    pos: p,
+                    to: p,
+                    size: splash.to_f32() * TILE,
+                    text: String::new(),
+                    dmg: *dmg_type as i32,
+                    mine: false,
+                });
+            }
+            SimEvent::Died { id, def, owner, pos, .. } => {
+                let d = data().def(*def);
+                let (tx, ty) = pos.tile();
+                if *owner == me && d.is_unit() {
+                    // notified via UI counters only
+                }
+                if !self.sees(tx, ty) && *owner != me {
+                    self.remembered.remove(id);
+                    return;
+                }
+                self.remembered.remove(id);
+                let p = self.world_pos3(*pos, d.layer, *id);
+                let model = self.models.by_def[*def as usize];
+                let w = &self.session.world;
+                let color = w.players.get(*owner as usize).map(|pl| player_color(pl.color)).unwrap_or(Color::WHITE);
+                // last known facing isn't available after death: face a stable direction
+                let yaw = (*id as f32 * 1.618).fract() * std::f32::consts::TAU;
+                let xf = Transform3D::new(Basis::from_axis_angle(Vector3::UP, yaw), p);
+                let kind = match d.class() {
+                    Class::Citizen | Class::Infantry => 0,
+                    Class::Building => 2,
+                    Class::Aircraft => 3,
+                    _ => 1,
+                };
+                let life = match kind {
+                    0 => 6.0,
+                    1 => 9.0,
+                    2 => 5.0,
+                    _ => 4.0,
+                };
+                if !d.is_resource() {
+                    let vel = if kind == 3 { Vector3::new(yaw.cos() * 18.0, -6.0, yaw.sin() * 18.0) } else { Vector3::ZERO };
+                    self.corpses.push(Corpse { model, xf, color, t: 0.0, life, kind, vel });
+                    self.events.push(ClientEvent {
+                        kind: "death",
+                        pos: p,
+                        to: p,
+                        size: match kind {
+                            0 => 0.0,
+                            2 => (d.size().0 as f32) * TILE,
+                            _ => d.radius.to_f32() * TILE * 2.0,
+                        },
+                        text: d.data.key.clone(),
+                        dmg: kind as i32,
+                        mine: *owner == me,
+                    });
+                } else {
+                    self.static_dirty = true;
+                }
+            }
+            SimEvent::ResourceDepleted { .. } => {
+                self.static_dirty = true;
+            }
+            SimEvent::BuildingPlaced { owner, .. } if *owner == me => {
+                self.events.push(ClientEvent { kind: "placed", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: String::new(), dmg: 0, mine: true });
+            }
+            SimEvent::BuildingComplete { owner, def, id } if *owner == me => {
+                let p = self.session.world.get(*id).map(|e| self.world_pos3(e.pos, Layer::Land, 0)).unwrap_or(Vector3::ZERO);
+                self.events.push(ClientEvent {
+                    kind: "complete",
+                    pos: p,
+                    to: p,
+                    size: 0.0,
+                    text: data().def(*def).data.name.clone(),
+                    dmg: 0,
+                    mine: true,
+                });
+            }
+            SimEvent::Spawned { owner, def, .. } if *owner == me => {
+                self.events.push(ClientEvent { kind: "trained", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: data().def(*def).data.key.clone(), dmg: 0, mine: true });
+            }
+            SimEvent::ResearchComplete { owner, tech } if *owner == me => {
+                self.events.push(ClientEvent {
+                    kind: "research",
+                    pos: Vector3::ZERO,
+                    to: Vector3::ZERO,
+                    size: 0.0,
+                    text: data().techs[*tech as usize].data.name.clone(),
+                    dmg: 0,
+                    mine: true,
+                });
+            }
+            SimEvent::Damaged { owner, pos, .. } if *owner == me => {
+                if self.time - self.last_attack_notice > 12.0 {
+                    self.last_attack_notice = self.time;
+                    let p = self.world_pos3(*pos, Layer::Land, 0);
+                    self.events.push(ClientEvent { kind: "under_attack", pos: p, to: p, size: 0.0, text: String::new(), dmg: 0, mine: true });
+                }
+            }
+            SimEvent::Notice { owner, text } if *owner == me => {
+                self.events.push(ClientEvent { kind: "notice", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: text.to_string(), dmg: 0, mine: true });
+            }
+            SimEvent::PlayerDefeated { player } => {
+                let name = self.session.world.players[*player as usize].name.clone();
+                self.events.push(ClientEvent { kind: "defeated", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: name, dmg: *player as i32, mine: *player == me });
+            }
+            SimEvent::GameOver { winner_team } => {
+                let won = *winner_team == Some(self.session.world.players[me as usize].team);
+                self.events.push(ClientEvent { kind: "game_over", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: if won { "victory".into() } else { "defeat".into() }, dmg: 0, mine: won });
+            }
+            _ => {}
+        }
+    }
+
+    // ------------------------------------------------------------------ fog & minimap
+
+    fn update_fog(&mut self, force: bool) {
+        let w = &self.session.world;
+        if !force && w.tick == self.last_fog_tick {
+            return;
+        }
+        self.last_fog_tick = w.tick;
+        let mw = w.map.w;
+        let mh = w.map.h;
+        let fw = self.fog_w;
+        let fh = self.fog_h;
+        let vis = &w.vision[self.me as usize];
+        let reveal = self.reveal;
+        // 2x upsample with a 3x3 tent filter for soft edges
+        for y in 0..fh {
+            for x in 0..fw {
+                let mut sv = 0u32;
+                let mut se = 0u32;
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let tx = ((x + dx) / 2).clamp(0, mw - 1);
+                        let ty = ((y + dy) / 2).clamp(0, mh - 1);
+                        let v = if reveal { 2 } else { vis[(ty * mw + tx) as usize] };
+                        let wgt = if dx == 0 && dy == 0 { 4 } else if dx == 0 || dy == 0 { 2 } else { 1 };
+                        if v == 2 {
+                            sv += 255 * wgt;
+                        }
+                        if v >= 1 {
+                            se += 255 * wgt;
+                        }
+                    }
+                }
+                let i = ((y * fw + x) * 2) as usize;
+                self.fog_buf[i] = (sv / 16) as u8;
+                self.fog_buf[i + 1] = (se / 16) as u8;
+            }
+        }
+        if let Some(img) = Image::create_from_data(fw, fh, false, Format::RG8, &PackedByteArray::from(&self.fog_buf[..])) {
+            self.fog_tex.update(&img);
+        }
+    }
+
+    fn update_minimap(&mut self) {
+        let w = &self.session.world;
+        let mw = w.map.w;
+        let mh = w.map.h;
+        let vis = &w.vision[self.me as usize];
+        for i in 0..(mw * mh) as usize {
+            let v = if self.reveal { 2 } else { vis[i] };
+            let c = self.minimap_base[i];
+            let k = match v {
+                2 => 255u32,
+                1 => 130,
+                _ => 0,
+            };
+            self.minimap_buf[i * 4] = (c[0] as u32 * k / 255) as u8;
+            self.minimap_buf[i * 4 + 1] = (c[1] as u32 * k / 255) as u8;
+            self.minimap_buf[i * 4 + 2] = (c[2] as u32 * k / 255) as u8;
+            self.minimap_buf[i * 4 + 3] = 255;
+        }
+        let mut plot = |buf: &mut Vec<u8>, x: i32, y: i32, c: Color, r: i32| {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let (px, py) = (x + dx, y + dy);
+                    if px >= 0 && py >= 0 && px < mw && py < mh {
+                        let i = ((py * mw + px) * 4) as usize;
+                        buf[i] = (c.r * 255.0) as u8;
+                        buf[i + 1] = (c.g * 255.0) as u8;
+                        buf[i + 2] = (c.b * 255.0) as u8;
+                    }
+                }
+            }
+        };
+        for e in &w.entities {
+            if !e.alive || e.inside != 0 {
+                continue;
+            }
+            let d = data().def(e.def);
+            let (tx, ty) = e.pos.tile();
+            if d.is_resource() {
+                if d.size().0 > 1 && w.explored(self.me, tx, ty) {
+                    let c = match d.data.key.as_str() {
+                        "gold_mine" => Color::from_rgb(1.0, 0.85, 0.2),
+                        "iron_mine" => Color::from_rgb(0.75, 0.45, 0.35),
+                        _ => Color::from_rgb(0.8, 0.8, 0.8),
+                    };
+                    plot(&mut self.minimap_buf, tx, ty, c, 1);
+                }
+                continue;
+            }
+            if e.owner == GAIA {
+                continue;
+            }
+            if e.owner != self.me && !w.can_see(self.me, e) {
+                continue;
+            }
+            let c = player_color(w.players[e.owner as usize].color);
+            let r = if d.is_building() { d.size().0 / 2 } else { 0 };
+            plot(&mut self.minimap_buf, tx, ty, c, r);
+        }
+        for (_, r) in &self.remembered {
+            let (tx, ty) = r.pos.tile();
+            let c = player_color(w.players[r.owner as usize].color) * 0.7;
+            plot(&mut self.minimap_buf, tx, ty, c, 1);
+        }
+        if let Some(img) = Image::create_from_data(mw, mh, false, Format::RGBA8, &PackedByteArray::from(&self.minimap_buf[..])) {
+            self.minimap_tex.update(&img);
+        }
+    }
+
+    // ------------------------------------------------------------------ rendering
+
+    fn batch(&mut self, model: usize, part: usize, stat: bool) -> &mut Batch {
+        let map = if stat { &mut self.static_batches } else { &mut self.batches };
+        if !map.contains_key(&(model, part)) {
+            let mesh: Gd<Mesh> = self.models.list[model].parts[part].mesh.clone();
+            let mut b = Batch::new(&mut self.root, &mesh, true, None);
+            b.begin();
+            map.insert((model, part), b);
+        }
+        map.get_mut(&(model, part)).unwrap()
+    }
+
+    fn push_model(&mut self, model: usize, xf: Transform3D, color: Color, custom: [f32; 4], turret_yaw: f32, stat: bool) {
+        let nparts = self.models.list[model].parts.len();
+        let t = self.time as f32;
+        for pi in 0..nparts {
+            let (role, local, pivot) = {
+                let p = &self.models.list[model].parts[pi];
+                (p.role, p.local, p.pivot)
+            };
+            let pxf = match role {
+                Role::Body => xf * local,
+                Role::Turret => {
+                    let r = Transform3D::new(Basis::from_axis_angle(Vector3::UP, turret_yaw), Vector3::ZERO);
+                    let to_p = Transform3D::new(Basis::IDENTITY, pivot);
+                    let from_p = Transform3D::new(Basis::IDENTITY, -pivot);
+                    xf * to_p * r * from_p * local
+                }
+                Role::Rotor | Role::RotorX => {
+                    let axis = if role == Role::Rotor { Vector3::UP } else { Vector3::RIGHT };
+                    let spin = if custom[1] > 5.5 && custom[1] < 6.5 { 0.0 } else { t * 40.0 };
+                    let r = Transform3D::new(Basis::from_axis_angle(axis, spin), Vector3::ZERO);
+                    let to_p = Transform3D::new(Basis::IDENTITY, pivot);
+                    let from_p = Transform3D::new(Basis::IDENTITY, -pivot);
+                    xf * to_p * r * from_p * local
+                }
+            };
+            self.batch(model, pi, stat).push(&pxf, color, custom);
+        }
+    }
+
+    fn render(&mut self, dt: f32, cam: Option<&Gd<Camera3D>>) {
+        let alpha = self.session.alpha();
+        for b in self.batches.values_mut() {
+            b.begin();
+        }
+        self.ring_batch.begin();
+        self.bar_batch.begin();
+        self.tracer_batch.begin();
+        self.proj_batch.begin();
+        let me = self.me;
+        let t = self.time as f32;
+
+        // camera culling: only draw what's near the view
+        let (cull_c, cull_r) = match cam {
+            Some(c) => {
+                let o = c.get_global_position();
+                let f = -c.get_global_transform().basis.col_c();
+                let k = if f.y < -0.05 { -o.y / f.y } else { 200.0 };
+                let gp = o + f * k;
+                (Vector2::new(gp.x, gp.z), (o.y * 2.2).max(160.0))
+            }
+            None => (Vector2::ZERO, 1e9),
+        };
+
+        let n = self.session.world.entities.len();
+        let sel: std::collections::HashSet<EntityId> = self.selection.iter().copied().collect();
+        // remember enemy buildings we can see; forget ones proven gone
+        {
+            let w = &self.session.world;
+            let mut seen_now: Vec<(EntityId, Remembered)> = Vec::new();
+            for e in &w.entities {
+                if !e.alive || e.owner == GAIA || e.owner == me {
+                    continue;
+                }
+                let d = data().def(e.def);
+                if d.is_building() && w.can_see(me, e) {
+                    let bt = d.build_ticks.max(1) as f32;
+                    seen_now.push((e.id, Remembered { def: e.def, owner: e.owner, pos: e.pos, progress: if e.complete { 1.0 } else { e.progress as f32 / bt } }));
+                }
+            }
+            for (id, r) in seen_now {
+                self.remembered.insert(id, r);
+            }
+            let gone: Vec<EntityId> = self
+                .remembered
+                .iter()
+                .filter(|(id, r)| {
+                    let (tx, ty) = r.pos.tile();
+                    w.visible(me, tx, ty) && w.get(**id).is_none()
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            for g in gone {
+                self.remembered.remove(&g);
+            }
+        }
+
+        for i in 1..n {
+            let (def, owner, pos, prev, facing, action, id, hp, complete, progress, target, inside, carry) = {
+                let e = &self.session.world.entities[i];
+                if !e.alive {
+                    continue;
+                }
+                (e.def, e.owner, e.pos, e.prev_pos, e.facing, e.action, e.id, e.hp, e.complete, e.progress, e.target, e.inside, e.carry)
+            };
+            let d = data().def(def);
+            if d.is_resource() || inside != 0 {
+                continue;
+            }
+            let w = &self.session.world;
+            let visible = owner == me || w.can_see(me, &w.entities[i]);
+            if !visible {
+                continue;
+            }
+            // interpolate
+            let ip = FVec::new(
+                Fx(prev.x.0 + ((pos.x.0 - prev.x.0) as f32 * alpha) as i32),
+                Fx(prev.y.0 + ((pos.y.0 - prev.y.0) as f32 * alpha) as i32),
+            );
+            let mut p = self.world_pos3(ip, d.layer, id);
+            if Vector2::new(p.x, p.z).distance_to(cull_c) > cull_r {
+                continue;
+            }
+            let model = self.models.by_def[def as usize];
+            let fx = facing.x.to_f32();
+            let fz = facing.y.to_f32();
+            let yaw = if d.is_building() { 0.0 } else { fx.atan2(fz) };
+            let mut basis = Basis::from_axis_angle(Vector3::UP, yaw);
+            if d.layer == Layer::Air {
+                // bank into turns, bob gently
+                let turn = ((facing.x.0 as f32 * 0.0) + (pos.x.0 - prev.x.0) as f32 * fz - (pos.y.0 - prev.y.0) as f32 * fx) / 65536.0;
+                basis = basis * Basis::from_axis_angle(Vector3::FORWARD, (turn * 40.0).clamp(-0.6, 0.6));
+                p.y += (t * 1.7 + id as f32).sin() * 0.4;
+                if d.data.hover {
+                    p.y -= 4.0;
+                }
+            } else if d.layer == Layer::Water {
+                let roll = (t * 1.1 + id as f32 * 0.37).sin() * 0.03;
+                basis = basis * Basis::from_axis_angle(Vector3::BACK, roll);
+            } else if d.class() == Class::Vehicle {
+                // align to terrain slope
+                let nrm = self.heights.normal(p.x, p.z);
+                let up = Vector3::UP;
+                let axis = up.cross(nrm);
+                let ang = up.angle_to(nrm);
+                if axis.length() > 1e-4 {
+                    basis = Basis::from_axis_angle(axis.normalized(), ang * 0.8) * basis;
+                }
+            }
+            let xf = Transform3D::new(basis, p);
+            let color = player_color(w.players.get(owner as usize).map_or(7, |pl| pl.color));
+            let prog = if d.is_building() && !complete { progress as f32 / d.build_ticks.max(1) as f32 } else { 1.0 };
+            let mut flags = 0.0;
+            if self.hover == id {
+                flags += 2.0;
+            }
+            let act = if carry > 0 && action == Action::Move { Action::Carry } else { action };
+            let custom = [t + (id % 97) as f32 * 0.31, act as u8 as f32, prog, flags];
+            // turret: aim at the current target
+            let mut turret_yaw = 0.0;
+            if target != 0 && (action == Action::Attack || d.is_building()) {
+                if let Some(te) = w.get(target) {
+                    let (tx, tz) = to_world2(te.pos);
+                    let world_yaw = (tx - p.x).atan2(tz - p.z);
+                    turret_yaw = world_yaw - yaw;
+                }
+            }
+            self.push_model(model, xf, color, custom, turret_yaw, false);
+
+            // selection ring + health bar
+            let w = &self.session.world;
+            let maxhp = w.max_hp(&w.entities[i]).max(1);
+            let selected = sel.contains(&id);
+            let r = self.models.list[model].radius;
+            if selected || self.hover == id {
+                let ring_col = if owner == me {
+                    Color::from_rgba(0.3, 1.0, 0.4, if selected { 0.9 } else { 0.45 })
+                } else if w.is_enemy(me, owner) {
+                    Color::from_rgba(1.0, 0.25, 0.2, 0.8)
+                } else {
+                    Color::from_rgba(1.0, 0.9, 0.3, 0.8)
+                };
+                let gy = if d.layer == Layer::Air { self.heights.at(p.x, p.z).max(0.0) + 0.15 } else { p.y + 0.12 };
+                let rxf = Transform3D::new(Basis::from_scale(Vector3::new(r * 2.0, 1.0, r * 2.0)), Vector3::new(p.x, gy, p.z));
+                self.ring_batch.push(&rxf, ring_col, [0.0; 4]);
+            }
+            let damaged = hp < maxhp;
+            if selected || self.hover == id || (damaged && owner == me && d.is_unit()) || (!complete && d.is_building()) {
+                let h = self.models.list[model].height;
+                let bw = (r * 1.4).clamp(1.2, 9.0);
+                let bxf = Transform3D::new(Basis::from_scale(Vector3::new(bw, bw, bw)), Vector3::new(p.x, p.y + h + 0.8, p.z));
+                let sec = if !complete { prog } else { 0.0 };
+                self.bar_batch.push(&bxf, Color::WHITE, [hp as f32 / maxhp as f32, sec, 0.0, 0.0]);
+            }
+        }
+
+        // remembered enemy buildings under fog
+        let rem: Vec<(EntityId, Remembered)> = self.remembered.iter().map(|(k, v)| (*k, v.clone())).collect();
+        for (id, r) in rem {
+            let w = &self.session.world;
+            if let Some(e) = w.get(id) {
+                if w.can_see(me, e) {
+                    continue;
+                }
+            }
+            let p = self.world_pos3(r.pos, Layer::Land, 0);
+            if Vector2::new(p.x, p.z).distance_to(cull_c) > cull_r {
+                continue;
+            }
+            let model = self.models.by_def[r.def as usize];
+            let color = player_color(w.players[r.owner as usize].color);
+            self.push_model(model, Transform3D::new(Basis::IDENTITY, p), color, [0.0, 0.0, r.progress, 4.0], 0.0, false);
+        }
+
+        // corpses / wrecks
+        let mut corpses = std::mem::take(&mut self.corpses);
+        for c in corpses.iter_mut() {
+            c.t += dt;
+            let k = c.t / c.life;
+            let mut xf = c.xf;
+            let (action, prog, flags) = match c.kind {
+                0 => {
+                    // fall, then sink into the ground
+                    if k > 0.7 {
+                        xf.origin.y -= (k - 0.7) / 0.3 * 1.2;
+                    }
+                    (7.0, 1.0, 0.0)
+                }
+                1 => {
+                    xf.origin.y -= (k - 0.8).max(0.0) / 0.2 * 2.0;
+                    (0.0, 1.0, 4.0)
+                }
+                2 => {
+                    // collapse: sink and tilt
+                    xf.origin.y -= k * k * self.models.list[c.model].height * 0.9;
+                    xf.basis = xf.basis * Basis::from_axis_angle(Vector3::RIGHT, k * 0.12);
+                    (0.0, 1.0, 4.0)
+                }
+                _ => {
+                    // aircraft spiral into the ground
+                    c.vel.y -= 9.0 * dt;
+                    xf.origin += c.vel * c.t;
+                    let gy = self.heights.at(xf.origin.x, xf.origin.z).max(0.0);
+                    if xf.origin.y < gy {
+                        xf.origin.y = gy;
+                    }
+                    xf.basis = xf.basis * Basis::from_axis_angle(Vector3::FORWARD, c.t * 3.0);
+                    (0.0, 1.0, 4.0)
+                }
+            };
+            let custom = [if c.kind == 0 { c.t * 1.5 } else { 0.0 }, action, prog, flags];
+            self.push_model(c.model, xf, c.color, custom, 0.0, false);
+        }
+        corpses.retain(|c| c.t < c.life);
+        self.corpses = corpses;
+
+        // projectiles
+        let mut seen = HashMap::new();
+        {
+            let w = &self.session.world;
+            for pr in &w.projectiles {
+                let (tx, ty) = pr.pos.tile();
+                if !w.visible(me, tx, ty) {
+                    continue;
+                }
+                let (x, z) = to_world2(pr.pos);
+                let (sx, sz) = to_world2(pr.start);
+                let (ax, az) = to_world2(pr.aim);
+                let total = ((ax - sx).powi(2) + (az - sz).powi(2)).sqrt().max(0.01);
+                let done = ((x - sx).powi(2) + (z - sz).powi(2)).sqrt() / total;
+                let src_air = data().def(pr.src_def).layer == Layer::Air;
+                let base_y = if src_air { AIR_ALT * (1.0 - done) + self.heights.at(x, z).max(0.0) * done } else { self.heights.at(x, z).max(0.0) + 1.5 };
+                // ballistic arc for shells
+                let arc = if pr.homing { 0.0 } else { (done * std::f32::consts::PI).sin() * (total * 0.18).min(25.0) };
+                let pos = Vector3::new(x, base_y + arc, z);
+                let prevp = self.proj_prev.get(&pr.id).copied().unwrap_or(Vector3::new(sx, base_y, sz));
+                seen.insert(pr.id, pos);
+                let dir = pos - prevp;
+                let len = dir.length();
+                if len > 1e-3 {
+                    let fwd = dir / len;
+                    let up = if fwd.y.abs() > 0.95 { Vector3::RIGHT } else { Vector3::UP };
+                    let right = up.cross(fwd).normalized();
+                    let up2 = fwd.cross(right);
+                    let basis = Basis::from_cols(right, up2, fwd);
+                    let xf = Transform3D::new(basis, pos);
+                    let col = match pr.dmg_type {
+                        DamageType::Missile | DamageType::Flak => Color::from_rgba(1.0, 0.6, 0.25, 1.0),
+                        DamageType::Torpedo => Color::from_rgba(0.6, 0.9, 1.0, 0.6),
+                        _ => Color::from_rgba(1.0, 0.8, 0.4, 1.0),
+                    };
+                    self.proj_batch.push(&xf, col, [1.0, 0.0, 0.0, 0.0]);
+                    if pr.homing && pr.dmg_type != DamageType::Torpedo {
+                        self.events.push(ClientEvent { kind: "trail", pos, to: prevp, size: 0.0, text: String::new(), dmg: 0, mine: false });
+                    }
+                }
+            }
+        }
+        self.proj_prev = seen;
+
+        // tracers
+        let mut tr = std::mem::take(&mut self.tracers);
+        for tc in tr.iter_mut() {
+            tc.t += dt;
+            if tc.t < 0.0 {
+                continue;
+            }
+            let k = (tc.t / tc.life).clamp(0.0, 1.0);
+            let dir = tc.b - tc.a;
+            let len = dir.length().max(0.01);
+            let fwd = dir / len;
+            // streak travels along the line
+            let seg = (len * 0.35).min(6.0);
+            let start = tc.a + fwd * ((len - seg) * k);
+            let cam_up = Vector3::UP;
+            let side = cam_up.cross(fwd).normalized();
+            let up = fwd.cross(side);
+            let basis = Basis::from_cols(fwd * seg, up, side * 0.12);
+            let xf = Transform3D::new(basis, start);
+            self.tracer_batch.push(&xf, tc.color, [1.0 - k * 0.5, 0.0, 0.0, 0.0]);
+        }
+        tr.retain(|tc| tc.t < tc.life);
+        self.tracers = tr;
+
+        for b in self.batches.values_mut() {
+            b.finish();
+        }
+        self.ring_batch.finish();
+        self.bar_batch.finish();
+        self.tracer_batch.finish();
+        self.proj_batch.finish();
+
+        if self.static_dirty {
+            self.static_dirty = false;
+            self.render_static();
+        }
+    }
+
+    /// Trees, mines, berries: rebuilt only when resources or fog change.
+    fn render_static(&mut self) {
+        for b in self.static_batches.values_mut() {
+            b.begin();
+        }
+        let me = self.me;
+        let n = self.session.world.entities.len();
+        let tree = data().id("tree");
+        for i in 1..n {
+            let (def, pos, id, amount) = {
+                let e = &self.session.world.entities[i];
+                if !e.alive {
+                    continue;
+                }
+                (e.def, e.pos, e.id, e.amount)
+            };
+            let d = data().def(def);
+            if !d.is_resource() || d.layer == Layer::Water || self.session.world.fish.contains(&id) {
+                continue;
+            }
+            let (tx, ty) = pos.tile();
+            let w = &self.session.world;
+            if !w.explored(me, tx, ty) {
+                continue;
+            }
+            let fog = if w.visible(me, tx, ty) { 0.0 } else { 4.0 };
+            let (x, z) = to_world2(pos);
+            // jitter trees inside their tile so forests don't look gridded
+            let hsh = (id.wrapping_mul(2654435761)) >> 8;
+            let (jx, jz) = if def == tree {
+                (((hsh & 0xff) as f32 / 255.0 - 0.5) * TILE * 0.55, (((hsh >> 8) & 0xff) as f32 / 255.0 - 0.5) * TILE * 0.55)
+            } else {
+                (0.0, 0.0)
+            };
+            let wx = x + jx;
+            let wz = z + jz;
+            let y = self.heights.at(wx, wz);
+            let yaw = ((hsh >> 16) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
+            let s = if def == tree { 0.8 + ((hsh >> 4) & 0x3f) as f32 / 63.0 * 0.5 } else { 1.0 };
+            let model = if def == tree {
+                let t = w.map.terrain_at(tx, ty);
+                if t == ee_sim::map::Terrain::Beach {
+                    self.palm_model
+                } else if matches!(t, ee_sim::map::Terrain::Rock | ee_sim::map::Terrain::Mountain) || (hsh % 3 == 0) {
+                    self.pine_model
+                } else {
+                    self.models.by_def[def as usize]
+                }
+            } else {
+                self.models.by_def[def as usize]
+            };
+            // deplete visually: mines shrink as they're mined out
+            let depl = if d.data.amount > 0 && def != tree { (amount as f32 / d.data.amount.max(1) as f32).clamp(0.35, 1.0).sqrt() } else { 1.0 };
+            let basis = Basis::from_axis_angle(Vector3::UP, yaw).scaled(Vector3::new(s, s * depl, s));
+            let xf = Transform3D::new(basis, Vector3::new(wx, y - 0.05, wz));
+            let nparts = self.models.list[model].parts.len();
+            for pi in 0..nparts {
+                let local = self.models.list[model].parts[pi].local;
+                let b = self.batch(model, pi, true);
+                b.push(&(xf * local), Color::WHITE, [0.0, 0.0, 1.0, fog]);
+            }
+        }
+        for b in self.static_batches.values_mut() {
+            b.finish();
+        }
+    }
+
+    // ------------------------------------------------------------------ picking
+
+    pub fn ground_at(&self, cam: &Gd<Camera3D>, screen: Vector2) -> Option<Vector3> {
+        let o = cam.project_ray_origin(screen);
+        let dir = cam.project_ray_normal(screen);
+        let surf = |p: Vector3| -> f32 { self.heights.at(p.x, p.z).max(0.0) };
+        let mut t = 0.0f32;
+        let step = 2.0;
+        let mut prev = o;
+        for _ in 0..1500 {
+            let p = o + dir * t;
+            if p.y <= surf(p) {
+                // refine
+                let (mut a, mut b) = (t - step, t);
+                for _ in 0..12 {
+                    let m = (a + b) * 0.5;
+                    let pm = o + dir * m;
+                    if pm.y <= surf(pm) {
+                        b = m;
+                    } else {
+                        a = m;
+                    }
+                }
+                let hit = o + dir * b;
+                return Some(hit);
+            }
+            prev = p;
+            t += step;
+            if p.y < -50.0 {
+                break;
+            }
+        }
+        let _ = prev;
+        None
+    }
+
+    fn entity_screen(&self, cam: &Gd<Camera3D>, e: &Entity) -> Option<(Vector2, f32)> {
+        let d = data().def(e.def);
+        let p = self.world_pos3(e.pos, d.layer, e.id);
+        let model = &self.models.list[self.models.by_def[e.def as usize]];
+        let c = p + Vector3::UP * (model.height * 0.45);
+        if cam.is_position_behind(c) {
+            return None;
+        }
+        let s = cam.unproject_position(c);
+        let edge = cam.unproject_position(c + cam.get_global_transform().basis.col_a() * model.radius);
+        Some((s, (edge - s).length().max(10.0)))
+    }
+
+    /// Entity under the cursor (visible only).
+    pub fn pick(&self, cam: &Gd<Camera3D>, screen: Vector2) -> EntityId {
+        let w = &self.session.world;
+        let ground = self.ground_at(cam, screen);
+        let mut best: Option<(f32, EntityId)> = None;
+        let center = ground.map(|g| Vector2::new(g.x, g.z));
+        for e in &w.entities {
+            if !e.alive || e.inside != 0 {
+                continue;
+            }
+            let d = data().def(e.def);
+            if d.is_resource() && d.layer == Layer::Water && !w.fish.contains(&e.id) {
+                continue;
+            }
+            if let Some(c) = center {
+                let (x, z) = to_world2(e.pos);
+                let lim = if d.layer == Layer::Air { 60.0 } else if d.is_building() { 30.0 } else { 14.0 };
+                if Vector2::new(x, z).distance_to(c) > lim {
+                    continue;
+                }
+            }
+            if e.owner != self.me && !d.is_resource() && !w.can_see(self.me, e) {
+                continue;
+            }
+            if d.is_resource() {
+                let (tx, ty) = e.pos.tile();
+                if !w.explored(self.me, tx, ty) {
+                    continue;
+                }
+            }
+            // buildings: footprint test against the ground point
+            if (d.is_building() || d.size().0 > 1) && ground.is_some() {
+                let g = ground.unwrap();
+                let (sw, sh) = d.size();
+                let x0 = e.tile.0 as f32 * TILE;
+                let z0 = e.tile.1 as f32 * TILE;
+                if g.x >= x0 && g.x <= x0 + sw as f32 * TILE && g.z >= z0 && g.z <= z0 + sh as f32 * TILE {
+                    let score = 30.0;
+                    if best.map_or(true, |(b, _)| score < b) {
+                        best = Some((score, e.id));
+                    }
+                    continue;
+                }
+            }
+            if let Some((s, r)) = self.entity_screen(cam, e) {
+                let dist = s.distance_to(screen);
+                if dist < r {
+                    let score = dist / r * 20.0 + if d.is_resource() { 15.0 } else { 0.0 };
+                    if best.map_or(true, |(b, _)| score < b) {
+                        best = Some((score, e.id));
+                    }
+                }
+            }
+        }
+        best.map_or(0, |b| b.1)
+    }
+
+    pub fn select_rect(&mut self, cam: &Gd<Camera3D>, a: Vector2, b: Vector2, add: bool) {
+        let min = a.coord_min(b);
+        let max = a.coord_max(b);
+        let w = &self.session.world;
+        let mut units = Vec::new();
+        let mut buildings = Vec::new();
+        for e in &w.entities {
+            if !e.alive || e.owner != self.me || e.inside != 0 {
+                continue;
+            }
+            let d = data().def(e.def);
+            if d.is_resource() {
+                continue;
+            }
+            if let Some((s, _)) = self.entity_screen(cam, e) {
+                if s.x >= min.x && s.x <= max.x && s.y >= min.y && s.y <= max.y {
+                    if d.is_unit() {
+                        units.push(e.id);
+                    } else {
+                        buildings.push(e.id);
+                    }
+                }
+            }
+        }
+        // prefer combat units over citizens over buildings
+        let combat: Vec<EntityId> = units.iter().copied().filter(|&id| w.class_of(id) != Some(Class::Citizen)).collect();
+        let chosen = if !combat.is_empty() && units.len() > combat.len() && combat.len() * 4 >= units.len() {
+            combat
+        } else if !units.is_empty() {
+            units
+        } else {
+            buildings
+        };
+        if !add {
+            self.selection.clear();
+        }
+        for id in chosen {
+            if !self.selection.contains(&id) {
+                self.selection.push(id);
+            }
+        }
+    }
+
+    pub fn select_click(&mut self, cam: &Gd<Camera3D>, screen: Vector2, add: bool, same_type: bool) {
+        let id = self.pick(cam, screen);
+        if !add {
+            self.selection.clear();
+        }
+        if id == 0 {
+            return;
+        }
+        let w = &self.session.world;
+        let e = w.get(id).unwrap();
+        if same_type && e.owner == self.me {
+            let def = e.def;
+            // all of this type on screen
+            let vp_ids: Vec<EntityId> = w
+                .entities
+                .iter()
+                .filter(|o| o.alive && o.owner == self.me && o.def == def && o.inside == 0)
+                .filter_map(|o| self.entity_screen(cam, o).map(|_| o.id))
+                .collect();
+            for v in vp_ids {
+                if !self.selection.contains(&v) {
+                    self.selection.push(v);
+                }
+            }
+            return;
+        }
+        if add {
+            if let Some(i) = self.selection.iter().position(|&s| s == id) {
+                self.selection.remove(i);
+                return;
+            }
+        }
+        self.selection.push(id);
+    }
+
+    pub fn my_selected_units(&self) -> Vec<EntityId> {
+        let w = &self.session.world;
+        self.selection
+            .iter()
+            .copied()
+            .filter(|&id| w.get(id).map_or(false, |e| e.owner == self.me && data().def(e.def).is_unit()))
+            .collect()
+    }
+
+    pub fn my_selected_buildings(&self) -> Vec<EntityId> {
+        let w = &self.session.world;
+        self.selection
+            .iter()
+            .copied()
+            .filter(|&id| w.get(id).map_or(false, |e| e.owner == self.me && data().def(e.def).is_building()))
+            .collect()
+    }
+
+    /// Right-click: smart command for units, rally point for buildings.
+    pub fn command_at(&mut self, target: EntityId, ground: Option<Vector3>, queue: bool, attack_move: bool) {
+        let units = self.my_selected_units();
+        let buildings = self.my_selected_buildings();
+        let w = &self.session.world;
+        if !units.is_empty() {
+            if target != 0 && !attack_move {
+                // transports right-clicking land = unload there
+                self.issue(CommandKind::Target { units, target, queue });
+                self.events.push(ClientEvent { kind: "ack", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: "target".into(), dmg: 0, mine: true });
+            } else if let Some(g) = ground {
+                let to = from_world(g.x, g.z);
+                let (tx, ty) = to.tile();
+                // loaded transports clicking on land: unload
+                let transports: Vec<EntityId> = units
+                    .iter()
+                    .copied()
+                    .filter(|&id| w.get(id).map_or(false, |e| data().def(e.def).data.cargo > 0 && !e.cargo.is_empty()))
+                    .collect();
+                let others: Vec<EntityId> = units.iter().copied().filter(|id| !transports.contains(id)).collect();
+                if !transports.is_empty() && w.map.is_land(tx, ty) {
+                    self.issue(CommandKind::Unload { units: transports, at: to });
+                } else if !transports.is_empty() {
+                    self.issue(CommandKind::Move { units: transports, to, attack_move, queue });
+                }
+                if !others.is_empty() {
+                    self.issue(CommandKind::Move { units: others, to, attack_move, queue });
+                }
+                self.events.push(ClientEvent { kind: "move_marker", pos: g, to: g, size: 0.0, text: String::new(), dmg: 0, mine: attack_move });
+            }
+        } else if !buildings.is_empty() {
+            if let Some(g) = ground {
+                let to = from_world(g.x, g.z);
+                self.issue(CommandKind::SetRally { buildings, to, target });
+                self.events.push(ClientEvent { kind: "move_marker", pos: g, to: g, size: 0.0, text: String::new(), dmg: 0, mine: false });
+            }
+        }
+    }
+}
+
+fn shader_mat(path: &str) -> Gd<ShaderMaterial> {
+    let mut m = ShaderMaterial::new_gd();
+    m.set_shader(&godot::tools::load::<Shader>(path));
+    m
+}
+
+#[allow(dead_code)]
+fn _unused(_: ProdItem, _: Order) {}

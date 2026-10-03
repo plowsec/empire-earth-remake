@@ -72,6 +72,9 @@ pub struct Session {
     pub paused: bool,
     pub checksum_interval: u32,
     pub checksums: Vec<(u32, u64)>,
+    /// events from every executed tick since the client last drained them
+    pub event_log: Vec<ee_sim::world::SimEvent>,
+    pub collect_events: bool,
 }
 
 impl Session {
@@ -91,6 +94,8 @@ impl Session {
             paused: false,
             checksum_interval: 100,
             checksums: Vec::new(),
+            event_log: Vec::new(),
+            collect_events: false,
         }
     }
 
@@ -155,6 +160,9 @@ impl Session {
         self.arrived.remove(&tick);
         tc.canonicalize();
         self.world.step(&tc);
+        if self.collect_events {
+            self.event_log.extend(self.world.events.drain(..));
+        }
         if self.record_replay && !tc.commands.is_empty() {
             self.replay.push(tc);
         }

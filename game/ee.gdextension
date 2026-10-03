@@ -1,0 +1,12 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.5
+reloadable = true
+
+[libraries]
+macos.debug = "res://bin/libee_godot.dylib"
+macos.release = "res://bin/libee_godot.dylib"
+linux.debug = "res://bin/libee_godot.so"
+linux.release = "res://bin/libee_godot.so"
+windows.debug = "res://bin/ee_godot.dll"
+windows.release = "res://bin/ee_godot.dll"

@@ -6,3 +6,7 @@ game/bin/
 /build/
 .DS_Store
 .venv/
+game/assets/textures/src/*_disp.jpg
+game/assets/textures/src/
+*.import
+!game/assets/textures/terrain_*_array.png.import
