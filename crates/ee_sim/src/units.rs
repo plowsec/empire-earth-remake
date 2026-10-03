@@ -515,6 +515,7 @@ impl World {
             let carry = e.carry;
             let found = if res != 255 { self.nearest_resource(res, from, 18, layer == Layer::Water) } else { None };
             let id = e.id;
+            let found = if found.is_none() && carry == 0 { self.find_work(i) } else { found };
             match found {
                 Some(f) => {
                     // claim the slot now so the rest of the crew picks other trees
@@ -707,7 +708,8 @@ impl World {
                 } else {
                     let res = e.last_res;
                     let from = e.last_node_pos;
-                    match self.nearest_resource(res, from, 18, d.layer == Layer::Water) {
+                    let found = self.nearest_resource(res, from, 18, d.layer == Layer::Water).or_else(|| self.find_work(i));
+                    match found {
                         Some(f) => set_order(self, id, Order::Gather { node: f }),
                         None => self.next_order(i),
                     }
@@ -758,7 +760,11 @@ impl World {
                 match self.nearby_build_job(i, site) {
                     Some((t, false)) => set_order(self, id, Order::Build { site: t }),
                     Some((t, true)) => set_order(self, id, Order::Repair { target: t }),
-                    None => self.next_order(i),
+                    None => match self.find_work(i) {
+                        // nothing left to build: go gather the nearest resource
+                        Some(n) => set_order(self, id, Order::Gather { node: n }),
+                        None => self.next_order(i),
+                    },
                 }
             } else {
                 self.next_order(i);
@@ -816,6 +822,39 @@ impl World {
                 }
             }
         }
+    }
+
+    /// A citizen with nothing left to do: the nearest resource of the kind it last
+    /// gathered (wider search), else the nearest resource of any kind. Never someone
+    /// else's farm. Fishing boats keep to fish.
+    pub(crate) fn find_work(&self, i: usize) -> Option<EntityId> {
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        if d.data.gather.is_none() {
+            return None;
+        }
+        let water = d.layer == Layer::Water;
+        let pos = e.pos;
+        let owner = e.owner;
+        let usable = |n: EntityId| self.get(n).map_or(false, |x| {
+            let nd = data().def(x.def);
+            !nd.is_building() || (x.owner == owner && x.complete && x.gatherers == 0)
+        });
+        if e.last_res != 255 {
+            if let Some(n) = self.nearest_resource(e.last_res, pos, 28, water).filter(|&n| usable(n)) {
+                return Some(n);
+            }
+        }
+        let mut best: Option<(i64, EntityId)> = None;
+        for r in 0..crate::defs::NUM_RES as u8 {
+            if let Some(n) = self.nearest_resource(r, pos, 16, water).filter(|&n| usable(n)) {
+                let dd = self.get(n).unwrap().pos.dist2_raw(pos);
+                if best.map_or(true, |b| dd < b.0) {
+                    best = Some((dd, n));
+                }
+            }
+        }
+        best.map(|b| b.1)
     }
 
     /// Nearest own construction site (or damaged building) within 12 tiles: (id, is_repair).

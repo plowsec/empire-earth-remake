@@ -2,6 +2,7 @@
 //! returns the same `CommandKind`s a human produces. Fully deterministic: it can
 //! run on every peer in lockstep, or on the host only.
 use serde::{Deserialize, Serialize};
+mod campaign;
 mod expand;
 mod plan;
 mod strategic;
@@ -98,6 +99,13 @@ struct Invasion {
     landing: FVec,
     target: FVec,
     stage_tick: u32,
+    /// every beach this wave lands on (transport i uses landings[i % n])
+    #[serde(default)]
+    landings: Vec<FVec>,
+    #[serde(default)]
+    beaches: Vec<(i32, i32)>,
+    #[serde(default)]
+    start_size: usize,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -158,6 +166,20 @@ pub struct Ai {
     /// aim points where missiles were evidently shot down
     #[serde(default)]
     pub(crate) extra_cover: Vec<FVec>,
+    /// landing beaches around each enemy island
+    #[serde(default)]
+    pub(crate) beaches: BTreeMap<u8, Vec<((i32, i32), (i32, i32))>>,
+    #[serde(default)]
+    pub(crate) beach_losses: BTreeMap<(i32, i32), u32>,
+    #[serde(default)]
+    pub(crate) last_beaches: Vec<(i32, i32)>,
+    #[serde(default)]
+    pub(crate) sea_routes: Vec<Vec<(i32, i32)>>,
+    #[serde(default)]
+    pub(crate) next_route: usize,
+    /// island -> tick a colony mission there failed (skip it for a while)
+    #[serde(default)]
+    pub(crate) colony_failed: BTreeMap<usize, u32>,
 }
 
 impl Ai {
@@ -198,6 +220,12 @@ impl Ai {
             nuke_reserve: [0; 5],
             last_strike: None,
             extra_cover: Vec::new(),
+            beaches: BTreeMap::new(),
+            beach_losses: BTreeMap::new(),
+            last_beaches: Vec::new(),
+            sea_routes: Vec::new(),
+            next_route: 0,
+            colony_failed: BTreeMap::new(),
         }
     }
 }
@@ -245,7 +273,7 @@ impl Controller for Ai {
         let claimed = self.islands.iter().filter(|i| i.claimed).count();
         let colony = self.colony.as_ref().map(|c| format!("{:?}->isl{}", c.stage, c.island)).unwrap_or_else(|| "-".into());
         let base = match &self.invasion {
-            Some(i) => format!("wave {} stage {:?} units {} transports {} landing {:?}", self.wave, i.stage, i.units.len(), i.transports.len(), i.landing.tile()),
+            Some(i) => format!("wave {} stage {:?} units {} transports {} from {:?} landings {:?}", self.wave, i.stage, i.units.len(), i.transports.len(), i.staging.tile(), i.landings.iter().map(|l| l.tile()).collect::<Vec<_>>()),
             None => format!("wave {} (no invasion) known {} defending {}", self.wave, self.known.len(), self.defending),
         };
         format!("{base} | islands {claimed}/{} colony {colony}", self.islands.len())

@@ -284,7 +284,8 @@ fn saplings_grow_into_trees_and_berries_regrow() {
     assert_eq!(e.def, data().id("tree"), "grew into a tree");
     assert!(e.amount > 0);
     assert_eq!(e.owner, ee_sim::mapgen::GAIA);
-    // berries regrow
+    // berries regrow (the planters went off to gather after planting: stop them)
+    w.apply_command(&Command { player: 0, kind: CommandKind::Stop { units: cits.clone() } });
     let cap = units_of(&w, 0, "capitol")[0];
     let b = nearest_of(&w, w.get(cap).unwrap().pos, "berries");
     w.get_mut(b).unwrap().amount = 10;
@@ -952,4 +953,26 @@ fn placement_check_refuses_sealing_pockets() {
     w.spawn_static(house, 0, (c.0 + 3, c.1 - 1), true); // east wall, gate at y = c.1+1..c.1+2
     // plugging the gate would seal the courtyard
     assert!(!w.keeps_paths(house, (c.0 + 3, c.1 + 1)), "closing the gate must be refused");
+}
+
+#[test]
+fn citizens_find_work_instead_of_idling() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let house = data().id("house");
+    let a = w.spawn_static(house, 0, (s.0 + 6, s.1 + 6), false);
+    w.get_mut(a).unwrap().progress = data().def(house).build_ticks - 3;
+    let c = w.spawn(data().id("citizen"), 0, FVec::tile_center(s.0 + 6, s.1 + 9));
+    w.apply_command(&Command { player: 0, kind: CommandKind::Target { units: vec![c], target: a, queue: false } });
+    run(&mut w, 200, vec![]);
+    assert!(w.get(a).unwrap().complete);
+    assert!(matches!(w.get(c).unwrap().order, Order::Gather { .. } | Order::ReturnCargo), "builder went idle: {:?}", w.get(c).unwrap().order);
+    // a woodcutter whose tree is felled keeps working
+    let tree = nearest_of(&w, FVec::tile_center(s.0, s.1), "tree");
+    let wc = w.spawn(data().id("citizen"), 0, w.get(tree).unwrap().pos + FVec::new(ee_sim::fixed::Fx::ONE, ee_sim::fixed::Fx::ZERO));
+    w.apply_command(&Command { player: 0, kind: CommandKind::Target { units: vec![wc], target: tree, queue: false } });
+    run(&mut w, 100, vec![]);
+    w.kill(tree, 255);
+    run(&mut w, 400, vec![]);
+    assert!(!matches!(w.get(wc).unwrap().order, Order::Idle), "woodcutter idle after its tree fell");
 }

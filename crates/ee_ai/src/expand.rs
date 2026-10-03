@@ -207,6 +207,10 @@ impl Ai {
                 }
             }
         }
+        // 2a) forward bases: barracks/factories on the colonies nearest the enemy
+        if w.tick >= self.diff.first_attack() && self.forward_bases(w, v, out) {
+            return;
+        }
         // 2) forward airbases: an airfield on each colony island (up to 3)
         let airport = d.id("airport");
         if v.count(airport) >= 1 && !self.pending.iter().any(|(k, _)| *k == airport) && w.can_afford(self.player, &d.def(airport).data.cost) {
@@ -294,7 +298,8 @@ impl Ai {
                     continue;
                 }
                 let enemy_here = self.known.values().any(|k| self.island_at(w, k.tile) == Some(i));
-                if enemy_here {
+                let failed_recently = self.colony_failed.get(&i).map_or(false, |&t| tick.wrapping_sub(t) < 20 * 60 * 6);
+                if enemy_here || failed_recently {
                     continue;
                 }
                 let dd = ((isl.center.0 - bx) as i64).pow(2) + ((isl.center.1 - by) as i64).pow(2);
@@ -346,6 +351,9 @@ impl Ai {
         c.escort.retain(|&u| w.get(u).is_some());
         let elapsed = tick.wrapping_sub(c.stage_tick);
         if c.citizens.is_empty() || (w.get(c.transport).is_none() && c.stage != CStage::Settle) || elapsed > 20 * 60 * 4 {
+            if c.stage != CStage::Settle {
+                self.colony_failed.insert(c.island, tick);
+            }
             return; // mission failed: try again later
         }
         let everyone: Vec<EntityId> = c.citizens.iter().chain(c.escort.iter()).copied().collect();
@@ -376,6 +384,7 @@ impl Ai {
                         out.push(CommandKind::Target { units: left, target: c.transport, queue: false });
                     }
                 } else if elapsed > 20 * 70 {
+                    self.colony_failed.insert(c.island, tick);
                     return;
                 }
             }
@@ -413,7 +422,7 @@ impl Ai {
     }
 
     /// (coastal land tile on `island`, adjacent ship water) nearest to `toward`.
-    fn coast_toward(&self, w: &World, island: usize, toward: FVec) -> Option<((i32, i32), (i32, i32))> {
+    pub(crate) fn coast_toward(&self, w: &World, island: usize, toward: FVec) -> Option<((i32, i32), (i32, i32))> {
         let (tx, ty) = toward.tile();
         let mut best: Option<(i64, ((i32, i32), (i32, i32)))> = None;
         for (i, &c) in self.island_of.iter().enumerate() {

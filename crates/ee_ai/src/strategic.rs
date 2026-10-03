@@ -61,10 +61,14 @@ impl Ai {
         let max_silos = if self.diff == Difficulty::Hardest { 2 } else { 1 };
         let icbm = d.id("icbm");
         let cost = d.def(icbm).data.cost;
-        // save up for the next piece of the program (the army spends only above this)
+        // save up for the next piece of the program (the army spends only above this),
+        // but never at the expense of having an army at all
+        let army = v.land_army.len() + v.navy.len() + v.air.len();
         let silo_cost = d.def(silo).data.cost.arr();
         let have_silos = self.count_with_sites(w, v, silo);
-        if have_silos < max_silos {
+        if army < 30 {
+            // build up forces first
+        } else if have_silos < max_silos {
             self.nuke_reserve = silo_cost;
             if w.can_afford(p, &d.def(silo).data.cost) {
                 self.build_near(w, v, out, silo, self.base);

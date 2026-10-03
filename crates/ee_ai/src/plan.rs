@@ -421,7 +421,6 @@ impl Ai {
     fn coastal_site(&self, w: &World, def: DefId, reach: i32) -> Option<(i32, i32)> {
         let (sw, sh) = data().def(def).size();
         let (bx, by) = self.base_tile;
-        let p = self.player;
         let mut best: Option<(i32, (i32, i32))> = None;
         for y in by - reach..by + reach {
             for x in bx - reach..bx + reach {
@@ -553,7 +552,7 @@ impl Ai {
             n
         };
 
-        let pick = |mix: &[(&str, i32)], trainable: &[DefId], ai: &mut Ai| -> Option<DefId> {
+        let pick = |mix: &[(&str, i32)], trainable: &[DefId], ai: &mut Ai, reserve: &[i32; 5]| -> Option<DefId> {
             let total: i32 = mix.iter().map(|(_, wt)| wt).sum();
             let counts: Vec<i32> = mix.iter().map(|(k, _)| count_of(k)).collect();
             let sum: i32 = counts.iter().sum::<i32>().max(1);
@@ -564,7 +563,9 @@ impl Ai {
                 if !trainable.contains(&def) {
                     continue;
                 }
-                if !w.can_afford(ai.player, &d.def(def).data.cost) {
+                // affordable without dipping into money saved for something bigger
+                let c = d.def(def).data.cost.arr();
+                if c.iter().enumerate().any(|(r, x)| pl.res[r] - reserve[r] < *x) {
                     continue;
                 }
                 let deficit = wt * 1000 / total - counts[i] * 1000 / sum + ai.rng.range(0, 40);
@@ -599,7 +600,7 @@ impl Ai {
                         out.push(CommandKind::Train { building: b, def: id("transport"), count: 1 });
                         continue;
                     }
-                    if v.navy.len() >= 6 + self.wave as usize * 2 {
+                    if v.navy.len() >= (8 + self.wave as usize * 3).min(12 + w.config.pop_limit as usize / 100) {
                         continue;
                     }
                 }
@@ -652,7 +653,7 @@ impl Ai {
                         }
                     }
                     // otherwise train something affordable
-                    if let Some(f) = pick(mix, trainable, self) {
+                    if let Some(f) = pick(mix, trainable, self, &reserve) {
                         let fc = d.def(f).data.cost.arr();
                         if fc.iter().enumerate().all(|(r, c)| pl.res[r] - reserve[r] >= *c) && reserve_ok(f) {
                             out.push(CommandKind::Train { building: b, def: f, count: 1 });
@@ -804,18 +805,9 @@ impl Ai {
             }
         }
 
-        // ---- naval push
-        if attack_time && w.tick.wrapping_sub(self.last_naval_push) > 20 * 60 * 3 && v.navy.len() >= 4 {
-            if let Some(es) = self.enemy_start(w) {
-                let (ex, ey) = es.tile();
-                if let Some((wx, wy)) = self.coast_water_near(w, ex, ey) {
-                    self.last_naval_push = w.tick;
-                    let ships: Vec<EntityId> = v.navy.iter().copied().filter(|&s| w.get(s).map_or(false, |e| e.order == Order::Idle)).collect();
-                    if !ships.is_empty() {
-                        out.push(CommandKind::Move { units: ships, to: FVec::tile_center(wx, wy), attack_move: true, queue: false });
-                    }
-                }
-            }
+        // ---- sea control: idle warships patrol in squadrons
+        if attack_time && w.tick % 60 == (self.phase * 7) % 60 {
+            self.naval_ops(w, v, out);
         }
 
         // ---- hunt: overwhelming advantage or enemy nearly dead -> finish them
@@ -899,7 +891,7 @@ impl Ai {
         self.base
     }
 
-    fn enemy_start(&self, w: &World) -> Option<FVec> {
+    pub(crate) fn enemy_start(&self, w: &World) -> Option<FVec> {
         // nearest living enemy's start position
         let mut best: Option<(i64, FVec)> = None;
         for (i, pl) in w.players.iter().enumerate() {
@@ -990,38 +982,6 @@ impl Ai {
         self.staging
     }
 
-    fn landing_tiles(&mut self, w: &World, enemy: u8) -> Option<((i32, i32), (i32, i32))> {
-        if let Some(l) = self.landings.get(&enemy) {
-            return Some(*l);
-        }
-        let start = *w.starts.get(enemy as usize)?;
-        let reach = land_component(w, start);
-        let (sx, sy) = self.staging_tiles(w).map(|s| s.0).unwrap_or(self.base_tile);
-        let mut best: Option<(i64, ((i32, i32), (i32, i32)))> = None;
-        for (i, &r) in reach.iter().enumerate() {
-            if !r {
-                continue;
-            }
-            let x = i as i32 % w.map.w;
-            let y = i as i32 / w.map.w;
-            for (ox, oy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let (wx, wy) = (x + ox * 2, y + oy * 2);
-                if w.map.in_bounds(wx, wy) && w.map.base_pass[w.map.idx(wx, wy)] & PASS_WATER != 0 && w.map.is_water(x + ox, y + oy) {
-                    // close to us (short sail) but not right under their capitol guns
-                    let to_us = ((x - sx) as i64).pow(2) + ((y - sy) as i64).pow(2);
-                    let to_them = ((x - start.0) as i64).pow(2) + ((y - start.1) as i64).pow(2);
-                    let score = to_us + if to_them < 14 * 14 { 1 << 30 } else { to_them };
-                    if best.map_or(true, |(b, _)| score < b) {
-                        best = Some((score, ((x, y), (wx, wy))));
-                    }
-                }
-            }
-        }
-        let l = best.map(|b| b.1)?;
-        self.landings.insert(enemy, l);
-        Some(l)
-    }
-
     fn coast_water_near(&self, w: &World, x: i32, y: i32) -> Option<(i32, i32)> {
         for r in 1i32..40 {
             for dy in -r..=r {
@@ -1055,21 +1015,38 @@ impl Ai {
                 return;
             }
             let Some(enemy) = self.enemy_target_player(w) else { return };
-            let Some((stage, stage_w)) = self.staging_tiles(w) else { return };
-            let Some((land, _)) = self.landing_tiles(w, enemy) else { return };
             let Some(es) = self.enemy_start(w) else { return };
+            // launch from whichever island holds most of the idle army (colonies too)
+            let Some((src_isl, group)) = self.launch_island(w, &available) else { return };
+            if group.len() < self.diff.wave_size().min(8 + self.wave as usize * 4) {
+                return;
+            }
             let colony_ship = self.colony.as_ref().map(|c| c.transport);
-            let ships: Vec<EntityId> = v.transports.iter().copied().filter(|t| Some(*t) != colony_ship).collect();
+            let mut ships: Vec<EntityId> = v.transports.iter().copied().filter(|t| Some(*t) != colony_ship).collect();
+            // keep one landing ship back for colonists while islands remain unclaimed
+            let unclaimed = self.islands.iter().any(|i| !i.claimed && !i.mines.is_empty() && i.tiles >= 60);
+            if unclaimed && self.colony.is_none() && ships.len() > 1 {
+                ships.remove(0);
+            }
             if ships.is_empty() {
                 return;
             }
+            let src_tile = w.get(group[0]).map(|e| e.pos.tile()).unwrap_or(self.base_tile);
+            let prongs = if ships.len() >= 2 && group.len() >= 16 { 2 } else { 1 };
+            let beaches = self.pick_landings(w, enemy, src_tile, prongs);
+            if beaches.is_empty() {
+                return;
+            }
+            let land = beaches[0].0;
+            let Some((stage, stage_w)) = self.coast_toward(w, src_isl, FVec::tile_center(land.0, land.1)) else { return };
             let cap: usize = ships.len() * 12;
-            let mut units = available;
-            units.truncate(cap.min(60));
+            let mut units = group;
+            units.truncate(cap.min(72));
             let staging = FVec::tile_center(stage.0, stage.1);
             out.push(CommandKind::Move { units: units.clone(), to: staging, attack_move: false, queue: false });
             let staging_water = FVec::tile_center(stage_w.0, stage_w.1);
             out.push(CommandKind::Move { units: ships.clone(), to: staging_water, attack_move: false, queue: false });
+            let start_size = units.len();
             self.invasion = Some(Invasion {
                 stage: Stage::Gather,
                 units,
@@ -1079,6 +1056,9 @@ impl Ai {
                 landing: FVec::tile_center(land.0, land.1),
                 target: es,
                 stage_tick: tick,
+                landings: beaches.iter().map(|b| FVec::tile_center(b.0 .0, b.0 .1)).collect(),
+                beaches: beaches.iter().map(|b| b.0).collect(),
+                start_size,
             });
             self.wave += 1;
             self.last_wave = tick;
@@ -1089,6 +1069,9 @@ impl Ai {
         inv.transports.retain(|&t| w.get(t).is_some());
         let elapsed = tick.wrapping_sub(inv.stage_tick);
         if inv.units.is_empty() || (inv.transports.is_empty() && inv.stage != Stage::Fight) {
+            if inv.stage == Stage::Fight || inv.stage == Stage::Sail {
+                self.wave_result(&inv.beaches, inv.start_size, inv.units.len());
+            }
             // wave wiped out or no boats: release survivors
             if !inv.units.is_empty() {
                 out.push(CommandKind::Move { units: inv.units.clone(), to: self.base, attack_move: true, queue: false });
@@ -1124,7 +1107,11 @@ impl Ai {
                         out.push(CommandKind::Move { units: inv.units.clone(), to: self.base, attack_move: true, queue: false });
                         return;
                     }
-                    out.push(CommandKind::Unload { units: loaded, at: inv.landing });
+                    let n = inv.landings.len().max(1);
+                    for (i, &t) in loaded.iter().enumerate() {
+                        let at = inv.landings.get(i % n).copied().unwrap_or(inv.landing);
+                        out.push(CommandKind::Unload { units: vec![t], at });
+                    }
                     // escort with the fleet
                     let escort: Vec<EntityId> = v.navy.iter().copied().filter(|&s| w.get(s).map_or(false, |e| e.order == Order::Idle)).collect();
                     if !escort.is_empty() {
@@ -1160,8 +1147,12 @@ impl Ai {
                     inv.stage_tick = tick;
                 } else if elapsed % 300 == 150 {
                     let loaded: Vec<EntityId> = inv.transports.iter().copied().filter(|&t| w.get(t).map_or(false, |e| !e.cargo.is_empty() && e.order == Order::Idle)).collect();
-                    if !loaded.is_empty() {
-                        out.push(CommandKind::Unload { units: loaded, at: inv.landing });
+                    let n = inv.landings.len().max(1);
+                    let all: Vec<EntityId> = inv.transports.clone();
+                    for &t in &loaded {
+                        let i = all.iter().position(|&x| x == t).unwrap_or(0);
+                        let at = inv.landings.get(i % n).copied().unwrap_or(inv.landing);
+                        out.push(CommandKind::Unload { units: vec![t], at });
                     }
                 }
             }
@@ -1169,18 +1160,27 @@ impl Ai {
                 // keep pushing toward known buildings; end after a while
                 if elapsed % 200 == 0 {
                     let idle: Vec<EntityId> = inv.units.iter().copied().filter(|&u| w.get(u).map_or(false, |e| e.order == Order::Idle && e.inside == 0)).collect();
-                    if !idle.is_empty() {
+                    let heads: Vec<FVec> = if inv.landings.is_empty() { vec![inv.landing] } else { inv.landings.clone() };
+                    for h in heads {
+                        let group: Vec<EntityId> = idle.iter().copied().filter(|&u| {
+                            let p = w.get(u).unwrap().pos;
+                            inv.landings.iter().chain(std::iter::once(&inv.landing)).min_by_key(|l| l.dist2_raw(p)) == Some(&h)
+                        }).collect();
+                        if group.is_empty() {
+                            continue;
+                        }
                         let to = self
                             .known
                             .values()
                             .filter(|k| d.def(k.def).is_building())
-                            .min_by_key(|k| k.pos.dist2_raw(inv.landing))
+                            .min_by_key(|k| k.pos.dist2_raw(h))
                             .map(|k| k.pos)
                             .unwrap_or(inv.target);
-                        out.push(CommandKind::Move { units: idle, to, attack_move: true, queue: false });
+                        out.push(CommandKind::Move { units: group, to, attack_move: true, queue: false });
                     }
                 }
                 if elapsed > 20 * 60 * 4 {
+                    self.wave_result(&inv.beaches, inv.start_size, inv.units.len());
                     return; // wave over; survivors keep fighting on their own
                 }
             }
