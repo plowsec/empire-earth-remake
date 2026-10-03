@@ -89,6 +89,106 @@ pub fn set_order(w: &mut World, id: EntityId, order: Order) {
     }
 }
 
+/// Battle rank for formations: 0 front (armor) .. 4 rear/centre (support).
+fn rank_of(d: &crate::defs::Def) -> i32 {
+    use crate::defs::ArmorClass;
+    if d.class() == crate::defs::Class::Citizen || d.data.heal > 0 || d.data.cargo > 0 {
+        return 4;
+    }
+    let min_range = d.weapons.iter().map(|w| w.min_range).max().unwrap_or(Fx::ZERO);
+    if min_range > Fx::ZERO || d.max_range >= Fx::from_int(10) {
+        return 3; // artillery
+    }
+    if d.data.armor_class == ArmorClass::Heavy {
+        return 0;
+    }
+    if d.weapons.iter().all(|w| !w.vs_ground) || d.max_range >= Fx::from_ratio(700, 100) {
+        return 2; // AA, AT guns, snipers
+    }
+    1
+}
+
+/// Intelligent formation: ranks perpendicular to the direction of travel, armor in
+/// front, artillery and support behind; within a rank units keep their left/right
+/// order so paths don't cross. Slots snap to distinct passable tiles.
+pub fn formation_slots(w: &World, units: &[EntityId], to: FVec, layer: Layer, spacing: Fx) -> Vec<(EntityId, FVec)> {
+    let n = units.len();
+    if n == 0 {
+        return vec![];
+    }
+    if n == 1 {
+        return vec![(units[0], snap_slot(w, to, layer, &mut Vec::new()))];
+    }
+    let cx = units.iter().map(|&u| w.get(u).unwrap().pos.x.0 as i64).sum::<i64>() / n as i64;
+    let cy = units.iter().map(|&u| w.get(u).unwrap().pos.y.0 as i64).sum::<i64>() / n as i64;
+    let centroid = FVec::new(Fx(cx as i32), Fx(cy as i32));
+    let mut fwd = (to - centroid).normalized();
+    if fwd.len2_raw() == 0 {
+        fwd = FVec::new(Fx::ZERO, Fx::ONE);
+    }
+    let right = FVec::new(-fwd.y, fwd.x);
+    // aircraft and ships use a simple block; ground units use ranks
+    let ranked: Vec<(i32, i64, EntityId)> = units
+        .iter()
+        .map(|&u| {
+            let e = w.get(u).unwrap();
+            let d = data().def(e.def);
+            let rank = if layer == Layer::Land { rank_of(d) } else { 1 };
+            let lateral = (e.pos - centroid).dot_raw(right) >> 16;
+            (rank, lateral, u)
+        })
+        .collect();
+    let cols = ((crate::fixed::isqrt_u64(n as u64 * 2) as usize).max(3)).min(n).min(16);
+    let mut out = Vec::with_capacity(n);
+    let mut used: Vec<(i32, i32)> = Vec::new();
+    let mut depth_rows = 0i32;
+    for rank in 0..5 {
+        let mut members: Vec<(i64, EntityId)> = ranked.iter().filter(|r| r.0 == rank).map(|r| (r.1, r.2)).collect();
+        if members.is_empty() {
+            continue;
+        }
+        members.sort();
+        for chunk in members.chunks(cols) {
+            let m = chunk.len() as i32;
+            for (k, &(_, u)) in chunk.iter().enumerate() {
+                let lat = spacing.mul_int(k as i32 * 2 - (m - 1));
+                let lat = Fx(lat.0 / 2);
+                let back = spacing.mul_int(depth_rows);
+                let p = to + right.scale(lat) - fwd.scale(back);
+                out.push((u, snap_slot(w, p, layer, &mut used)));
+            }
+            depth_rows += 1;
+        }
+    }
+    out
+}
+
+fn snap_slot(w: &World, p: FVec, layer: Layer, used: &mut Vec<(i32, i32)>) -> FVec {
+    let (tx, ty) = p.tile();
+    if layer == Layer::Air {
+        return p;
+    }
+    if w.map.passable(tx, ty, layer) && !used.contains(&(tx, ty)) {
+        used.push((tx, ty));
+        return p;
+    }
+    for r in 1i32..8 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dy.abs() != r {
+                    continue;
+                }
+                let t = (tx + dx, ty + dy);
+                if w.map.passable(t.0, t.1, layer) && !used.contains(&t) {
+                    used.push(t);
+                    return FVec::tile_center(t.0, t.1);
+                }
+            }
+        }
+    }
+    p
+}
+
 /// Square-ish formation offsets, deterministic by index.
 pub fn formation_offset(i: usize, n: usize, spacing: Fx) -> FVec {
     if n <= 1 {
@@ -313,16 +413,10 @@ pub fn move_group(w: &mut World, units: &[EntityId], to: FVec, attack_move: bool
                 }
             }
         }
+        let slots = formation_slots(w, &sorted.iter().map(|x| x.1).collect::<Vec<_>>(), to, layer, spacing);
         for (i, (_, id)) in sorted.iter().enumerate() {
-            let mut dest = to + formation_offset(i, n, spacing);
-            let (dx, dy) = dest.tile();
-            if !w.map.passable(dx, dy, layer) {
-                if let Some((nx, ny)) = w.map.nearest_passable(dx, dy, layer, 6) {
-                    dest = FVec::tile_center(nx, ny);
-                } else {
-                    dest = to;
-                }
-            }
+            let _ = i;
+            let dest = slots.iter().find(|(u, _)| u == id).map(|x| x.1).unwrap_or(to);
             if layer == Layer::Air && w.def_of(w.get(*id).unwrap()).data.needs_airport {
                 give(w, *id, Order::Patrol { at: dest }, queue);
                 if let Some(e) = w.get_mut(*id) {

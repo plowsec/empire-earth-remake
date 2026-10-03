@@ -125,6 +125,8 @@ pub struct Client {
     pub show_all_bars: bool,
     sapling_timer: f32,
     pub attack_marks: Vec<(Vector3, f64)>,
+    labels: Vec<Gd<godot::classes::Label3D>>,
+    label_timer: f32,
     flag_pole: Batch,
     flag_cloth: Batch,
 }
@@ -276,6 +278,8 @@ impl Client {
             show_all_bars: false,
             sapling_timer: 0.0,
             attack_marks: Vec::new(),
+            labels: Vec::new(),
+            label_timer: 0.0,
             flag_pole,
             flag_cloth,
         };
@@ -321,6 +325,11 @@ impl Client {
             if self.session.world.entities.iter().any(|e| e.alive && e.def == sap) {
                 self.static_dirty = true;
             }
+        }
+        self.label_timer -= dt as f32;
+        if self.label_timer <= 0.0 {
+            self.label_timer = 0.3;
+            self.update_work_labels(cam);
         }
         self.minimap_timer -= dt as f32;
         if self.minimap_timer <= 0.0 {
@@ -1240,6 +1249,90 @@ impl Client {
             b.finish();
         }
         self.deco_batches = batches.into_values().collect();
+    }
+
+    /// Floating "workers / capacity" labels over resources and granaries we work.
+    fn update_work_labels(&mut self, cam: Option<&Gd<Camera3D>>) {
+        use godot::classes::label_3d::AlphaCutMode;
+        use godot::classes::base_material_3d::BillboardMode;
+        let w = &self.session.world;
+        let me = self.me;
+        let cam_pos = cam.map(|c| c.get_global_position()).unwrap_or(Vector3::ZERO);
+        let mut workers: std::collections::BTreeMap<EntityId, i32> = std::collections::BTreeMap::new();
+        for e in &w.entities {
+            if !e.alive || e.owner != me {
+                continue;
+            }
+            if let Order::Gather { node } = e.order {
+                *workers.entry(node).or_insert(0) += 1;
+            }
+        }
+        // (world pos, text, color)
+        let mut shown: Vec<(Vector3, String, Color)> = Vec::new();
+        let granary = data().id("granary");
+        let farm = data().id("farm");
+        for (&node, &n) in &workers {
+            let Some(e) = w.get(node) else { continue };
+            let d = data().def(e.def);
+            // only mines and fish shoals: trees/berries would clutter the view
+            if d.data.walkable || (d.size() == (1, 1) && !w.fish.contains(&node)) {
+                continue;
+            }
+            let cap = ee_sim::world::gather_cap(d);
+            let p = self.world_pos3(e.pos, if w.fish.contains(&node) { Layer::Water } else { Layer::Land }, 0);
+            let h = self.models.list[self.models.by_def[e.def as usize]].height;
+            let full = n >= cap;
+            let text = if full { format!("FULL {}/{}", n.min(cap), cap) } else { format!("{}/{}", n, cap) };
+            let col = if full { Color::from_rgb(0.45, 1.0, 0.45) } else { Color::from_rgb(1.0, 0.85, 0.45) };
+            shown.push((p + Vector3::UP * (h + 1.5), text, col));
+        }
+        for g in w.entities.iter().filter(|e| e.alive && e.owner == me && e.def == granary && e.complete) {
+            let (gx, gy) = g.tile;
+            let mut fields = 0;
+            let mut farmed = 0;
+            for e in w.entities.iter().filter(|e| e.alive && e.owner == me && e.def == farm && e.complete) {
+                let (fx, fy) = e.tile;
+                if (fx - gx).abs() <= 3 && (fy - gy).abs() <= 3 {
+                    fields += 1;
+                    if workers.get(&e.id).copied().unwrap_or(0) > 0 {
+                        farmed += 1;
+                    }
+                }
+            }
+            if fields == 0 {
+                continue;
+            }
+            let full = fields == 8 && farmed == 8;
+            let text = if full { "Fields FULL".to_string() } else { format!("Fields {}/{}", farmed, fields) };
+            let col = if full { Color::from_rgb(0.45, 1.0, 0.45) } else if farmed == fields { Color::from_rgb(0.8, 1.0, 0.6) } else { Color::from_rgb(1.0, 0.85, 0.45) };
+            let p = self.world_pos3(g.pos, Layer::Land, 0);
+            shown.push((p + Vector3::UP * 9.5, text, col));
+        }
+        shown.retain(|(p, _, _)| p.distance_to(cam_pos) < 260.0);
+        shown.truncate(80);
+        while self.labels.len() < shown.len() {
+            let mut l = godot::classes::Label3D::new_alloc();
+            l.set_billboard_mode(BillboardMode::ENABLED);
+            l.set_font_size(30);
+            l.set_outline_size(10);
+            l.set_pixel_size(0.00055);
+            l.set_draw_flag(godot::classes::label_3d::DrawFlags::FIXED_SIZE, true);
+            l.set_draw_flag(godot::classes::label_3d::DrawFlags::DISABLE_DEPTH_TEST, true);
+            l.set_alpha_cut_mode(AlphaCutMode::DISABLED);
+            l.set_outline_modulate(Color::from_rgba(0.0, 0.0, 0.0, 0.85));
+            self.root.add_child(&l);
+            self.labels.push(l);
+        }
+        for (i, l) in self.labels.iter_mut().enumerate() {
+            if let Some((p, text, col)) = shown.get(i) {
+                l.set_visible(true);
+                l.set_position(*p);
+                l.set_text(text.as_str());
+                l.set_modulate(*col);
+            } else {
+                l.set_visible(false);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ picking

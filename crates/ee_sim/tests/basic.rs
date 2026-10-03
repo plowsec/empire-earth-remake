@@ -718,3 +718,30 @@ fn mass_planted_grove_grows_with_many_planters() {
     }).count();
     assert_eq!(grown, tiles.len(), "every sapling of the grove grew");
 }
+
+#[test]
+fn formations_put_armor_in_front_and_artillery_behind() {
+    use ee_sim::fixed::Fx;
+    let mut w = World::new(MatchConfig::skirmish(12, 2));
+    let s = w.starts[0];
+    let spot = open_spot(&w, s, 6, 20);
+    let mut ids = vec![];
+    for (k, key) in ["howitzer", "rifleman", "tank", "rifleman", "mortar", "tank", "medic", "rifleman"].iter().enumerate() {
+        ids.push(w.spawn(data().id(key), 0, FVec::tile_center(spot.0 + (k as i32 % 4) - 2, spot.1 + (k as i32 / 4))));
+    }
+    // march "north" (-y) by 15 tiles
+    let to = FVec::tile_center(spot.0, spot.1 - 15);
+    let slots = ee_sim::orders::formation_slots(&w, &ids, to, ee_sim::defs::Layer::Land, Fx::from_ratio(130, 100));
+    let y_of = |key: &str| -> i32 {
+        let d = data().id(key);
+        let v: Vec<i32> = slots.iter().filter(|(u, _)| w.get(*u).unwrap().def == d).map(|(_, p)| p.y.0).collect();
+        v.iter().sum::<i32>() / v.len() as i32
+    };
+    // smaller y = further north = more forward
+    assert!(y_of("tank") < y_of("rifleman"), "tanks lead");
+    assert!(y_of("rifleman") < y_of("howitzer"), "artillery trails");
+    let mut tiles: Vec<(i32, i32)> = slots.iter().map(|(_, p)| p.tile()).collect();
+    tiles.sort();
+    tiles.dedup();
+    assert_eq!(tiles.len(), slots.len(), "distinct slots");
+}
