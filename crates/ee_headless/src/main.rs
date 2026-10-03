@@ -214,6 +214,17 @@ fn report(s: &ee_net::Session, t: u32) {
             println!("      P{} gatherers f/w/s/g/i {:?} idle {} buildings {:?}", pl.id, g, idle, bk);
             }
             for line in s.controller_debug() { println!("      {line}"); }
+            for p in &w.players {
+                let mut by: std::collections::BTreeMap<String, (u32, u32)> = Default::default();
+                for e in &w.entities {
+                    if e.alive && e.owner == p.id && data().def(e.def).is_unit() && data().def(e.def).data.key != "citizen" {
+                        let x = by.entry(data().def(e.def).data.key.clone()).or_default();
+                        x.0 += 1;
+                        x.1 += e.kills as u32;
+                    }
+                }
+                println!("      P{} units (count, kills): {:?}", p.id, by);
+            }
             let tr = trapped_units(w);
             println!("      trapped land units (pocket < 150 tiles) per player: {:?}", tr.iter().map(|(a, b)| format!("{a}/{b}")).collect::<Vec<_>>());
             let stuck: Vec<usize> = w.players.iter().map(|p| w.entities.iter().filter(|e| e.alive && e.owner == p.id && e.inside == 0 && e.stuck > 60).count()).collect();

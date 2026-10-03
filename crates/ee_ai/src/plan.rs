@@ -600,7 +600,8 @@ impl Ai {
                         out.push(CommandKind::Train { building: b, def: id("transport"), count: 1 });
                         continue;
                     }
-                    if v.navy.len() >= (8 + self.wave as usize * 3).min(12 + w.config.pop_limit as usize / 100) {
+                    let fleet_cap = (8 + self.wave as usize * 3).min(12 + w.config.pop_limit as usize / 100).max((self.seen_navy as usize / 4 + 6).min(60));
+                    if v.navy.len() >= fleet_cap {
                         continue;
                     }
                 }
@@ -673,7 +674,7 @@ impl Ai {
         if army < 8 {
             return 0;
         }
-        ((army.min(self.diff.wave_size() as i32 + 24) + 11) / 12).clamp(1, 5) + unclaimed
+        ((army.min(96) + 11) / 12).clamp(1, 8) + unclaimed
     }
 
     // ------------------------------------------------------------------ military
@@ -745,7 +746,26 @@ impl Ai {
                 .collect();
             if !idle.is_empty() {
                 let to = self.rally_point(w);
-                out.push(CommandKind::Move { units: idle, to, attack_move: true, queue: false });
+                let nuclear_threat = self.known.values().any(|k| k.def == d.id("missile_silo") || k.def == d.id("airport")) && w.tick > self.diff.first_attack() * 2;
+                if nuclear_threat {
+                    // don't hand the enemy a juicy nuclear target: spread over every town
+                    let mut points = vec![to];
+                    for &st in v.buildings.get(&d.id("settlement")).map(|x| x.as_slice()).unwrap_or(&[]) {
+                        if let Some(e) = w.get(st) {
+                            if self.island_at(w, e.tile) == Some(self.home_island) || self.island_at(w, (e.tile.0 - 1, e.tile.1)) == Some(self.home_island) {
+                                points.push(e.pos);
+                            }
+                        }
+                    }
+                    for (k, p) in points.iter().enumerate() {
+                        let part: Vec<EntityId> = idle.iter().copied().enumerate().filter(|(i, _)| i % points.len() == k).map(|x| x.1).collect();
+                        if !part.is_empty() {
+                            out.push(CommandKind::Move { units: part, to: *p, attack_move: true, queue: false });
+                        }
+                    }
+                } else {
+                    out.push(CommandKind::Move { units: idle, to, attack_move: true, queue: false });
+                }
             }
         }
 
@@ -1003,7 +1023,8 @@ impl Ai {
         let d = data();
         let tick = w.tick;
         if self.invasion.is_none() {
-            let wave_gap = 20 * 60 * 3;
+            // follow-ups come quickly while the last landing is holding
+            let wave_gap = if self.diff >= Difficulty::Hard { if self.beachhead_holds { 20 * 60 } else { 20 * 100 } } else { 20 * 60 * 3 };
             let ready = attack_time && tick.wrapping_sub(self.last_wave) > wave_gap && !self.defending;
             let available: Vec<EntityId> = v
                 .land_army
@@ -1018,7 +1039,10 @@ impl Ai {
             let Some(es) = self.enemy_start(w) else { return };
             // launch from whichever island holds most of the idle army (colonies too)
             let Some((src_isl, group)) = self.launch_island(w, &available) else { return };
-            if group.len() < self.diff.wave_size().min(8 + self.wave as usize * 4) {
+            // waves grow with the army: at least 40% of it (late game: up to 90 units)
+            let army_total = v.land_army.len();
+            let need = self.diff.wave_size().min(8 + self.wave as usize * 4).max((army_total * 2 / 5).min(90));
+            if group.len() < need {
                 return;
             }
             let colony_ship = self.colony.as_ref().map(|c| c.transport);
@@ -1041,11 +1065,18 @@ impl Ai {
             let Some((stage, stage_w)) = self.coast_toward(w, src_isl, FVec::tile_center(land.0, land.1)) else { return };
             let cap: usize = ships.len() * 12;
             let mut units = group;
-            units.truncate(cap.min(72));
+            units.truncate(cap.min(96));
             let staging = FVec::tile_center(stage.0, stage.1);
             out.push(CommandKind::Move { units: units.clone(), to: staging, attack_move: false, queue: false });
             let staging_water = FVec::tile_center(stage_w.0, stage_w.1);
             out.push(CommandKind::Move { units: ships.clone(), to: staging_water, attack_move: false, queue: false });
+            // warships guard the landing craft while they wait and load
+            let mut guards: Vec<(i64, EntityId)> = v.navy.iter().filter_map(|&s| w.get(s).map(|e| (e.pos.dist2_raw(staging_water), s))).collect();
+            guards.sort();
+            let guards: Vec<EntityId> = guards.into_iter().take(6).map(|x| x.1).collect();
+            if !guards.is_empty() {
+                out.push(CommandKind::Move { units: guards, to: staging_water, attack_move: true, queue: false });
+            }
             let start_size = units.len();
             self.invasion = Some(Invasion {
                 stage: Stage::Gather,
@@ -1100,7 +1131,8 @@ impl Ai {
             }
             Stage::Load => {
                 let aboard = inv.units.iter().filter(|&&u| w.get(u).map_or(false, |e| e.inside != 0)).count();
-                if aboard == inv.units.len() || elapsed > 20 * 45 {
+                // big waves take a while to file aboard; don't leave most of them behind
+                if aboard == inv.units.len() || (elapsed > 20 * 60 && aboard * 10 >= inv.units.len() * 8) || elapsed > 20 * 100 {
                     let loaded: Vec<EntityId> = inv.transports.iter().copied().filter(|&t| w.get(t).map_or(false, |e| !e.cargo.is_empty())).collect();
                     if loaded.is_empty() {
                         // nobody got on: abort
@@ -1112,10 +1144,19 @@ impl Ai {
                         let at = inv.landings.get(i % n).copied().unwrap_or(inv.landing);
                         out.push(CommandKind::Unload { units: vec![t], at });
                     }
-                    // escort with the fleet
-                    let escort: Vec<EntityId> = v.navy.iter().copied().filter(|&s| w.get(s).map_or(false, |e| e.order == Order::Idle)).collect();
-                    if !escort.is_empty() {
-                        out.push(CommandKind::Move { units: escort, to: inv.landing, attack_move: true, queue: false });
+                    // combined arms: the nearest warships bombard the beaches ahead of the
+                    // landing craft, aircraft strike them
+                    let mut navy: Vec<(i64, EntityId)> = v.navy.iter().filter_map(|&s| w.get(s).map(|e| (e.pos.dist2_raw(inv.landing), s))).collect();
+                    navy.sort();
+                    let heads: Vec<FVec> = if inv.landings.is_empty() { vec![inv.landing] } else { inv.landings.clone() };
+                    for (k, chunk) in navy.iter().take(10).map(|x| x.1).collect::<Vec<_>>().chunks(5).enumerate() {
+                        let at = heads[k % heads.len()];
+                        out.push(CommandKind::Move { units: chunk.to_vec(), to: at, attack_move: true, queue: false });
+                    }
+                    let nuke = d.id("nuke_bomber");
+                    let air: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).map_or(false, |e| e.def != nuke && (e.inside != 0 || e.order == Order::Idle))).collect();
+                    if !air.is_empty() {
+                        out.push(CommandKind::Move { units: air, to: heads[0], attack_move: true, queue: false });
                     }
                     // stragglers who never boarded go defend
                     let left: Vec<EntityId> = inv.units.iter().copied().filter(|&u| w.get(u).map_or(false, |e| e.inside == 0)).collect();

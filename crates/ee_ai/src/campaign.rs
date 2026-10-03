@@ -101,6 +101,7 @@ impl Ai {
 
     /// Record how a finished wave went at its beaches.
     pub(crate) fn wave_result(&mut self, beaches: &[(i32, i32)], start: usize, survivors: usize) {
+        self.beachhead_holds = start > 0 && survivors * 2 >= start;
         if start > 0 && survivors * 10 < start * 3 {
             for b in beaches {
                 *self.beach_losses.entry(*b).or_insert(0) += 1;

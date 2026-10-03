@@ -180,6 +180,8 @@ pub struct Ai {
     /// island -> tick a colony mission there failed (skip it for a while)
     #[serde(default)]
     pub(crate) colony_failed: BTreeMap<usize, u32>,
+    #[serde(default)]
+    pub(crate) beachhead_holds: bool,
 }
 
 impl Ai {
@@ -226,6 +228,7 @@ impl Ai {
             sea_routes: Vec::new(),
             next_route: 0,
             colony_failed: BTreeMap::new(),
+            beachhead_holds: false,
         }
     }
 }

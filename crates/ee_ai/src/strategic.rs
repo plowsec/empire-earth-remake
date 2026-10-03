@@ -34,7 +34,11 @@ impl Ai {
         if (hard && mature) || threatened {
             let radar = d.id("radar_station");
             let abm = d.id("abm_site");
-            let want_abm = if threatened { (2 + enemy_silos).min(6) } else { 1 };
+            // one interceptor per enemy silo seen (each silo can fire 3), more if they've
+            // already shot at us; at most 12
+            let towns = v.count(d.id("settlement"));
+            let recent_attack = self.missile_alert > 0 && w.tick.wrapping_sub(self.missile_alert) < 20 * 60 * 10;
+            let want_abm = if threatened { (2 + enemy_silos * 2 + if recent_attack { towns / 2 } else { 0 }).min(12) } else { 1 };
             if self.count_with_sites(w, v, radar) == 0 {
                 self.build_near(w, v, out, radar, self.base);
             } else if self.count_with_sites(w, v, abm) < want_abm {
