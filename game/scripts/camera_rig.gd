@@ -3,7 +3,7 @@ extends Node3D
 ## middle-drag rotate. Clamped to the map.
 
 @export var pan_speed := 70.0
-@export var edge_margin := 6
+@export var edge_margin := 14
 @export var min_dist := 22.0
 @export var max_dist := 190.0
 
@@ -37,11 +37,18 @@ func _unhandled_input(e: InputEvent) -> void:
 		elif e.button_index == MOUSE_BUTTON_MIDDLE:
 			_mid_drag = e.pressed
 	elif e is InputEventMouseMotion and _mid_drag:
-		_yaw_goal -= e.relative.x * 0.006
+		if Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_ALT):
+			_yaw_goal -= e.relative.x * 0.006
+		else:
+			# grab-and-drag the map
+			var k := dist * 0.0032
+			target -= (_right() * e.relative.x - _fwd() * e.relative.y) * k
 	elif e is InputEventMagnifyGesture:
 		_dist_goal = clamp(_dist_goal / e.factor, min_dist, max_dist)
 	elif e is InputEventPanGesture:
-		target += _right() * e.delta.x * 2.0 + _fwd() * e.delta.y * 2.0
+		# two-finger trackpad scroll pans the map (scaled with zoom)
+		var k := dist * 0.045
+		target += (_right() * e.delta.x - _fwd() * e.delta.y) * k
 
 func _fwd() -> Vector3:
 	return Vector3(sin(yaw), 0, cos(yaw)) * -1.0
@@ -52,7 +59,7 @@ func _right() -> Vector3:
 func _process(dt: float) -> void:
 	var v := Vector2.ZERO
 	if not Input.is_key_pressed(KEY_CTRL) and not Input.is_key_pressed(KEY_META):
-		if Input.is_key_pressed(KEY_LEFT): v.x -= 1
+		if Input.is_key_pressed(KEY_LEFT) or Input.is_key_pressed(KEY_KP_4): v.x -= 1
 		if Input.is_key_pressed(KEY_RIGHT): v.x += 1
 		if Input.is_key_pressed(KEY_UP): v.y += 1
 		if Input.is_key_pressed(KEY_DOWN): v.y -= 1

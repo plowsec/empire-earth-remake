@@ -327,6 +327,35 @@ def ui_click(v):
     return mix(sine(1200, 0.05) * env_exp(0.05, 0.008, 0.0005), hp(white(0.02), 3000) * env_exp(0.02, 0.003) * 0.3)
 
 
+def alert_variant(v):
+    """Four distinct attack alerts: brass horn, klaxon, radio pips, war drum."""
+    if v == 0:
+        sec = 1.4
+        f = 196.0
+        x = sum(signal.sawtooth(2 * np.pi * f * h * t(sec)) / h for h in (1, 1.5, 2))
+        x = lp(x, 1600) * np.clip(t(sec) / 0.08, 0, 1) * np.clip((sec - t(sec)) / 0.4, 0, 1)
+        return reverb(x, 1.6, 0.35)
+    if v == 1:
+        sec = 1.2
+        tt = t(sec)
+        x = signal.square(2 * np.pi * 330 * tt) * (np.sin(2 * np.pi * 3 * tt) > 0)
+        x = bp(x, 300, 2500) * np.clip((sec - tt) / 0.2, 0, 1)
+        return reverb(x * 0.6, 0.9, 0.25)
+    if v == 2:
+        out = np.zeros(int(1.0 * SR))
+        for k in range(3):
+            p = sine(1400, 0.09) * env_exp(0.09, 0.06, 0.004)
+            add_at(out, p, int(k * 0.16 * SR))
+        add_at(out, bp(white(0.15), 1500, 4000) * env_exp(0.15, 0.05) * 0.3, 0)
+        return reverb(out, 0.7, 0.2)
+    sec = 1.6
+    out = np.zeros(int(sec * SR))
+    for k, tm in enumerate((0.0, 0.25, 0.5, 0.62)):
+        hit = mix(sine(70, 0.5) * env_exp(0.5, 0.18), lp(white(0.5), 400) * env_exp(0.5, 0.05) * 0.6)
+        add_at(out, hit * (1.0 if k != 2 else 0.7), int(tm * SR))
+    return reverb(out, 1.4, 0.3)
+
+
 def alert(v):
     sec = 1.6
     tt = t(sec)
@@ -381,6 +410,8 @@ def main():
     save("complete", bell([659.3, 880, 1318.5], 1.6, 0.5), 0.5)
     save("research", bell([523.3, 784, 1046.5, 1568], 2.0, 0.6), 0.5)
     save("alert", alert(0), 0.6)
+    for v in range(4):
+        save(f"alert_{v}", alert_variant(v), 0.6)
     save("victory", sting(True), 0.8)
     save("defeat", sting(False), 0.8)
     print("wrote", len(os.listdir(OUT)), "sounds to", os.path.abspath(OUT))

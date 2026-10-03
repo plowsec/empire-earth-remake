@@ -619,8 +619,11 @@ impl GameView {
             if any_transport {
                 button("unload", "", "Unload", "U", None, true, "Unload cargo at a shore point (U, then click).");
             }
+            if any_combat {
+                button("scout", "", "Scout", "S", None, true, "Patrol around the island, attacking any enemy encountered.");
+            }
             if any_air {
-                button("rtb", "", "Return to Base", "Y", None, true, "Fly back to the nearest airfield to refuel and rearm.");
+                button("rtb", "", "Return to Base", "Y", None, true, "Fly back to the nearest airfield to refuel and rearm. Right-click a point to set a patrol: aircraft circle it, engage anything in reach and return after refuelling.");
             }
             button("delete", "", "Disband", "Delete", None, true, "Destroy the selected units.");
         } else if let Some(&bid) = buildings.first() {
@@ -646,6 +649,18 @@ impl GameView {
                 if d.data.airport && !b.cargo.is_empty() {
                     button("launch", "", "Launch Aircraft", "L", None, true, "Select the aircraft parked here.");
                 }
+                if d.data.key == "granary" {
+                    let fc = data().def(data().id("farm")).data.cost;
+                    button("fields", "", "Rebuild Fields", "N", Some(&fc), true, "Lay out farms on every free plot around this granary (cost per field) and send citizens to work them.");
+                }
+                if !d.trains.is_empty() {
+                    let tip = if d.data.airport {
+                        "Right-click the map to set the patrol point: new and refuelled aircraft fly there, circle and attack anything in reach."
+                    } else {
+                        "Right-click the map to set where new units go. Right-click a mine, tree or fish to send new workers straight to work."
+                    };
+                    button("rally_clear", "", "Clear Rally", "", None, b.rally.is_some(), tip);
+                }
             }
             button("delete", "", "Demolish", "Delete", None, true, "Destroy this building.");
         }
@@ -662,6 +677,17 @@ impl GameView {
         let units = c.my_selected_units();
         let buildings = c.my_selected_buildings();
         match action.as_str() {
+            "train_mass" => {
+                // 10 per selected building that can train it
+                if let Some(def) = data().try_id(&key) {
+                    for &b in &buildings {
+                        let ok = c.world().get(b).map_or(false, |e| data().def(e.def).trains.contains(&def));
+                        if ok {
+                            c.issue(CommandKind::Train { building: b, def, count: 10 });
+                        }
+                    }
+                }
+            }
             "train" => {
                 if let (Some(&b), Some(def)) = (buildings.first(), data().try_id(&key)) {
                     // spread across all selected buildings of this type
@@ -684,6 +710,21 @@ impl GameView {
                 }
             }
             "stop" => c.issue(CommandKind::Stop { units }),
+            "scout" => c.issue(CommandKind::Scout { units }),
+            "fields" => {
+                if let Some(&b) = buildings.first() {
+                    c.issue(CommandKind::RebuildFarms { building: b });
+                }
+            }
+            "rally_clear" => {
+                // a rally at the building's own position means "none"
+                for &b in &buildings {
+                    if let Some(e) = c.world().get(b) {
+                        let pos = e.pos;
+                        c.issue(CommandKind::SetRally { buildings: vec![b], to: pos, target: 0 });
+                    }
+                }
+            }
             "rtb" => c.issue(CommandKind::ReturnToBase { units }),
             "attack_move" => return "attack_move".into(),
             "unload" => return "unload".into(),
@@ -928,6 +969,67 @@ impl GameView {
         c.selection = c.world().entities.iter().filter(|e| e.alive && e.owner == me && e.def == def && e.inside == 0).map(|e| e.id).take(max as usize).collect();
     }
 
+    #[func]
+    fn idle_citizen_count(&self) -> i64 {
+        let Some(c) = &self.client else { return 0 };
+        c.world()
+            .entities
+            .iter()
+            .filter(|e| e.alive && e.owner == c.me && e.inside == 0 && data().def(e.def).class() == Class::Citizen && e.order == Order::Idle)
+            .count() as i64
+    }
+
+    #[func]
+    fn select_all_idle_citizens(&mut self) {
+        let Some(c) = self.client.as_mut() else { return };
+        let me = c.me;
+        c.selection = c
+            .world()
+            .entities
+            .iter()
+            .filter(|e| e.alive && e.owner == me && e.inside == 0 && data().def(e.def).class() == Class::Citizen && e.order == Order::Idle)
+            .map(|e| e.id)
+            .collect();
+    }
+
+    /// Control groups for the HUD bar: [{group, count, key}]
+    #[func]
+    fn group_info(&self) -> VarArray {
+        let mut out = VarArray::new();
+        let Some(c) = &self.client else { return out };
+        for (g, ids) in c.groups.iter().enumerate() {
+            let alive: Vec<&ee_sim::entity::Entity> = ids.iter().filter_map(|&id| c.world().get(id)).collect();
+            if alive.is_empty() {
+                continue;
+            }
+            let mut counts = std::collections::BTreeMap::new();
+            for e in &alive {
+                *counts.entry(e.def).or_insert(0) += 1;
+            }
+            let top = counts.iter().max_by_key(|(_, n)| **n).map(|(d, _)| *d).unwrap();
+            let mut d = dict();
+            d.set("group", g as i64);
+            d.set("count", alive.len() as i64);
+            d.set("key", data().def(top).data.key.as_str());
+            out.push(&d.to_variant());
+        }
+        out
+    }
+
+    /// Recent attack sites for the minimap: Array of Vector4(x, z, age_seconds, 0).
+    #[func]
+    fn attack_markers(&self) -> PackedVector3Array {
+        let mut out = PackedVector3Array::new();
+        let Some(c) = &self.client else { return out };
+        for (p, t) in &c.attack_marks {
+            let age = (c.time - t) as f32;
+            if age < 15.0 {
+                out.push(Vector3::new(p.x, age, p.z));
+            }
+        }
+        out
+    }
+
     /// Number of entities of `key` owned by the local player (tests/UI).
     #[func]
     fn count_owned(&self, key: GString) -> i64 {
@@ -975,12 +1077,14 @@ impl GameView {
 
     /// Screen position of the nearest resource of `key` to the player's start (tests).
     #[func]
-    fn screen_pos_of_resource(&self, key: GString) -> Vector2 {
+    fn screen_pos_of_resource(&self, key: GString, nth: i64) -> Vector2 {
         let (Some(c), Some(cam)) = (&self.client, &self.camera) else { return Vector2::new(-1.0, -1.0) };
         let Some(def) = data().try_id(&key.to_string()) else { return Vector2::new(-1.0, -1.0) };
         let (sx, sy) = c.world().starts[c.me as usize];
         let home = ee_sim::fixed::FVec::tile_center(sx, sy);
-        let best = c.world().entities.iter().filter(|e| e.alive && e.def == def).min_by_key(|e| e.pos.dist2_raw(home));
+        let mut all: Vec<&ee_sim::entity::Entity> = c.world().entities.iter().filter(|e| e.alive && e.def == def).collect();
+        all.sort_by_key(|e| e.pos.dist2_raw(home));
+        let best = all.get(nth as usize).copied();
         match best {
             Some(e) => {
                 let (x, z) = crate::client::to_world2(e.pos);

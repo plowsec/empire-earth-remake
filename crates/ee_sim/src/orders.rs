@@ -9,7 +9,7 @@ use crate::mapgen::GAIA;
 use crate::path::FlowField;
 use crate::world::{data, SimEvent, World};
 
-const MAX_QUEUE: usize = 15;
+const MAX_QUEUE: usize = 60;
 
 fn owned_units(w: &World, player: u8, ids: &[EntityId]) -> Vec<EntityId> {
     let mut out: Vec<EntityId> = ids
@@ -214,8 +214,13 @@ pub fn apply(w: &mut World, c: &Command) {
         CommandKind::SetRally { buildings, to, target } => {
             for b in owned_buildings(w, p, buildings) {
                 let e = w.get_mut(b).unwrap();
-                e.rally = Some(*to);
-                e.rally_target = *target;
+                if *to == e.pos && *target == 0 {
+                    e.rally = None;
+                    e.rally_target = 0;
+                } else {
+                    e.rally = Some(*to);
+                    e.rally_target = *target;
+                }
             }
         }
         CommandKind::Stop { units } => {

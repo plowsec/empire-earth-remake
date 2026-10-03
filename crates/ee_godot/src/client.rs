@@ -121,6 +121,9 @@ pub struct Client {
     pub last_sim_ms: f64,
     pub show_all_bars: bool,
     sapling_timer: f32,
+    pub attack_marks: Vec<(Vector3, f64)>,
+    flag_pole: Batch,
+    flag_cloth: Batch,
 }
 
 pub struct StartOptions {
@@ -203,6 +206,24 @@ impl Client {
             b
         };
         let proj_batch = Batch::new(&mut root, &proj_mesh.upcast(), false, Some(&tracer_mat));
+        let flag_mat = shader_mat("res://shaders/unit.gdshader");
+        let mut fm = flag_mat.clone();
+        fm.set_shader_parameter("team_mask", &1.0f32.to_variant());
+        fm.set_shader_parameter("albedo", &Color::from_rgb(0.9, 0.9, 0.9).to_variant());
+        let pole_mesh = {
+            let mut b = BoxMesh::new_gd();
+            b.set_size(Vector3::new(0.12, 3.6, 0.12));
+            b
+        };
+        let cloth_mesh = {
+            let mut b = BoxMesh::new_gd();
+            b.set_size(Vector3::new(0.05, 0.9, 1.4));
+            b
+        };
+        let mut pm = shader_mat("res://shaders/unit.gdshader");
+        pm.set_shader_parameter("albedo", &Color::from_rgb(0.25, 0.25, 0.27).to_variant());
+        let flag_pole = Batch::new(&mut root, &pole_mesh.upcast(), true, Some(&pm));
+        let flag_cloth = Batch::new(&mut root, &cloth_mesh.upcast(), true, Some(&fm));
 
         let map = &session.world.map;
         let minimap_base = terrain::minimap_base(map);
@@ -251,6 +272,9 @@ impl Client {
             last_sim_ms: 0.0,
             show_all_bars: false,
             sapling_timer: 0.0,
+            attack_marks: Vec::new(),
+            flag_pole,
+            flag_cloth,
         };
         c.build_decorations(&deco_models);
         c.session.world.config.reveal = opt.reveal;
@@ -457,11 +481,19 @@ impl Client {
                 });
             }
             SimEvent::Damaged { owner, pos, .. } if *owner == me => {
-                if self.time - self.last_attack_notice > 12.0 {
-                    self.last_attack_notice = self.time;
-                    let p = self.world_pos3(*pos, Layer::Land, 0);
-                    self.events.push(ClientEvent { kind: "under_attack", pos: p, to: p, size: 0.0, text: String::new(), dmg: 0, mine: true });
+                let p = self.world_pos3(*pos, Layer::Land, 0);
+                let now = self.time;
+                let fresh_mark = !self.attack_marks.iter().any(|(m, t)| now - t < 8.0 && m.distance_to(p) < 40.0);
+                if fresh_mark {
+                    // a new attack site: alert only if nothing nearby was reported recently
+                    let new_site = !self.attack_marks.iter().any(|(m, t)| now - t < 30.0 && m.distance_to(p) < 90.0);
+                    self.attack_marks.push((p, now));
+                    if new_site && now - self.last_attack_notice > 4.0 {
+                        self.last_attack_notice = now;
+                        self.events.push(ClientEvent { kind: "under_attack", pos: p, to: p, size: 0.0, text: String::new(), dmg: 0, mine: true });
+                    }
                 }
+                self.attack_marks.retain(|(_, t)| now - t < 30.0);
             }
             SimEvent::Notice { owner, text } if *owner == me => {
                 self.events.push(ClientEvent { kind: "notice", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: text.to_string(), dmg: 0, mine: true });
@@ -924,6 +956,32 @@ impl Client {
         tr.retain(|tc| tc.t < tc.life);
         self.tracers = tr;
 
+        // rally flags for selected production buildings
+        self.flag_pole.begin();
+        self.flag_cloth.begin();
+        {
+            let w = &self.session.world;
+            let mycol = player_color(w.players[me as usize].color);
+            let mut flags = Vec::new();
+            for &id in &self.selection {
+                if let Some(e) = w.get(id) {
+                    if e.owner == me && data().def(e.def).is_building() {
+                        if let Some(r) = e.rally {
+                            flags.push(r);
+                        }
+                    }
+                }
+            }
+            for r in flags {
+                let (x, z) = to_world2(r);
+                let y = self.heights.at(x, z).max(0.0);
+                let wave = (t * 3.0).sin() * 0.15;
+                self.flag_pole.push(&Transform3D::new(Basis::IDENTITY, Vector3::new(x, y + 1.8, z)), Color::WHITE, [0.0, 0.0, 1.0, 0.0]);
+                self.flag_cloth.push(&Transform3D::new(Basis::from_axis_angle(Vector3::UP, wave), Vector3::new(x, y + 3.1, z + 0.75)), mycol, [0.0, 0.0, 1.0, 0.0]);
+            }
+        }
+        self.flag_pole.finish();
+        self.flag_cloth.finish();
         for b in self.batches.values_mut() {
             b.finish();
         }

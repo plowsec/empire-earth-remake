@@ -15,6 +15,7 @@ var cache := {}
 var budget := {}
 var track_i := 0
 var rig: Node = null
+var _last_alert := -1
 
 func _ready() -> void:
 	for i in 32:
@@ -149,7 +150,12 @@ func on_event(e: Dictionary) -> void:
 	match e["kind"]:
 		"complete": ui("complete", -4.0)
 		"research": ui("research", -4.0)
-		"under_attack": ui("alert", -6.0)
+		"under_attack":
+			var k := randi() % 4
+			if k == _last_alert:
+				k = (k + 1) % 4
+			_last_alert = k
+			ui("alert_%d" % k, -8.0)
 		"notice": ui("notify", -10.0)
 		"trained": ui("ui_click", -14.0)
 		"placed": _play3d(_pick("hammer", 3), e["pos"], -4.0)

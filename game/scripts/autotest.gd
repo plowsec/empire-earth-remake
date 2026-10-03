@@ -135,7 +135,12 @@ func _process(_dt: float) -> void:
 			drag(Vector2(vs.x * 0.1, vs.y * 0.05), Vector2(vs.x * 0.9, vs.y * 0.75))
 			wait = 3
 		10:
-			var tp: Vector2 = gv.screen_pos_of_resource("tree")
+			var tp: Vector2 = gv.screen_pos_of_resource("tree", 0)
+			for n in 12:
+				var cand: Vector2 = gv.screen_pos_of_resource("tree", n)
+				if cand.x > 0 and cand.y > 0 and cand.x < vs.x and cand.y < vs.y * 0.75 and gv.hover(cand).get("resource", false):
+					tp = cand
+					break
 			if tp.x < 0 or tp.y < 0 or tp.x > vs.x or tp.y > vs.y:
 				rig.focus(rig.target)
 			print("tree at ", tp, " sel=", gv.selection_count(), " ", gv.debug_pick(tp))

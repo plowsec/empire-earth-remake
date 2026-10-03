@@ -30,6 +30,10 @@ var end_panel: PanelContainer
 var menu_panel: PanelContainer
 var debug_label: Label
 
+var idle_btn: Button
+var group_bar: HBoxContainer
+var group_cache := ""
+var _group_click := {}
 var mode := ""            # "", "place", "attack_move", "unload"
 var dragging := false
 var drag_start := Vector2.ZERO
@@ -259,6 +263,24 @@ func _build() -> void:
 	card_grid.custom_minimum_size = Vector2(5 * 70 + 4 * 5, 3 * 62 + 2 * 5)
 	card_frame.add_child(card_grid)
 
+	# --- idle citizens button + control group bar (just above the console)
+	var strip := HBoxContainer.new()
+	strip.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	strip.position = Vector2(10, -270)
+	strip.add_theme_constant_override("separation", 6)
+	strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(strip)
+	idle_btn = Button.new()
+	idle_btn.custom_minimum_size = Vector2(86, 40)
+	idle_btn.icon = _icon("citizen")
+	idle_btn.expand_icon = true
+	idle_btn.tooltip_text = "Idle citizens (;). Shift-click: select all idle citizens."
+	idle_btn.pressed.connect(_on_idle_pressed)
+	strip.add_child(idle_btn)
+	group_bar = HBoxContainer.new()
+	group_bar.add_theme_constant_override("separation", 4)
+	strip.add_child(group_bar)
+
 	# --- tooltip
 	tooltip = PanelContainer.new()
 	tooltip.visible = false
@@ -348,6 +370,7 @@ func _process(dt: float) -> void:
 		refresh_t = 0.15
 		_refresh_selection()
 		_refresh_card()
+		_refresh_strip()
 	minimap_overlay.queue_redraw()
 	gv.set_show_all_bars(Input.is_key_pressed(KEY_ALT))
 	_update_hover()
@@ -487,6 +510,51 @@ func _refresh_selection() -> void:
 		b.pressed.connect(func(): gv.select_ids(PackedInt64Array([id])))
 		grid.add_child(b)
 
+func _on_idle_pressed() -> void:
+	if Input.is_key_pressed(KEY_SHIFT):
+		gv.select_all_idle_citizens()
+	else:
+		var c: Vector3 = gv.select_idle_citizen()
+		if c.y > -0.5:
+			rig.focus(c)
+	sel_cache = ""; card_cache = ""
+
+func _refresh_strip() -> void:
+	var n: int = gv.idle_citizen_count()
+	idle_btn.text = str(n)
+	idle_btn.modulate = Color(1, 0.85, 0.5) if n > 0 else Color(0.7, 0.7, 0.7, 0.7)
+	var groups: Array = gv.group_info()
+	var key := ""
+	for g in groups:
+		key += "%d:%d:%s|" % [g["group"], g["count"], g["key"]]
+	if key == group_cache:
+		return
+	group_cache = key
+	for c in group_bar.get_children(): c.queue_free()
+	for g in groups:
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(74, 40)
+		b.icon = _icon(g["key"])
+		b.expand_icon = true
+		b.text = "%d" % g["count"]
+		b.tooltip_text = "Group %d (Ctrl+%d to set, %d to select, double to center)" % [g["group"], g["group"], g["group"]]
+		var gi: int = g["group"]
+		var lbl := _label(str(gi), 12, ACCENT, true)
+		lbl.position = Vector2(3, 0)
+		lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		b.add_child(lbl)
+		b.pressed.connect(func(): _select_group(gi))
+		group_bar.add_child(b)
+
+func _select_group(g: int) -> void:
+	if gv.recall_group(g):
+		var now := Time.get_ticks_msec() / 1000.0
+		if now - _group_click.get(g, 0.0) < 0.35:
+			var c: Vector3 = gv.selection_center()
+			if c.y > -0.5: rig.focus(c)
+		_group_click[g] = now
+	sel_cache = ""; card_cache = ""
+
 # ---------------------------------------------------------------- command card
 
 func _refresh_card() -> void:
@@ -545,6 +613,8 @@ func _show_tooltip(b: Dictionary, btn: Control) -> void:
 		t += "   [color=#888]Hotkey %s[/color]" % b["hotkey"]
 	if b["tooltip"] != "":
 		t += "\n[color=#cfcabd]%s[/color]" % b["tooltip"]
+	if b["action"] == "train":
+		t += "\n[color=#888]Shift-click: queue 10 in every selected building[/color]"
 	tooltip_label.text = t
 	tooltip.visible = true
 	tooltip.reset_size()
@@ -552,6 +622,8 @@ func _show_tooltip(b: Dictionary, btn: Control) -> void:
 	tooltip.position = Vector2(min(btn.global_position.x, vs.x - tooltip.size.x - 8), btn.global_position.y - tooltip.size.y - 10)
 
 func _do_action(action: String, key: String) -> void:
+	if action == "train" and Input.is_key_pressed(KEY_SHIFT):
+		action = "train_mass"
 	if main and main.has_node("Audio"):
 		main.get_node("Audio").ui("ui_click", -10.0)
 	var m: String = gv.do_action(action, key)
@@ -593,6 +665,15 @@ func _draw_minimap_overlay() -> void:
 		pts.append(Vector2(g.x / ms.x * s.x, g.z / ms.y * s.y))
 	pts.append(pts[0])
 	minimap_overlay.draw_polyline(pts, Color(1, 1, 1, 0.85), 1.2, true)
+	# red crosses where we were attacked (fade over 15 s)
+	for m in gv.attack_markers():
+		var c := Vector2(m.x / ms.x * s.x, m.z / ms.y * s.y)
+		var a: float = clamp(1.0 - m.y / 15.0, 0.0, 1.0)
+		var pulse := 1.0 + 0.3 * sin(m.y * 8.0)
+		var r := 5.0 * pulse
+		var col := Color(1, 0.15, 0.1, a)
+		minimap_overlay.draw_line(c + Vector2(-r, -r), c + Vector2(r, r), col, 2.5)
+		minimap_overlay.draw_line(c + Vector2(-r, r), c + Vector2(r, -r), col, 2.5)
 
 # ---------------------------------------------------------------- events
 
