@@ -515,7 +515,13 @@ impl World {
             let found = if res != 255 { self.nearest_resource(res, from, 18, layer == Layer::Water) } else { None };
             let id = e.id;
             match found {
-                Some(f) => set_order(self, id, Order::Gather { node: f }),
+                Some(f) => {
+                    // claim the slot now so the rest of the crew picks other trees
+                    if let Some(n) = self.get_mut(f) {
+                        n.gatherers = n.gatherers.saturating_add(1);
+                    }
+                    set_order(self, id, Order::Gather { node: f })
+                }
                 None if carry > 0 => set_order(self, id, Order::ReturnCargo),
                 None => self.next_order(i),
             }
@@ -746,6 +752,13 @@ impl World {
             let walk = sd.data.walkable;
             if walk && d.gather_rate[0] > 0 && self.entities[i].queue.is_empty() {
                 set_order(self, id, Order::Gather { node: site });
+            } else if self.entities[i].queue.is_empty() {
+                // done: help with the nearest unfinished or damaged building around
+                match self.nearby_build_job(i, site) {
+                    Some((t, false)) => set_order(self, id, Order::Build { site: t }),
+                    Some((t, true)) => set_order(self, id, Order::Repair { target: t }),
+                    None => self.next_order(i),
+                }
             } else {
                 self.next_order(i);
             }
@@ -802,6 +815,38 @@ impl World {
                 }
             }
         }
+    }
+
+    /// Nearest own construction site (or damaged building) within 12 tiles: (id, is_repair).
+    fn nearby_build_job(&self, i: usize, except: EntityId) -> Option<(EntityId, bool)> {
+        let e = &self.entities[i];
+        let (owner, pos) = (e.owner, e.pos);
+        let r = Fx::from_int(12);
+        let mut best: Option<(i64, EntityId, bool)> = None;
+        for o in &self.entities {
+            if !o.alive || o.owner != owner || o.id == except || !o.pos.within(pos, r) {
+                continue;
+            }
+            let od = data().def(o.def);
+            if !od.is_building() {
+                continue;
+            }
+            let job = if !o.complete {
+                Some(false)
+            } else if o.hp < self.max_hp(o) && !od.data.walkable {
+                Some(true)
+            } else {
+                None
+            };
+            if let Some(rep) = job {
+                // finish construction before repairs
+                let dd = o.pos.dist2_raw(pos) + if rep { 1 << 40 } else { 0 };
+                if best.map_or(true, |b| dd < b.0) {
+                    best = Some((dd, o.id, rep));
+                }
+            }
+        }
+        best.map(|b| (b.1, b.2))
     }
 
     // ------------------------------------------------------------------ transport

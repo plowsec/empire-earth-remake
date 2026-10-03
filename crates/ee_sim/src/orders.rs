@@ -487,6 +487,44 @@ fn smart_target(w: &mut World, p: u8, units: &[EntityId], target: EntityId, queu
         };
         plan.push((id, order));
     }
+    // many gatherers on one land node: spread them over neighbouring nodes of the
+    // same kind (each tree/mine up to its worker cap), nearest workers first
+    if !queue && tdef.is_resource() && !w.fish.contains(&target) && !tdef.is_building() {
+        let gath: Vec<EntityId> = plan.iter().filter(|(_, o)| matches!(o, Some(Order::Gather { .. }))).map(|x| x.0).collect();
+        let cap = crate::world::gather_cap(tdef);
+        if gath.len() as i32 > cap {
+            let mut nodes = w.nodes_like(target, 9);
+            // the clicked node fills first
+            if let Some(k) = nodes.iter().position(|n| n.0 == target) {
+                let t = nodes.remove(k);
+                nodes.insert(0, (t.0, cap));
+            }
+            let mut order: Vec<EntityId> = gath.clone();
+            order.sort_by_key(|&u| (w.get(u).map_or(0, |e| e.pos.dist2_raw(tpos)), u));
+            let mut it = order.into_iter();
+            let mut assign: Vec<(EntityId, EntityId)> = Vec::new();
+            'n: for (node, free) in nodes {
+                for _ in 0..free {
+                    match it.next() {
+                        Some(u) => assign.push((u, node)),
+                        None => break 'n,
+                    }
+                }
+            }
+            // whoever is left shares the clicked node (they'll overflow to neighbours later)
+            for u in it {
+                assign.push((u, target));
+            }
+            for (u, node) in assign {
+                if let Some(slot) = plan.iter_mut().find(|x| x.0 == u) {
+                    slot.1 = Some(Order::Gather { node });
+                }
+                if let Some(n) = w.get_mut(node) {
+                    n.gatherers = n.gatherers.saturating_add(1);
+                }
+            }
+        }
+    }
     let mut movers = Vec::new();
     for (id, order) in plan {
         match order {

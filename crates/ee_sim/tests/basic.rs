@@ -772,3 +772,34 @@ fn ships_keep_a_wide_berth_after_a_group_move() {
         }
     }
 }
+
+#[test]
+fn many_woodcutters_spread_over_the_forest() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let tree = data().id("tree");
+    let near = w.entities.iter().filter(|e| e.alive && e.def == tree).min_by_key(|e| e.pos.dist2_raw(FVec::tile_center(s.0, s.1))).unwrap().id;
+    let tpos = w.get(near).unwrap().pos;
+    let cit = data().id("citizen");
+    let ids: Vec<u32> = (0..10).map(|k| w.spawn(cit, 0, tpos + FVec::new(ee_sim::fixed::Fx::from_int(k % 3 - 1), ee_sim::fixed::Fx::from_int(2)))).collect();
+    run(&mut w, 2, vec![(0, Command { player: 0, kind: CommandKind::Target { units: ids.clone(), target: near, queue: false } })]);
+    let mut nodes: Vec<u32> = ids.iter().filter_map(|&u| match w.get(u).unwrap().order { Order::Gather { node } => Some(node), _ => None }).collect();
+    nodes.sort();
+    nodes.dedup();
+    assert!(nodes.len() >= 5, "10 woodcutters only use {} trees", nodes.len());
+}
+
+#[test]
+fn builders_move_on_to_nearby_unfinished_buildings() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let house = data().id("house");
+    let a = w.spawn_static(house, 0, (s.0 + 6, s.1 + 6), false);
+    let b = w.spawn_static(house, 0, (s.0 + 10, s.1 + 6), false);
+    let cit = data().id("citizen");
+    let c = w.spawn(cit, 0, FVec::tile_center(s.0 + 8, s.1 + 9));
+    w.get_mut(a).unwrap().progress = data().def(house).build_ticks - 3;
+    run(&mut w, 400, vec![(0, Command { player: 0, kind: CommandKind::Target { units: vec![c], target: a, queue: false } })]);
+    assert!(w.get(a).unwrap().complete);
+    assert!(w.get(b).unwrap().progress > 0, "builder did not continue on the second site");
+}

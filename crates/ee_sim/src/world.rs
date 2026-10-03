@@ -932,6 +932,36 @@ impl World {
         best.map(|b| b.1)
     }
 
+    /// Land resource nodes of the same def as `like` within `radius` tiles of `from`,
+    /// nearest first, with their free worker slots.
+    pub fn nodes_like(&self, like: EntityId, radius: i32) -> Vec<(EntityId, i32)> {
+        let d = data();
+        let Some(t) = self.get(like) else { return vec![] };
+        let def = t.def;
+        let from = t.pos;
+        let cap = gather_cap(d.def(def));
+        let (cx, cy) = from.tile();
+        let mut found: Vec<(i64, EntityId, i32)> = Vec::new();
+        for y in cy - radius..=cy + radius {
+            for x in cx - radius..=cx + radius {
+                if !self.map.in_bounds(x, y) {
+                    continue;
+                }
+                let occ = self.map.occupant[self.map.idx(x, y)];
+                if occ == 0 || found.iter().any(|f| f.1 == occ) {
+                    continue;
+                }
+                let Some(e) = self.get(occ) else { continue };
+                if e.def != def || (e.amount <= 0 && !d.def(def).is_building()) {
+                    continue;
+                }
+                found.push((from.dist2_raw(e.pos), occ, (cap - e.gatherers as i32).max(0)));
+            }
+        }
+        found.sort();
+        found.into_iter().map(|f| (f.1, f.2)).collect()
+    }
+
     /// A free tile next to a footprint where a unit of `layer` can appear.
     pub fn exit_tile(&self, e: &Entity, layer: Layer, toward: Option<FVec>) -> Option<FVec> {
         let d = self.def_of(e);
