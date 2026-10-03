@@ -967,20 +967,21 @@ impl World {
     fn behave_rtb(&mut self, i: usize) {
         let e = &self.entities[i];
         let owner = e.owner;
-        let home = match self.get(e.home) {
-            Some(h) if h.owner == owner && h.complete && data().def(h.def).data.airport => Some(e.home),
-            _ => {
-                let mut best: Option<(i64, EntityId)> = None;
-                for o in &self.entities {
-                    if o.alive && o.owner == owner && o.complete && data().def(o.def).data.airport {
-                        let dd = o.pos.dist2_raw(e.pos);
-                        if best.map_or(true, |(b, _)| dd < b) {
-                            best = Some((dd, o.id));
-                        }
-                    }
+        // land at the nearest friendly airfield (forward bases extend reach),
+        // unless the assigned home is nearly as close
+        let mut nearest: Option<(i64, EntityId)> = None;
+        for o in &self.entities {
+            if o.alive && o.owner == owner && o.complete && data().def(o.def).data.airport {
+                let dd = o.pos.dist2_raw(e.pos);
+                if nearest.map_or(true, |(b, _)| dd < b) {
+                    nearest = Some((dd, o.id));
                 }
-                best.map(|b| b.1)
             }
+        }
+        let home = match (self.get(e.home), nearest) {
+            (Some(h), Some((nd, _))) if h.owner == owner && h.complete && data().def(h.def).data.airport
+                && h.pos.dist2_raw(e.pos) <= nd * 9 / 4 => Some(e.home),
+            (_, n) => n.map(|b| b.1),
         };
         let Some(home) = home else {
             // nowhere to land: loiter until fuel runs out

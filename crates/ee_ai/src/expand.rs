@@ -140,10 +140,11 @@ impl Ai {
         let def = data().id(key);
         let (cx, cy) = near.tile();
         let isl = self.island_at(w, (cx, cy));
-        for r in 3..8 {
+        let (sw, sh) = data().def(def).size();
+        for r in 3..11 {
             for k in 0..12 {
                 let (c, s) = ee_sim::mapgen::sincos_deg(k * 30 + 15);
-                let t = (cx + c * r / 1024 - 1, cy + s * r / 1024 - 1);
+                let t = (cx + c * r / 1024 - sw / 2, cy + s * r / 1024 - sh / 2);
                 if w.can_place(self.player, def, t).is_ok() && self.island_at(w, t) == isl {
                     return Some(t);
                 }
@@ -205,7 +206,31 @@ impl Ai {
                 }
             }
         }
-        // 2) every Town Center gets a guard tower; SAM sites once enemy air is around
+        // 2) forward airbases: an airfield on each colony island (up to 3)
+        let airport = d.id("airport");
+        if v.count(airport) >= 1 && !self.pending.iter().any(|(k, _)| *k == airport) && w.can_afford(self.player, &d.def(airport).data.cost) {
+            let fields: Vec<(i32, i32)> = w.entities.iter().filter(|e| e.alive && e.owner == self.player && e.def == airport).map(|e| e.tile).collect();
+            let forward = fields.iter().filter(|t| self.island_at(w, (t.0 - 1, t.1)) != Some(self.home_island)).count();
+            if forward < 3 {
+                for &s in v.buildings.get(&settlement).map(|x| x.as_slice()).unwrap_or(&[]) {
+                    let Some(se) = w.get(s) else { continue };
+                    let isl = self.island_at(w, (se.tile.0 - 1, se.tile.1)).or_else(|| self.island_at(w, (se.tile.0 + 3, se.tile.1)));
+                    let Some(isl) = isl else { continue };
+                    if isl == self.home_island || fields.iter().any(|t| self.island_at(w, (t.0 - 1, t.1)) == Some(isl) || self.island_at(w, (t.0 + 5, t.1)) == Some(isl)) {
+                        continue;
+                    }
+                    if let Some(t) = self.defense_plot(w, se.pos, "airport") {
+                        let who = self.nearest_citizens(w, v, se.pos, 2, Some(isl));
+                        if !who.is_empty() {
+                            out.push(CommandKind::Build { units: who, def: airport, tile: t, queue: false });
+                            self.pending.push((airport, w.tick));
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        // 3) every Town Center gets a guard tower; SAM sites once enemy air is around
         if pl.res[2] < 250 {
             return;
         }
@@ -244,10 +269,10 @@ impl Ai {
         let tick = w.tick;
         let d = data();
         if self.colony.is_none() {
-            if tick < 20 * 60 * 5 || v.citizens.len() < 22 || self.invasion.is_some() || self.defending {
+            if tick < 20 * 60 * 4 || v.citizens.len() < 20 || self.defending {
                 return;
             }
-            if tick.wrapping_sub(self.last_colony) < 20 * 60 {
+            if tick.wrapping_sub(self.last_colony) < 20 * 30 {
                 return;
             }
             let pl = &w.players[self.player as usize];
@@ -255,7 +280,8 @@ impl Ai {
             if pl.res[1] < sc.wood + 150 || pl.res[2] < sc.stone + 200 {
                 return;
             }
-            let Some(&ship) = v.transports.iter().find(|&&t| w.get(t).map_or(false, |e| e.cargo.is_empty() && matches!(e.order, Order::Idle | Order::Move { .. })))
+            let busy: Vec<EntityId> = self.invasion.as_ref().map(|i| i.transports.clone()).unwrap_or_default();
+            let Some(&ship) = v.transports.iter().find(|&&t| !busy.contains(&t) && w.get(t).map_or(false, |e| e.cargo.is_empty() && matches!(e.order, Order::Idle | Order::Move { .. })))
             else {
                 return;
             };
@@ -263,7 +289,7 @@ impl Ai {
             let (bx, by) = self.base_tile;
             let mut best: Option<(i64, usize)> = None;
             for (i, isl) in self.islands.iter().enumerate() {
-                if isl.claimed || isl.mines.is_empty() || isl.tiles < 30 {
+                if isl.claimed || isl.mines.is_empty() || isl.tiles < 60 {
                     continue;
                 }
                 let enemy_here = self.known.values().any(|k| self.island_at(w, k.tile) == Some(i));

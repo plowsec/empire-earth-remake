@@ -617,14 +617,14 @@ impl Ai {
 
     fn transports_wanted(&self, v: &View) -> i32 {
         let army = v.land_army.len() as i32;
-        let unclaimed = self.islands.iter().any(|i| !i.claimed && !i.mines.is_empty());
-        if army < 8 && unclaimed && v.citizens.len() >= 18 {
+        let unclaimed = self.islands.iter().any(|i| !i.claimed && !i.mines.is_empty() && i.tiles >= 60) as i32;
+        if army < 8 && unclaimed > 0 && v.citizens.len() >= 18 {
             return 1;
         }
         if army < 8 {
             return 0;
         }
-        ((army.min(self.diff.wave_size() as i32 + 24) + 11) / 12).clamp(1, 5)
+        ((army.min(self.diff.wave_size() as i32 + 24) + 11) / 12).clamp(1, 5) + unclaimed
     }
 
     // ------------------------------------------------------------------ military
@@ -1010,17 +1010,22 @@ impl Ai {
             let Some((stage, stage_w)) = self.staging_tiles(w) else { return };
             let Some((land, _)) = self.landing_tiles(w, enemy) else { return };
             let Some(es) = self.enemy_start(w) else { return };
-            let cap: usize = v.transports.len() * 12;
+            let colony_ship = self.colony.as_ref().map(|c| c.transport);
+            let ships: Vec<EntityId> = v.transports.iter().copied().filter(|t| Some(*t) != colony_ship).collect();
+            if ships.is_empty() {
+                return;
+            }
+            let cap: usize = ships.len() * 12;
             let mut units = available;
             units.truncate(cap.min(60));
             let staging = FVec::tile_center(stage.0, stage.1);
             out.push(CommandKind::Move { units: units.clone(), to: staging, attack_move: false, queue: false });
             let staging_water = FVec::tile_center(stage_w.0, stage_w.1);
-            out.push(CommandKind::Move { units: v.transports.clone(), to: staging_water, attack_move: false, queue: false });
+            out.push(CommandKind::Move { units: ships.clone(), to: staging_water, attack_move: false, queue: false });
             self.invasion = Some(Invasion {
                 stage: Stage::Gather,
                 units,
-                transports: v.transports.clone(),
+                transports: ships.clone(),
                 staging,
                 staging_water,
                 landing: FVec::tile_center(land.0, land.1),
