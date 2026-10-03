@@ -121,10 +121,100 @@ impl GameView {
         let noise: Gd<Texture2D> = noise_texture(11, 0.02, 512, false).upcast();
         self.noise_tex = Some(noise.clone());
         let root = self.base().clone().upcast::<Node>();
-        let client = Client::new(root, opt, Some(noise.clone()));
+        let demo = opt.ai_self;
+        let mut client = Client::new(root, opt, Some(noise.clone()));
+        if !demo {
+            client.replay_path = Some(new_replay_path(client.world().config.seed));
+        }
         self.build_world(&client, &noise);
         self.client = Some(client);
         self.signals().game_started().emit();
+    }
+
+    /// Save the running match to user://saves/<name>.eesave. Returns "" or an error.
+    #[func]
+    fn save_game(&mut self, name: GString) -> GString {
+        let Some(c) = &self.client else { return "no game running".into() };
+        let dir = user_dir("saves");
+        let safe: String = name.to_string().chars().map(|ch| if ch.is_alphanumeric() || ch == '-' || ch == '_' || ch == ' ' { ch } else { '_' }).collect();
+        let safe = if safe.trim().is_empty() { "quicksave".to_string() } else { safe.trim().to_string() };
+        let path = format!("{dir}/{safe}.eesave");
+        match crate::save::save(&c.session, c.reveal) {
+            Ok(text) => {
+                let tmp = format!("{path}.tmp");
+                match std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)) {
+                    Ok(()) => {
+                        c.write_replay();
+                        GString::new()
+                    }
+                    Err(e) => GString::from(&format!("could not write {path}: {e}")),
+                }
+            }
+            Err(e) => GString::from(&format!("save failed: {e}")),
+        }
+    }
+
+    /// Saved games, newest first: [{name, path, time}].
+    #[func]
+    fn list_saves(&self) -> VarArray {
+        let dir = user_dir("saves");
+        let mut found: Vec<(std::time::SystemTime, String, String)> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("eesave") {
+                    continue;
+                }
+                let t = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                let name = p.file_stem().and_then(|x| x.to_str()).unwrap_or("?").to_string();
+                found.push((t, name, p.to_string_lossy().to_string()));
+            }
+        }
+        found.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut out = VarArray::new();
+        for (t, name, path) in found {
+            let mut d = VarDictionary::new();
+            d.set("name", name);
+            d.set("path", path);
+            let secs = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+            d.set("time", godot::classes::Time::singleton().get_datetime_string_from_unix_time(secs).to_string().replace('T', " "));
+            out.push(&d.to_variant());
+        }
+        out
+    }
+
+    /// Resume a saved match. Returns "" or an error.
+    #[func]
+    fn load_game(&mut self, path: GString) -> GString {
+        let text = match std::fs::read_to_string(path.to_string()) {
+            Ok(t) => t,
+            Err(e) => return GString::from(&format!("could not read save: {e}")),
+        };
+        let (session, reveal) = match crate::save::load(&text) {
+            Ok(x) => x,
+            Err(e) => return GString::from(&e),
+        };
+        for mut ch in self.base().get_children().iter_shared() {
+            ch.queue_free();
+        }
+        self.client = None;
+        let noise: Gd<Texture2D> = noise_texture(11, 0.02, 512, false).upcast();
+        self.noise_tex = Some(noise.clone());
+        let root = self.base().clone().upcast::<Node>();
+        let mut client = Client::from_session(root, session, reveal, Some(noise.clone()));
+        client.replay_path = Some(new_replay_path(client.world().config.seed));
+        self.build_world(&client, &noise);
+        self.client = Some(client);
+        self.signals().game_started().emit();
+        GString::new()
+    }
+
+    /// Flush the replay file (call when leaving a match).
+    #[func]
+    fn write_replay(&self) {
+        if let Some(c) = &self.client {
+            c.write_replay();
+        }
     }
 
     fn build_world(&mut self, c: &Client, noise: &Gd<Texture2D>) {
@@ -1201,6 +1291,9 @@ impl GameView {
         d.set("entities", w.entities.iter().filter(|e| e.alive).count() as i64);
         d.set("projectiles", w.projectiles.len() as i64);
         d.set("tick", w.tick as i64);
+        d.set("checksum", format!("{:016x}", w.checksum()));
+        d.set("replay", c.replay_path.clone().unwrap_or_default());
+        d.set("tick", w.tick as i64);
         d.set("sim_ms", c.last_sim_ms);
         let (air, ships, total) = c.wreck_counts();
         d.set("falling_aircraft", air as i64);
@@ -1374,4 +1467,16 @@ impl GameView {
         let units = w.entities.iter().filter(|e| e.alive && e.owner != GAIA && data().def(e.def).is_unit()).count();
         GString::from(&format!("tick {} | units {} | proj {} | {}", w.tick, units, w.projectiles.len(), c.session.controller_debug().join(" | ")))
     }
+}
+
+/// Absolute path of a user:// subfolder, created on demand.
+fn user_dir(sub: &str) -> String {
+    let p = godot::classes::ProjectSettings::singleton().globalize_path(&format!("user://{sub}")).to_string();
+    let _ = std::fs::create_dir_all(&p);
+    p
+}
+
+fn new_replay_path(seed: u64) -> String {
+    let stamp = godot::classes::Time::singleton().get_datetime_string_from_system().to_string().replace([':', 'T'], "-");
+    format!("{}/{stamp}-seed{seed}.eerep", user_dir("replays"))
 }

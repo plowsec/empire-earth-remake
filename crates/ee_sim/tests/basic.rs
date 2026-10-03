@@ -878,3 +878,23 @@ fn dbg_icbm() {
     }
     println!("target {:?} at {:?}", w.get(target).map(|e| e.hp), at.tile());
 }
+
+#[test]
+fn save_load_continues_bit_identically() {
+    let mut a = World::new(MatchConfig::skirmish(4, 2));
+    let s = a.starts[0];
+    let rifle = data().id("rifleman");
+    let ids: Vec<u32> = (0..12).map(|k| a.spawn(rifle, 0, FVec::tile_center(s.0 + 4 + k % 4, s.1 + 4 + k / 4))).collect();
+    a.apply_command(&Command { player: 0, kind: CommandKind::Move { units: ids, to: FVec::tile_center(s.0 + 20, s.1 + 6), attack_move: false, queue: false } });
+    run(&mut a, 60, vec![]);
+    let text = a.save().unwrap();
+    let mut b = World::load(&text).unwrap();
+    assert_eq!(a.checksum(), b.checksum());
+    let t = a.tick;
+    for k in 0..300 {
+        let tc = TickCommands { tick: t + k, commands: vec![] };
+        a.step(&tc);
+        b.step(&tc);
+    }
+    assert_eq!(a.checksum(), b.checksum(), "saved game diverged after loading");
+}

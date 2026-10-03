@@ -20,6 +20,18 @@ pub trait Controller: Send {
     fn debug(&self) -> String {
         String::new()
     }
+    /// Serialized internal state for save games (None = stateless / not saveable).
+    fn save_state(&self) -> Option<String> {
+        None
+    }
+}
+
+/// How a computer player was set up, so a replay can recreate it exactly.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AiSetup {
+    pub player: u8,
+    pub difficulty: i32,
+    pub seed: u64,
 }
 
 /// Network seam. A transport carries each peer's per-tick command bundles.
@@ -51,6 +63,24 @@ pub struct Replay {
     pub players: usize,
     pub data_hash: u64,
     pub ticks: Vec<TickCommands>,
+    /// full match setup (absent in old replays)
+    #[serde(default)]
+    pub config: Option<MatchConfig>,
+    #[serde(default)]
+    pub ais: Vec<AiSetup>,
+    /// (tick, world checksum) samples to detect divergence on re-simulation
+    #[serde(default)]
+    pub checksums: Vec<(u32, u64)>,
+    /// last tick played
+    #[serde(default)]
+    pub end_tick: u32,
+    /// command latency the session ran with (AI commands land this many ticks later)
+    #[serde(default = "one")]
+    pub input_delay: u32,
+}
+
+fn one() -> u32 {
+    1
 }
 
 pub struct Session {
@@ -75,11 +105,17 @@ pub struct Session {
     /// events from every executed tick since the client last drained them
     pub event_log: Vec<ee_sim::world::SimEvent>,
     pub collect_events: bool,
+    /// computer players (recorded in replays)
+    pub ai_setup: Vec<AiSetup>,
+    /// match setup at tick 0 (a loaded save keeps the original)
+    pub start_config: MatchConfig,
 }
 
 impl Session {
     pub fn new(config: MatchConfig, local_players: Vec<u8>, transport: Box<dyn Transport>) -> Session {
         Session {
+            start_config: config.clone(),
+            ai_setup: Vec::new(),
             world: World::new(config),
             local_players,
             input_delay: 2,
@@ -110,6 +146,16 @@ impl Session {
             self.local_players.push(c.player());
         }
         self.controllers.push(c);
+    }
+
+    /// Schedule a command for an exact tick (replays).
+    pub fn schedule(&mut self, tick: u32, cmd: Command) {
+        self.scheduled.entry(tick).or_default().push(cmd);
+    }
+
+    /// Saved state of every controller, in order (None for stateless ones).
+    pub fn controller_states(&self) -> Vec<Option<String>> {
+        self.controllers.iter().map(|c| c.save_state()).collect()
     }
 
     /// Issue a command for a local player. It executes `input_delay` ticks later.
@@ -211,6 +257,11 @@ impl Session {
             players: self.world.players.len(),
             data_hash: ee_sim::data().hash,
             ticks: self.replay.clone(),
+            config: Some(self.start_config.clone()),
+            ais: self.ai_setup.clone(),
+            checksums: self.checksums.iter().copied().filter(|(t, _)| t % 1200 == 0).collect(),
+            end_tick: self.world.tick,
+            input_delay: self.input_delay,
         }
     }
 }

@@ -10,7 +10,7 @@ use ee_sim::world::{data, World};
 use std::collections::VecDeque;
 
 /// One landmass and the mines on it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Island {
     pub tiles: usize,
     pub center: (i32, i32),
@@ -18,7 +18,7 @@ pub(crate) struct Island {
     pub claimed: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum CStage {
     Gather,
     Load,
@@ -27,6 +27,7 @@ pub(crate) enum CStage {
 }
 
 #[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Colony {
     pub stage: CStage,
     pub island: usize,

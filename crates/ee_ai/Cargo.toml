@@ -5,3 +5,5 @@ version.workspace = true
 [dependencies]
 ee_sim.workspace = true
 ee_net.workspace = true
+serde.workspace = true
+ron.workspace = true

@@ -138,6 +138,10 @@ pub struct Client {
     label_timer: f32,
     flag_pole: Batch,
     flag_cloth: Batch,
+    /// replay file kept up to date while playing (None = not recording)
+    pub replay_path: Option<String>,
+    replay_timer: f32,
+    replay_final: bool,
 }
 
 pub struct StartOptions {
@@ -166,13 +170,22 @@ impl Client {
             p.name = format!("AI {}", i);
         }
         let mut session = Session::single_player(cfg);
-        session.collect_events = true;
+        let mut add_ai = |s: &mut Session, p: u8, diff: i32, seed: u64| {
+            s.add_controller(Box::new(Ai::new(p, Difficulty::from_index(diff), seed)));
+            s.ai_setup.push(ee_net::AiSetup { player: p, difficulty: diff, seed });
+        };
         if opt.ai_self {
-            session.add_controller(Box::new(Ai::new(0, Difficulty::from_index(opt.difficulty.max(2)), opt.seed ^ 0x55)));
+            add_ai(&mut session, 0, opt.difficulty.max(2), opt.seed ^ 0x55);
         }
         for p in 1..opt.players.clamp(2, 8) {
-            session.add_controller(Box::new(Ai::new(p as u8, Difficulty::from_index(opt.difficulty), opt.seed)));
+            add_ai(&mut session, p as u8, opt.difficulty, opt.seed);
         }
+        Client::from_session(root, session, opt.reveal, noise)
+    }
+
+    /// Build the presentation around a running session (new match or loaded save).
+    pub fn from_session(mut root: Gd<Node>, mut session: Session, reveal: bool, noise: Option<Gd<Texture2D>>) -> Client {
+        session.collect_events = true;
         let heights = Heights::from_map(&session.world.map);
         let map = &session.world.map;
         let fog_w = map.w * 2;
@@ -287,7 +300,7 @@ impl Client {
             last_attack_notice: -100.0,
             palm_model,
             pine_model,
-            reveal: opt.reveal,
+            reveal,
             shot_budget: 0,
             deco_batches: Vec::new(),
             last_sim_ms: 0.0,
@@ -298,11 +311,28 @@ impl Client {
             label_timer: 0.0,
             flag_pole,
             flag_cloth,
+            replay_path: None,
+            replay_timer: 30.0,
+            replay_final: false,
         };
         c.build_decorations(&deco_models);
-        c.session.world.config.reveal = opt.reveal;
+        c.session.world.config.reveal = reveal;
         c.update_fog(true);
         c
+    }
+
+    pub fn write_replay(&self) {
+        let Some(path) = &self.replay_path else { return };
+        match crate::save::replay_text(&self.session) {
+            Ok(text) => {
+                // write then rename: never leave a half-written file behind
+                let tmp = format!("{path}.tmp");
+                if std::fs::write(&tmp, text).is_ok() {
+                    let _ = std::fs::rename(&tmp, path);
+                }
+            }
+            Err(e) => godot_warn!("replay not written: {e}"),
+        }
     }
 
     pub fn world(&self) -> &World {
@@ -341,6 +371,14 @@ impl Client {
             if self.session.world.entities.iter().any(|e| e.alive && e.def == sap) {
                 self.static_dirty = true;
             }
+        }
+        // keep the replay file current so a crash or quit still leaves a full record
+        self.replay_timer -= dt as f32;
+        let over = self.session.world.game_over;
+        if self.replay_timer <= 0.0 || (over && !self.replay_final) {
+            self.replay_timer = 30.0;
+            self.replay_final = over;
+            self.write_replay();
         }
         self.label_timer -= dt as f32;
         if self.label_timer <= 0.0 {

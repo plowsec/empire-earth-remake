@@ -40,7 +40,8 @@ Requirements: Rust (stable), Godot 4.7, and Blender 5 (only to regenerate models
 | Center on selection | `Space` |
 | Camera | Arrows / screen edges to pan, wheel to zoom, middle-drag / two-finger scroll to pan, `,` `.` or Shift+middle-drag to rotate |
 | Show all health bars | hold `Alt` |
-| Pause menu (speed, restart) | `Esc` / `P` / `F10` |
+| Pause menu (speed, save, restart) | `Esc` / `P` / `F10` |
+| Quicksave | `F5` (load from the main menu → Load Game) |
 | Debug overlay (fps, AI state) | `F1` |
 
 Resources: mines are effectively bottomless, berry bushes and fish shoals regrow, and
@@ -56,6 +57,13 @@ rally sends newly trained and refuelled aircraft there. Select a production buil
 to see its rally flag or use **Clear Rally**. Granaries can **Rebuild Fields** to lay
 out available farm plots and assign a citizen to each. Saved control groups appear
 above the minimap; click to recall, double-click to center.
+
+Strategic weapons: a **Missile Silo** builds and stores up to three ICBMs; select it and
+right-click any point (also on the minimap) to launch. Missiles fly a ballistic arc and
+detonate as a full nuclear blast. Only **ABM Sites** can shoot them down, and only while
+their owner has an **Early Warning Radar**, which also sounds the alarm on any enemy launch.
+A **Fortress** garrisons up to 80 units; stored units don't count toward population.
+**Apartment Blocks** house 50. Population limits go up to 3000.
 
 Computer opponents use island scouting and granary field rebuilding. Hard and
 Hardest opponents can invest in a nuclear bomber after their economy matures,
@@ -81,6 +89,7 @@ docs/ARCHITECTURE.md  design, multiplayer contract, scaling strategy
 ```sh
 cargo test --release -p ee_sim -p ee_ai -p ee_net     # simulation + AI tests
 cargo run --release -p ee_headless -- match 1 2 60 2 # AI vs AI, 60 min, Hard
+cargo run --release -p ee_headless -- match 1 2 60 3 3000 out.eerep # Hardest, 3000 pop, record
 cargo run --release -p ee_headless -- map 7 2 out.ppm
 
 blender -b -P tools/blender/build_models.py -- --icons   # rebuild all models + HUD icons
@@ -89,9 +98,25 @@ python3 tools/assets/fetch_polyhaven.py && .venv/bin/python tools/assets/pack_te
 
 tools/shot.sh out.png 200 --ai0 --warp=14000 --seed=5    # screenshot of a running match
 godot --path game -- --scene=main --autotest             # end-to-end UI test
+godot --path game -- --scene=main --savetest             # save/load round trip
 godot --path game -- --scene=main --featuretest --seed=5 --reveal # feature inputs + screenshots in build/verification
 godot --path game -- --scene=main --stress=1500 --reveal # 3000-unit battle benchmark
 ```
+
+## Saves and replays
+
+Saves (`user://saves/*.eesave`) are full snapshots: world plus AI state, so loading is
+instant and the game continues bit-identically. Every match is also recorded as a replay
+(`user://replays/*.eerep`, on macOS under `~/Library/Application Support/Godot/app_userdata/`):
+match setup, AI seeds and every command, refreshed every 30 s and on exit.
+
+```sh
+ee_headless replay <file.eerep> [minutes_between_reports]
+```
+
+re-simulates a played game with freshly created AIs fed the human's recorded commands,
+prints per-player economy/army/AI-state timelines, and verifies the recorded checksums
+(any divergence is reported with its tick).
 
 ## Multiplayer readiness
 

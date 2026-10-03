@@ -1,6 +1,7 @@
 //! Computer opponent. Reads the world (respecting fog of war for enemy info) and
 //! returns the same `CommandKind`s a human produces. Fully deterministic: it can
 //! run on every peer in lockstep, or on the host only.
+use serde::{Deserialize, Serialize};
 mod expand;
 mod plan;
 
@@ -13,7 +14,7 @@ use ee_sim::world::{data, World};
 use ee_net::Controller;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Difficulty {
     Easy,
     Normal,
@@ -77,7 +78,7 @@ impl Difficulty {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Stage {
     Gather,
     Load,
@@ -85,7 +86,7 @@ enum Stage {
     Fight,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Invasion {
     stage: Stage,
     units: Vec<EntityId>,
@@ -97,7 +98,7 @@ struct Invasion {
     stage_tick: u32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct Known {
     def: DefId,
     pos: FVec,
@@ -106,6 +107,7 @@ struct Known {
     tile: (i32, i32),
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Ai {
     pub player: u8,
     pub diff: Difficulty,
@@ -202,9 +204,20 @@ impl View {
     }
 }
 
+impl Ai {
+    /// Restore an AI saved with `Controller::save_state`.
+    pub fn from_state(text: &str) -> Option<Ai> {
+        ron::from_str(text).ok()
+    }
+}
+
 impl Controller for Ai {
     fn player(&self) -> u8 {
         self.player
+    }
+
+    fn save_state(&self) -> Option<String> {
+        ron::to_string(self).ok()
     }
 
     fn debug(&self) -> String {

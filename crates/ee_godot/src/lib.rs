@@ -5,6 +5,7 @@ use godot::prelude::*;
 mod batch;
 mod client;
 mod models;
+mod save;
 mod terrain;
 mod view;
 

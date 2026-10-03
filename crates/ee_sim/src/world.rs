@@ -8,6 +8,7 @@ use crate::mapgen::{self, MapParams, GAIA};
 use crate::path::{FlowField, PathScratch};
 use crate::rng::SimRng;
 use crate::spatial::SpatialHash;
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 static DATA: OnceLock<GameData> = OnceLock::new();
@@ -29,7 +30,7 @@ pub fn data() -> &'static GameData {
     DATA.get_or_init(GameData::load)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlayerConfig {
     pub name: String,
     pub team: u8,
@@ -37,7 +38,7 @@ pub struct PlayerConfig {
     pub is_ai: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MatchConfig {
     pub seed: u64,
     pub map_size: u8,
@@ -65,7 +66,7 @@ impl MatchConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnitMods {
     pub attack_pct: i32,
     pub armor: i32,
@@ -76,7 +77,7 @@ pub struct UnitMods {
     pub gather_pct: [i32; NUM_RES],
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PlayerStats {
     pub trained: u32,
     pub lost: u32,
@@ -86,7 +87,7 @@ pub struct PlayerStats {
     pub gathered: [i64; NUM_RES],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Player {
     pub id: u8,
     pub team: u8,
@@ -129,7 +130,7 @@ pub enum SimEvent {
     GameOver { winner_team: Option<u8> },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Proj {
     pub owner: u8,
     pub src: EntityId,
@@ -150,7 +151,7 @@ pub struct Proj {
 }
 
 /// Expanding nuclear pressure front; resolved once per entity in lockstep.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Shockwave {
     pub pos: FVec,
     pub radius: Fx,
@@ -161,6 +162,7 @@ pub struct Shockwave {
     pub hit: Vec<EntityId>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct World {
     pub tick: u32,
     pub config: MatchConfig,
@@ -174,6 +176,7 @@ pub struct World {
     pub next_proj: u32,
     /// per player, per tile: 0 unexplored, 1 explored, 2 visible
     pub vision: Vec<Vec<u8>>,
+    #[serde(skip)]
     pub events: Vec<SimEvent>,
     pub game_over: bool,
     pub winner_team: Option<u8>,
@@ -182,12 +185,32 @@ pub struct World {
     /// instant-hit damage resolved at the end of the tick (no first-mover advantage)
     pub(crate) pending_damage: Vec<(EntityId, i32, crate::defs::DamageType, u8, EntityId)>,
     // ---- caches (not game state; rebuilt deterministically)
+    #[serde(skip, default)]
     pub(crate) spatial: SpatialHash,
+    #[serde(skip, default)]
     pub(crate) scratch: PathScratch,
     pub(crate) flows: Vec<FlowField>,
 }
 
 impl World {
+    /// Serialize the full game state (caches excluded).
+    pub fn save(&self) -> Result<String, String> {
+        ron::to_string(self).map_err(|e| e.to_string())
+    }
+
+    /// Restore a saved game and rebuild the caches.
+    pub fn load(text: &str) -> Result<World, String> {
+        let mut w: World = ron::from_str(text).map_err(|e| e.to_string())?;
+        w.rebuild_caches();
+        Ok(w)
+    }
+
+    /// After deserializing: recreate the non-saved caches.
+    pub fn rebuild_caches(&mut self) {
+        self.spatial = SpatialHash::new(self.map.w, self.map.h);
+        self.spatial.rebuild(&self.entities, data());
+    }
+
     pub fn data(&self) -> &'static GameData {
         data()
     }

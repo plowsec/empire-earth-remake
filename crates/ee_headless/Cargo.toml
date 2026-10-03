@@ -6,3 +6,4 @@ version.workspace = true
 ee_sim.workspace = true
 ee_ai.workspace = true
 ee_net.workspace = true
+ron.workspace = true

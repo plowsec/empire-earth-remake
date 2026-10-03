@@ -199,6 +199,7 @@ pub fn smooth(map: &Map, from: FVec, tiles: &[(i32, i32)], final_pos: Option<FVe
 pub const FLOW_UNREACHABLE: u16 = u16::MAX;
 
 /// Integer Dijkstra distance field from a goal tile; units descend it.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct FlowField {
     pub layer: Layer,
     pub goal: (i32, i32),

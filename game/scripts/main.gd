@@ -39,6 +39,10 @@ func _ready() -> void:
 			var t = load("res://scripts/featuretest.gd").new()
 			t.name = "FeatureTest"
 			call_deferred("add_child", t)
+		elif a == "--savetest":
+			var t = load("res://scripts/savetest.gd").new()
+			t.name = "SaveTest"
+			call_deferred("add_child", t)
 		elif a == "--autotest":
 			var t = load("res://scripts/autotest.gd").new()
 			t.name = "AutoTest"
@@ -63,7 +67,16 @@ func start_match(cfg: Dictionary) -> void:
 	game_view.set_camera(rig.cam)
 	var c := {"seed": 7, "players": 2, "difficulty": 1, "map_size": 1, "resources": 100, "pop_limit": 300}
 	c.merge(cfg, true)
-	game_view.start_game(c)
+	var loaded := false
+	if Engine.has_meta("load_save"):
+		var err: String = game_view.load_game(Engine.get_meta("load_save"))
+		if err == "":
+			loaded = true
+		else:
+			push_warning("load failed: " + err)
+		Engine.remove_meta("load_save")
+	if not loaded:
+		game_view.start_game(c)
 	rig.game_view = game_view
 	rig.edge_pan = Settings.edge_pan
 	rig.map_size = game_view.map_size()

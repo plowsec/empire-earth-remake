@@ -6,6 +6,7 @@ use crate::fixed::{FVec, Fx};
 
 pub const CELL: i32 = 4;
 
+#[derive(Default)]
 pub struct SpatialHash {
     cw: i32,
     ch: i32,

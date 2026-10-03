@@ -340,7 +340,7 @@ func _build_menu() -> void:
 	menu_panel = PanelContainer.new()
 	menu_panel.set_anchors_preset(Control.PRESET_CENTER)
 	menu_panel.position = Vector2(-160, -150)
-	menu_panel.custom_minimum_size = Vector2(320, 300)
+	menu_panel.custom_minimum_size = Vector2(320, 340)
 	menu_panel.visible = false
 	menu_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(menu_panel)
@@ -348,7 +348,7 @@ func _build_menu() -> void:
 	v.add_theme_constant_override("separation", 10)
 	menu_panel.add_child(v)
 	v.add_child(_label("PAUSED", 30, ACCENT, true))
-	for item in [["Resume", _toggle_menu], ["Game Speed: Normal", _cycle_speed], ["Reveal Map (debug)", _toggle_reveal], ["Restart", _restart], ["Main Menu", _to_menu], ["Quit", func(): get_tree().quit()]]:
+	for item in [["Resume", _toggle_menu], ["Game Speed: Normal", _cycle_speed], ["Save Game", _save_game], ["Reveal Map (debug)", _toggle_reveal], ["Restart", _restart], ["Main Menu", _to_menu], ["Quit", _quit]]:
 		var b := Button.new()
 		b.text = item[0]
 		b.custom_minimum_size = Vector2(0, 38)
@@ -912,10 +912,27 @@ func _toggle_reveal() -> void:
 	_reveal = not _reveal
 	gv.set_reveal(_reveal)
 
+func _save_game() -> void:
+	var name := "Save " + Time.get_datetime_string_from_system().replace("T", " ").replace(":", "-")
+	var err: String = gv.save_game(name)
+	if err == "":
+		notify("Game saved: " + name, Color(0.6, 1.0, 0.6))
+	else:
+		notify("Save failed: " + err, Color(1.0, 0.5, 0.4))
+
+func _quicksave() -> void:
+	var err: String = gv.save_game("Quicksave")
+	notify("Quicksaved" if err == "" else "Save failed: " + err, Color(0.6, 1.0, 0.6) if err == "" else Color(1.0, 0.5, 0.4))
+
+func _quit() -> void:
+	gv.write_replay()
+	get_tree().quit()
+
 func _restart() -> void:
 	get_tree().reload_current_scene()
 
 func _to_menu() -> void:
+	gv.write_replay()
 	if ResourceLoader.exists("res://scenes/menu.tscn"):
 		get_tree().change_scene_to_file("res://scenes/menu.tscn")
 
@@ -989,6 +1006,8 @@ func _on_key(k: InputEventKey) -> void:
 	if code == KEY_F1:
 		debug_label.visible = not debug_label.visible
 		return
+	if code == KEY_F5:
+		_quicksave(); return
 	if code == KEY_F10 or code == KEY_P:
 		_toggle_menu()
 		return

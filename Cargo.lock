@@ -23,6 +23,8 @@ version = "0.1.0"
 dependencies = [
  "ee_net",
  "ee_sim",
+ "ron",
+ "serde",
 ]
 
 [[package]]
@@ -33,6 +35,8 @@ dependencies = [
  "ee_net",
  "ee_sim",
  "godot",
+ "ron",
+ "serde",
 ]
 
 [[package]]
@@ -42,6 +46,7 @@ dependencies = [
  "ee_ai",
  "ee_net",
  "ee_sim",
+ "ron",
 ]
 
 [[package]]

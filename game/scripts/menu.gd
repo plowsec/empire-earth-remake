@@ -175,6 +175,7 @@ func _build_ui() -> void:
 	main_panel.add_theme_constant_override("separation", 10)
 	root.add_child(main_panel)
 	main_panel.add_child(_btn("Skirmish", func(): _show(skirmish_panel)))
+	main_panel.add_child(_btn("Load Game", func(): _refresh_saves(); _show(load_panel)))
 	main_panel.add_child(_btn("Settings", func(): _show(settings_panel)))
 	main_panel.add_child(_btn("Credits", func(): _show(credits_panel)))
 	main_panel.add_child(_btn("Quit", func(): get_tree().quit()))
@@ -185,11 +186,12 @@ func _build_ui() -> void:
 	root.add_child(ver)
 
 	_build_skirmish(root)
+	_build_load(root)
 	_build_settings(root)
 	_build_credits(root)
 
 func _show(p: Control) -> void:
-	for x in [skirmish_panel, settings_panel, credits_panel]:
+	for x in [skirmish_panel, load_panel, settings_panel, credits_panel]:
 		x.visible = x == p and not p.visible
 
 func _build_skirmish(root: Control) -> void:
@@ -219,7 +221,52 @@ func _build_skirmish(root: Control) -> void:
 	v.add_child(Control.new())
 	v.add_child(hb)
 
+var load_panel: Control
+var load_list: VBoxContainer
+
+func _build_load(root: Control) -> void:
+	var p := _panel(620, 560)
+	p.position = Vector2(470, 300)
+	p.visible = false
+	root.add_child(p)
+	load_panel = p
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 12)
+	p.add_child(v)
+	v.add_child(_lbl("LOAD GAME", 34, ACCENT, font_title))
+	var sc := ScrollContainer.new()
+	sc.custom_minimum_size = Vector2(580, 400)
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(sc)
+	load_list = VBoxContainer.new()
+	load_list.add_theme_constant_override("separation", 6)
+	load_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sc.add_child(load_list)
+	var hb := HBoxContainer.new()
+	hb.alignment = BoxContainer.ALIGNMENT_END
+	hb.add_child(_btn("Back", func(): _show(null), 150, 50))
+	v.add_child(hb)
+
+func _refresh_saves() -> void:
+	for c in load_list.get_children():
+		c.queue_free()
+	var saves: Array = game_view.list_saves() if game_view else []
+	if saves.is_empty():
+		load_list.add_child(_lbl("No saved games yet. Save from the pause menu (Esc) or press F5 in game.", 18, Color(0.65, 0.64, 0.6)))
+		return
+	for sv in saves:
+		var path: String = sv["path"]
+		var b := _btn("%s   ·   %s" % [sv["name"], sv["time"]], func(): _load(path), 570, 44)
+		b.add_theme_font_size_override("font_size", 18)
+		load_list.add_child(b)
+
+func _load(path: String) -> void:
+	Engine.set_meta("load_save", path)
+	get_tree().change_scene_to_file("res://scenes/main.tscn")
+
 func _start() -> void:
+	if Engine.has_meta("load_save"):
+		Engine.remove_meta("load_save")
 	Settings.last_skirmish = opts.duplicate()
 	Settings.save()
 	var cfg := opts.duplicate()
