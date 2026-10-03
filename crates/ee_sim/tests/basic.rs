@@ -253,3 +253,62 @@ fn debug_wood_gathering() {
         println!("t={}s wood={} {:?}", (s + 1) * 5, w.players[0].res[1], orders);
     }
 }
+
+#[test]
+fn saplings_grow_into_trees_and_berries_regrow() {
+    let mut w = World::new(MatchConfig::skirmish(9, 2));
+    let cits = units_of(&w, 0, "citizen");
+    let s = w.starts[0];
+    let sap = data().id("sapling");
+    let mut tile = None;
+    'f: for r in 3..9 {
+        for dx in -r..=r {
+            let t = (s.0 + dx, s.1 + r);
+            if w.can_place(0, sap, t).is_ok() {
+                tile = Some(t);
+                break 'f;
+            }
+        }
+    }
+    let tile = tile.expect("sapling spot");
+    let food0 = w.players[0].res[0];
+    run(&mut w, 1, vec![(0, Command { player: 0, kind: CommandKind::Build { units: cits[0..2].to_vec(), def: sap, tile, queue: false } })]);
+    assert_eq!(w.players[0].res[0], food0 - 10, "sapling costs food");
+    run(&mut w, 20 * 20, vec![]);
+    let occ = w.map.occupant[w.map.idx(tile.0, tile.1)];
+    let e = w.get(occ).expect("sapling exists");
+    assert_eq!(e.def, sap);
+    assert!(e.complete, "planted");
+    run(&mut w, 20 * 125, vec![]);
+    let e = w.get(occ).expect("tree exists");
+    assert_eq!(e.def, data().id("tree"), "grew into a tree");
+    assert!(e.amount > 0);
+    assert_eq!(e.owner, ee_sim::mapgen::GAIA);
+    // berries regrow
+    let cap = units_of(&w, 0, "capitol")[0];
+    let b = nearest_of(&w, w.get(cap).unwrap().pos, "berries");
+    w.get_mut(b).unwrap().amount = 10;
+    run(&mut w, 20 * 30, vec![]);
+    assert!(w.get(b).unwrap().amount >= 25, "berries regrow");
+}
+
+#[test]
+fn artillery_fells_trees() {
+    let mut w = World::new(MatchConfig::skirmish(3, 2));
+    let tree = data().id("tree");
+    let before = w.entities.iter().filter(|e| e.alive && e.def == tree).count();
+    // drop a bomb into the densest forest via a projectile impact
+    let t = w.entities.iter().find(|e| e.alive && e.def == tree).unwrap().pos;
+    let bomber = w.spawn(data().id("bomber"), 0, t);
+    for _ in 0..10 {
+        w.projectiles.push(ee_sim::world::Proj {
+            owner: 0, src: bomber, target: 0, pos: t, aim: t, start: t, speed: ee_sim::fixed::Fx::ONE,
+            damage: 400, dmg_type: ee_sim::defs::DamageType::Bomb, splash: ee_sim::fixed::Fx::from_int(3),
+            homing: false, weapon: 0, src_def: data().id("bomber"), vs_air: false, id: 999,
+        });
+    }
+    run(&mut w, 2, vec![]);
+    let after = w.entities.iter().filter(|e| e.alive && e.def == tree).count();
+    println!("trees {before} -> {after}");
+    assert!(after < before);
+}

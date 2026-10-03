@@ -225,6 +225,32 @@ impl World {
 
     fn impact(&mut self, p: &Proj) {
         self.events.push(SimEvent::Impact { pos: p.pos, dmg_type: p.dmg_type as u8, splash: p.splash, owner: p.owner });
+        // heavy ordnance flattens forests: wood is the resource wars consume
+        use crate::defs::DamageType as D;
+        if p.splash.0 > 0 && matches!(p.dmg_type, D::Explosive | D::Bomb | D::NavalGun) {
+            let r = p.splash.floor_int().max(1);
+            let (cx, cy) = p.pos.tile();
+            let mut felled = Vec::new();
+            for y in cy - r..=cy + r {
+                for x in cx - r..=cx + r {
+                    if !self.map.in_bounds(x, y) || (x - cx).pow(2) + (y - cy).pow(2) > r * r {
+                        continue;
+                    }
+                    let occ = self.map.occupant[self.map.idx(x, y)];
+                    if let Some(e) = self.get(occ) {
+                        let dd = data().def(e.def);
+                        if dd.data.resource == Some(crate::defs::Res::Wood) || dd.data.plantable {
+                            felled.push(occ);
+                        }
+                    }
+                }
+            }
+            for t in felled {
+                if self.rng.chance(40) {
+                    self.kill(t, GAIA);
+                }
+            }
+        }
         if p.splash.0 > 0 {
             // area damage: full at the center, 50% at the edge; spares allies
             let mut hits: Vec<(EntityId, i32)> = Vec::new();

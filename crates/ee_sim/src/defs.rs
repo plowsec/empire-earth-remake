@@ -193,6 +193,13 @@ pub struct UnitData {
     pub airport: bool,
     /// is a hover/heli aircraft (stays put while attacking)
     pub hover: bool,
+    /// saplings: what this grows into and how long it takes (deciseconds)
+    pub grows_into: Option<String>,
+    pub grow_time: i32,
+    /// can be planted by citizens like a building (saplings)
+    pub plantable: bool,
+    /// resource nodes that regenerate: units per minute (berries, fish)
+    pub regrow: i32,
     /// player-facing role line in tooltips
     pub role: String,
     /// render model key (defaults to key)
@@ -234,6 +241,10 @@ impl Default for UnitData {
             needs_airport: false,
             airport: false,
             hover: false,
+            grows_into: None,
+            grow_time: 0,
+            plantable: false,
+            regrow: 0,
             role: String::new(),
             model: String::new(),
         }
@@ -341,6 +352,8 @@ pub struct Def {
     pub max_range: Fx,
     pub fuel_ticks: i32,
     pub near: Option<DefId>,
+    pub grows_into: Option<DefId>,
+    pub grow_ticks: i32,
 }
 impl Def {
     pub fn key(&self) -> &str {
@@ -472,6 +485,11 @@ impl GameData {
                     Some(k) => Some(lookup(k)?),
                     None => None,
                 },
+                grows_into: match &u.grows_into {
+                    Some(k) => Some(lookup(k)?),
+                    None => None,
+                },
+                grow_ticks: u.grow_time * tps / 10,
             });
             if defs[i].data.model.is_empty() {
                 defs[i].data.model = u.key.clone();

@@ -521,6 +521,10 @@ impl GameView {
             if d.is_resource() {
                 x.set("amount", e.amount);
             }
+            if d.data.plantable {
+                let total = (d.build_ticks + d.grow_ticks).max(1);
+                x.set("growth", e.progress as f32 / total as f32);
+            }
             if e.carry > 0 {
                 x.set("carry", e.carry);
                 x.set("carry_res", RES_NAMES[(e.carry_res as usize).min(4)]);
@@ -755,6 +759,9 @@ impl GameView {
         self.ghost_ok = ok;
         if let Some(gh) = self.ghost.as_mut() {
             gh.set_position(Vector3::new(cx, cy, cz));
+            if d.data.plantable {
+                gh.set_scale(Vector3::splat(0.45));
+            }
         }
         if let Some(m) = self.ghost_mat.as_mut() {
             let col = if ok { Color::from_rgba(0.3, 1.0, 0.45, 0.45) } else { Color::from_rgba(1.0, 0.25, 0.2, 0.45) };
@@ -781,7 +788,21 @@ impl GameView {
                 .filter(|&id| c.world().class_of(id) == Some(Class::Citizen))
                 .collect();
             if !units.is_empty() {
-                c.issue(CommandKind::Build { units, def, tile, queue: keep });
+                if data().def(def).data.plantable {
+                    // plant a 3x3 grove: every free tile around the cursor
+                    let mut first = true;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let t = (tile.0 + dx, tile.1 + dy);
+                            if c.world().can_place(c.me, def, t).is_ok() {
+                                c.issue(CommandKind::Build { units: units.clone(), def, tile: t, queue: keep || !first });
+                                first = false;
+                            }
+                        }
+                    }
+                } else {
+                    c.issue(CommandKind::Build { units, def, tile, queue: keep });
+                }
             }
         }
         if !keep {

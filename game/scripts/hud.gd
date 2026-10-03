@@ -454,6 +454,7 @@ func _refresh_selection() -> void:
 		var stats := "HP %d/%d   Armor %d" % [x["hp"], x["max_hp"], x.get("armor", 0)]
 		if x.has("attack"): stats += "   Attack %d   Range %.1f" % [x["attack"], x["range"]]
 		if x.has("amount"): stats = "Remaining: %d" % x["amount"]
+		if x.has("growth"): stats = "Growing: %d%%" % int(x["growth"] * 100)
 		if x.has("carry"): stats += "   Carrying %d %s" % [x["carry"], x["carry_res"]]
 		if x.has("cargo_max") and x["cargo_max"] > 0: stats += "   Cargo %d/%d" % [x["cargo"], x["cargo_max"]]
 		if x.has("fuel"): stats += "   Fuel %d%%" % int(x["fuel"] * 100)

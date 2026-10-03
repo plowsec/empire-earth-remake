@@ -9,6 +9,8 @@ var light_i := 0
 var soft_tex: Texture2D
 var smoke_tex: Texture2D
 var markers: Array = []
+var decals: Array[Decal] = []
+var decal_i := 0
 var audio: Node
 
 const EXPLOSIVE := [1, 2, 5, 6, 7, 9]   # Cannon, Explosive, Torpedo, NavalGun, Bomb, Missile
@@ -36,6 +38,17 @@ func bind(game_view: Node, camera_rig: Node) -> void:
 		lights.append(l)
 	if has_node("../Audio"):
 		audio = get_node("../Audio")
+	var scorch := _scorch_tex()
+	for i in 48:
+		var d := Decal.new()
+		d.texture_albedo = scorch
+		d.size = Vector3(4, 6, 4)
+		d.modulate = Color(1, 1, 1, 0)
+		d.cull_mask = 1
+		d.upper_fade = 0.3
+		d.lower_fade = 0.3
+		add_child(d)
+		decals.append(d)
 
 func _radial_tex(inner: Color, outer: Color) -> Texture2D:
 	var g := Gradient.new()
@@ -50,6 +63,29 @@ func _radial_tex(inner: Color, outer: Color) -> Texture2D:
 	t.width = 128
 	t.height = 128
 	return t
+
+func _scorch_tex() -> Texture2D:
+	var n := FastNoiseLite.new()
+	n.frequency = 0.06
+	var img := Image.create(128, 128, false, Image.FORMAT_RGBA8)
+	for y in 128:
+		for x in 128:
+			var d := Vector2(x - 64, y - 64).length() / 64.0
+			var v := n.get_noise_2d(x, y) * 0.5 + 0.5
+			var a: float = clamp((1.0 - d) * 1.6 - v * 0.5, 0.0, 1.0)
+			img.set_pixel(x, y, Color(0.05, 0.04, 0.035, a * 0.85))
+	return ImageTexture.create_from_image(img)
+
+func _scorch(pos: Vector3, size: float) -> void:
+	var d := decals[decal_i]
+	decal_i = (decal_i + 1) % decals.size()
+	d.global_position = pos
+	d.rotation.y = randf() * TAU
+	d.size = Vector3(size, 8.0, size)
+	d.modulate = Color(1, 1, 1, 1)
+	var tw := create_tween()
+	tw.tween_interval(12.0)
+	tw.tween_property(d, "modulate:a", 0.0, 8.0)
 
 func _smoke_tex() -> Texture2D:
 	# soft noisy puff: radial falloff baked with noise into an image
@@ -128,11 +164,12 @@ func _fireball() -> Node3D:
 	pm.scale_min = 0.8
 	pm.scale_max = 1.6
 	pm.scale_curve = _curve([[0.0, 0.4], [0.25, 1.0], [1.0, 1.4]])
-	pm.color_ramp = _ramp([[0.0, Color(1, 0.95, 0.75, 1)], [0.2, Color(1, 0.6, 0.15, 1)], [0.5, Color(0.6, 0.18, 0.05, 0.8)], [1.0, Color(0.1, 0.08, 0.07, 0)]])
+	pm.color_ramp = _ramp([[0.0, Color(1, 0.9, 0.6, 1)], [0.12, Color(1, 0.55, 0.12, 1)], [0.35, Color(0.75, 0.22, 0.04, 0.85)], [0.7, Color(0.2, 0.08, 0.04, 0.4)], [1.0, Color(0.05, 0.04, 0.04, 0)]])
 	pm.angle_min = -180; pm.angle_max = 180
-	var m := _mat(soft_tex, true, true)
-	m.albedo_color = Color(2.2, 1.6, 1.0)
-	return _particles(26, 0.9, _quad(2.4), m, pm)
+	pm.angular_velocity_min = -90; pm.angular_velocity_max = 90
+	var m := _mat(smoke_tex, true, true)
+	m.albedo_color = Color(1.5, 1.15, 0.85)
+	return _particles(30, 0.85, _quad(2.6), m, pm)
 
 func _smoke() -> Node3D:
 	var pm := ParticleProcessMaterial.new()
@@ -148,11 +185,11 @@ func _smoke() -> Node3D:
 	pm.scale_min = 1.2
 	pm.scale_max = 2.2
 	pm.scale_curve = _curve([[0.0, 0.5], [1.0, 2.6]])
-	pm.color_ramp = _ramp([[0.0, Color(0.2, 0.18, 0.16, 0.0)], [0.08, Color(0.24, 0.22, 0.2, 0.85)], [0.6, Color(0.42, 0.41, 0.4, 0.45)], [1.0, Color(0.6, 0.6, 0.6, 0)]])
+	pm.color_ramp = _ramp([[0.0, Color(0.12, 0.1, 0.09, 0.0)], [0.06, Color(0.14, 0.12, 0.11, 0.95)], [0.45, Color(0.3, 0.29, 0.28, 0.6)], [1.0, Color(0.55, 0.55, 0.55, 0)]])
 	pm.angle_min = -180; pm.angle_max = 180
 	pm.angular_velocity_min = -20; pm.angular_velocity_max = 20
-	var p := _particles(18, 3.6, _quad(3.2), _mat(smoke_tex, false), pm)
-	p.explosiveness = 0.7
+	var p := _particles(22, 4.5, _quad(3.4), _mat(smoke_tex, false), pm)
+	p.explosiveness = 0.75
 	return p
 
 func _sparks() -> Node3D:
@@ -167,7 +204,12 @@ func _sparks() -> Node3D:
 	pm.color_ramp = _ramp([[0.0, Color(1, 0.85, 0.5, 1)], [1.0, Color(1, 0.3, 0.05, 0)]])
 	var m := _mat(soft_tex, true, true)
 	m.albedo_color = Color(3, 2, 1)
-	var p := _particles(28, 1.1, _quad(0.5), m, pm)
+	pm.scale_min = 0.5
+	pm.scale_max = 1.0
+	pm.particle_flag_align_y = true
+	var q := QuadMesh.new()
+	q.size = Vector2(0.07, 0.45)
+	var p := _particles(28, 1.0, q, m, pm)
 	return p
 
 func _muzzle() -> Node3D:
@@ -182,7 +224,7 @@ func _muzzle() -> Node3D:
 	pm.color_ramp = _ramp([[0.0, Color(1, 0.9, 0.6, 1)], [1.0, Color(1, 0.5, 0.1, 0)]])
 	var m := _mat(soft_tex, true, true)
 	m.albedo_color = Color(3, 2.4, 1.4)
-	return _particles(5, 0.09, _quad(0.9), m, pm)
+	return _particles(6, 0.08, _quad(1.4), m, pm)
 
 func _splash() -> Node3D:
 	var pm := ParticleProcessMaterial.new()
@@ -298,8 +340,9 @@ func on_event(e: Dictionary) -> void:
 				var s: float = clamp(size / 3.0, 0.6, 3.5)
 				_play("fire", pos + Vector3.UP * 0.5, s)
 				_play("smoke", pos, s * 0.9)
-				_play("sparks", pos, s)
+				_play("sparks", pos, 1.0)
 				_flash(pos, 6.0 * s, 10.0 + size * 2.0)
+				_scorch(pos, 2.5 + s * 2.5)
 				if audio: audio.play_explosion(s, pos)
 			else:
 				_play("blood", pos, 1.0)
@@ -324,8 +367,9 @@ func on_event(e: Dictionary) -> void:
 				var s: float = clamp(e["size"] / 3.0, 0.8, 3.0)
 				_play("fire", pos + Vector3.UP, s * 1.4)
 				_play("smoke", pos, s * 1.5)
-				_play("sparks", pos, s * 1.2)
+				_play("sparks", pos, 1.0)
 				_flash(pos, 10.0, 16.0)
+				_scorch(pos, 4.0 + s * 2.0)
 				if audio: audio.play_explosion(s * 1.3, pos)
 		"trail":
 			if randf() < 0.35 and _near_camera(pos, 180.0):

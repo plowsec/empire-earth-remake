@@ -94,6 +94,7 @@ impl Ai {
         }
         // research
         self.research(w, v, out);
+        self.replant(w, v, out);
 
         let mut started = 0;
         // money set aside for the first big item we can't afford yet
@@ -164,6 +165,37 @@ impl Ai {
                             return;
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// Forests near the base thinning out: plant a grove next to a drop-off.
+    fn replant(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
+        let d = data();
+        if w.tick % 600 != (self.phase * 41) % 600 || v.citizens.len() < 12 {
+            return;
+        }
+        let near_wood = w.nearest_resource(ee_sim::defs::Res::Wood as u8, self.base, 14, false).is_some();
+        let pl = &w.players[self.player as usize];
+        if near_wood || pl.res[0] < 200 {
+            return;
+        }
+        let sap = d.id("sapling");
+        let (bx, by) = self.base_tile;
+        let start = self.rng.below(8) as i32;
+        for r in 7..14 {
+            for k in 0..8 {
+                let (c, s) = ee_sim::mapgen::sincos_deg((start + k) * 45);
+                let (cx, cy) = (bx + c * r / 1024, by + s * r / 1024);
+                let tiles: Vec<(i32, i32)> = (-1..=1).flat_map(|dy| (-1..=1).map(move |dx| (cx + dx, cy + dy))).filter(|&t| w.can_place(self.player, sap, t).is_ok()).collect();
+                if tiles.len() >= 6 {
+                    let workers: Vec<EntityId> = v.gatherers[ee_sim::defs::Res::Wood as usize].iter().take(2).copied().collect();
+                    let workers = if workers.is_empty() { v.citizens.iter().take(2).copied().collect() } else { workers };
+                    for (n, t) in tiles.into_iter().enumerate() {
+                        out.push(CommandKind::Build { units: workers.clone(), def: sap, tile: t, queue: n > 0 });
+                    }
+                    return;
                 }
             }
         }

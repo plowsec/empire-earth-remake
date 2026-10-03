@@ -37,6 +37,12 @@ Requirements: Rust (stable), Godot 4.7, and Blender 5 (only to regenerate models
 | Pause menu (speed, restart) | `Esc` / `P` / `F10` |
 | Debug overlay (fps, AI state) | `F1` |
 
+Resources: mines are effectively bottomless, berry bushes and fish shoals regrow, and
+farms never run dry. **Wood is the strategic resource.** Forests don't come back on their
+own: citizens can **Plant Trees**, a 3×3 grove of saplings that costs food and grows into
+full trees in two minutes. Artillery, bombs and naval shells flatten forests, so long
+wars can strip an island bare.
+
 Transports: select land units and right-click your landing ship to board, then
 right-click a beach with the ship selected to land them. Aircraft fly from an
 airfield, refuel and rearm there automatically, and crash when they run out of fuel.

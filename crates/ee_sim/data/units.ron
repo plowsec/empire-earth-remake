@@ -23,7 +23,7 @@
          weapons: [(dmg_type: Gun, damage: 4, range: 70, reload: 15)],
          gather: Some((food: 85, wood: 75, stone: 60, gold: 65, iron: 60)), carry: 10,
          builds: ["house", "settlement", "granary", "farm", "barracks", "tank_factory",
-                  "airport", "naval_yard", "hospital", "guard_tower", "aa_site"],
+                  "airport", "naval_yard", "hospital", "guard_tower", "aa_site", "sapling"],
          role: "Gathers resources, constructs and repairs buildings."),
 
         // ---------------------------------------------------------------- infantry
@@ -222,17 +222,22 @@
 
         // ---------------------------------------------------------------- resources
         (key: "tree", name: "Tree", class: Resource, armor_class: None, hp: 1, pop: 0,
-         radius: 40, resource: Some(Wood), amount: 120, role: "Wood."),
+         radius: 40, resource: Some(Wood), amount: 150,
+         role: "Wood. Forests don't grow back on their own: replant them."),
+        (key: "sapling", name: "Plant Trees", class: Resource, armor_class: None, hp: 30, pop: 0,
+         radius: 30, plantable: true, grows_into: Some("tree"), grow_time: 1200, model: "tree",
+         cost: (food: 10), build_time: 30,
+         role: "Plant a 3x3 grove of saplings. Each grows into a full tree in 2 minutes."),
         (key: "berries", name: "Berry Bush", class: Resource, armor_class: None, hp: 1, pop: 0,
-         radius: 40, resource: Some(Food), amount: 250, role: "Forage food."),
+         radius: 40, resource: Some(Food), amount: 250, regrow: 40, role: "Forage food. Regrows slowly."),
         (key: "gold_mine", name: "Gold Deposit", class: Resource, armor_class: None, hp: 1, pop: 0,
-         radius: 90, size: (2, 2), resource: Some(Gold), amount: 12000, role: "Gold."),
+         radius: 90, size: (2, 2), resource: Some(Gold), amount: 60000, role: "Gold."),
         (key: "stone_mine", name: "Stone Quarry", class: Resource, armor_class: None, hp: 1, pop: 0,
-         radius: 90, size: (2, 2), resource: Some(Stone), amount: 8000, role: "Stone."),
+         radius: 90, size: (2, 2), resource: Some(Stone), amount: 60000, role: "Stone."),
         (key: "iron_mine", name: "Iron Deposit", class: Resource, armor_class: None, hp: 1, pop: 0,
-         radius: 90, size: (2, 2), resource: Some(Iron), amount: 12000, role: "Iron."),
+         radius: 90, size: (2, 2), resource: Some(Iron), amount: 60000, role: "Iron."),
         (key: "fish", name: "Fish Shoal", class: Resource, armor_class: None, hp: 1, pop: 0,
-         radius: 60, resource: Some(Food), amount: 800, role: "Food for trawlers."),
+         radius: 60, resource: Some(Food), amount: 800, regrow: 60, role: "Food for trawlers. Regrows."),
     ],
     techs: [
         (key: "chainsaws", name: "Chainsaws", at: "capitol", cost: (food: 150, iron: 100),

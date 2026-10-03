@@ -101,6 +101,8 @@ pub enum SimEvent {
     BuildingComplete { id: EntityId, def: DefId, owner: u8 },
     ResearchComplete { owner: u8, tech: u16 },
     ResourceDepleted { id: EntityId, pos: FVec },
+    /// a sapling became a tree
+    Grown { id: EntityId },
     Gathered { owner: u8, res: u8, amount: i32 },
     /// command feedback for the issuing player's UI
     Notice { owner: u8, text: &'static str },
@@ -358,14 +360,13 @@ impl World {
         let e = self.get_mut(id).unwrap();
         e.tile = tile;
         e.complete = complete;
-        if d.is_building() {
+        if d.is_building() || d.data.plantable {
             if !complete {
                 e.hp = 1.max(d.data.hp / 10);
                 e.progress = 0;
             } else {
                 e.progress = d.build_ticks;
             }
-            // buildings face south by default (toward +y)
         }
         self.map.occupy(tile.0, tile.1, sw, sh, id, walkable);
         self.invalidate_flows();
@@ -511,6 +512,7 @@ impl World {
             self.update_vision();
         }
         if self.tick % 20 == 0 {
+            self.grow_and_regrow();
             self.recount_pop();
             self.check_victory();
             // drop flow fields nobody used for a while
@@ -522,6 +524,48 @@ impl World {
 
     pub fn apply_command(&mut self, c: &Command) {
         crate::orders::apply(self, c);
+    }
+
+    /// Saplings grow into trees; berries and fish regenerate. Runs once per second.
+    fn grow_and_regrow(&mut self) {
+        let d = data();
+        let mut grown = Vec::new();
+        for e in self.entities.iter_mut() {
+            if !e.alive {
+                continue;
+            }
+            let dd = d.def(e.def);
+            if dd.data.plantable && e.complete {
+                e.progress += 20;
+                if e.progress >= dd.build_ticks + dd.grow_ticks {
+                    grown.push(e.id);
+                }
+            } else if dd.data.regrow > 0 {
+                let max = dd.data.amount * self.config.resources.clamp(50, 300) as i32 / 100;
+                if e.amount < max {
+                    e.gather_acc += dd.data.regrow;
+                    while e.gather_acc >= 60 {
+                        e.gather_acc -= 60;
+                        e.amount = (e.amount + 1).min(max);
+                    }
+                }
+            }
+        }
+        for id in grown {
+            let slot = slot_of(id);
+            let sap = d.def(self.entities[slot].def);
+            if let Some(into) = sap.grows_into {
+                let amount = d.def(into).data.amount * self.config.resources.clamp(50, 300) as i32 / 100;
+                let e = &mut self.entities[slot];
+                e.def = into;
+                e.owner = GAIA;
+                e.amount = amount;
+                e.hp = 1;
+                e.progress = 0;
+                e.gather_acc = 0;
+                self.events.push(SimEvent::Grown { id });
+            }
+        }
     }
 
     fn check_victory(&mut self) {
@@ -660,6 +704,23 @@ impl World {
     /// Validate a building placement for `player`.
     pub fn can_place(&self, player: u8, def: DefId, tile: (i32, i32)) -> Result<(), &'static str> {
         let d = data().def(def);
+        if d.data.plantable {
+            let (x, y) = tile;
+            if !self.map.in_bounds(x, y) {
+                return Err("out of bounds");
+            }
+            let i = self.map.idx(x, y);
+            if self.map.occupant[i] != 0 {
+                return Err("blocked");
+            }
+            if self.map.base_pass[i] & crate::map::PASS_LAND == 0 || self.map.terrain[i] == crate::map::Terrain::Beach {
+                return Err("trees won't grow here");
+            }
+            if !self.explored(player, x, y) {
+                return Err("unexplored");
+            }
+            return Ok(());
+        }
         if !d.is_building() {
             return Err("not a building");
         }
@@ -772,7 +833,7 @@ impl World {
             for &f in &self.fish {
                 if let Some(e) = self.get(f) {
                     let dd = d.def(e.def);
-                    if dd.data.resource.map(|r| r as u8) != Some(res) {
+                    if dd.data.resource.map(|r| r as u8) != Some(res) || e.amount <= 0 {
                         continue;
                     }
                     let dist = from.dist2_raw(e.pos);
@@ -809,7 +870,7 @@ impl World {
                     }
                     let Some(e) = self.get(occ) else { continue };
                     let dd = d.def(e.def);
-                    if !dd.is_resource() || dd.data.resource.map(|r| r as u8) != Some(res) {
+                    if !dd.is_resource() || dd.data.resource.map(|r| r as u8) != Some(res) || (e.amount <= 0 && !dd.is_building()) {
                         continue;
                     }
                     // spread workers: skip crowded nodes

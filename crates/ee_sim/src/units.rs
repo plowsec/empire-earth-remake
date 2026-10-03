@@ -510,10 +510,22 @@ impl World {
             got += 1;
         }
         if got > 0 && !farm {
+            let regrows = nd.data.regrow > 0;
             let n = self.get_mut(node).unwrap();
             n.amount -= got;
             if n.amount <= 0 {
-                self.kill(node, crate::mapgen::GAIA);
+                if regrows {
+                    n.amount = 0;
+                    // exhausted for now: go home with what we have, then find another
+                    let id = self.entities[i].id;
+                    if self.entities[i].carry > 0 {
+                        set_order(self, id, Order::ReturnCargo);
+                    } else {
+                        set_order(self, id, Order::Idle);
+                    }
+                } else {
+                    self.kill(node, crate::mapgen::GAIA);
+                }
             }
         }
     }
@@ -649,6 +661,9 @@ impl World {
                 s.complete = true;
                 let owner = s.owner;
                 let def = s.def;
+                if sd.data.plantable {
+                    return;
+                }
                 self.players[owner as usize].stats.built += 1;
                 self.events.push(SimEvent::BuildingComplete { id: site, def, owner });
                 self.recount_pop();

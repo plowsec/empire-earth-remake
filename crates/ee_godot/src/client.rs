@@ -120,6 +120,7 @@ pub struct Client {
     deco_batches: Vec<Batch>,
     pub last_sim_ms: f64,
     pub show_all_bars: bool,
+    sapling_timer: f32,
 }
 
 pub struct StartOptions {
@@ -249,6 +250,7 @@ impl Client {
             deco_batches: Vec::new(),
             last_sim_ms: 0.0,
             show_all_bars: false,
+            sapling_timer: 0.0,
         };
         c.build_decorations(&deco_models);
         c.session.world.config.reveal = opt.reveal;
@@ -284,6 +286,15 @@ impl Client {
         }
         self.selection.retain(|&id| self.session.world.get(id).map_or(false, |e| e.inside == 0 || data().def(e.def).is_building()));
         self.render(dt as f32, cam);
+        // saplings visibly grow: refresh static scenery every couple of seconds
+        self.sapling_timer -= dt as f32;
+        if self.sapling_timer <= 0.0 {
+            self.sapling_timer = 2.0;
+            let sap = data().id("sapling");
+            if self.session.world.entities.iter().any(|e| e.alive && e.def == sap) {
+                self.static_dirty = true;
+            }
+        }
         self.minimap_timer -= dt as f32;
         if self.minimap_timer <= 0.0 {
             self.minimap_timer = 0.25;
@@ -413,7 +424,7 @@ impl Client {
                     self.static_dirty = true;
                 }
             }
-            SimEvent::ResourceDepleted { .. } => {
+            SimEvent::ResourceDepleted { .. } | SimEvent::Grown { .. } => {
                 self.static_dirty = true;
             }
             SimEvent::BuildingPlaced { owner, .. } if *owner == me => {
@@ -906,7 +917,7 @@ impl Client {
             let cam_up = Vector3::UP;
             let side = cam_up.cross(fwd).normalized();
             let up = fwd.cross(side);
-            let basis = Basis::from_cols(fwd * seg, up, side * 0.12);
+            let basis = Basis::from_cols(fwd * seg, up, side * 0.22);
             let xf = Transform3D::new(basis, start);
             self.tracer_batch.push(&xf, tc.color, [1.0 - k * 0.5, 0.0, 0.0, 0.0]);
         }
@@ -936,12 +947,12 @@ impl Client {
         let n = self.session.world.entities.len();
         let tree = data().id("tree");
         for i in 1..n {
-            let (def, pos, id, amount) = {
+            let (def, pos, id, amount, progress, complete) = {
                 let e = &self.session.world.entities[i];
                 if !e.alive {
                     continue;
                 }
-                (e.def, e.pos, e.id, e.amount)
+                (e.def, e.pos, e.id, e.amount, e.progress, e.complete)
             };
             let d = data().def(def);
             if !d.is_resource() || d.layer == Layer::Water || self.session.world.fish.contains(&id) {
@@ -953,7 +964,7 @@ impl Client {
             let (x, z) = to_world2(pos);
             // jitter trees inside their tile so forests don't look gridded
             let hsh = (id.wrapping_mul(2654435761)) >> 8;
-            let (jx, jz) = if def == tree {
+            let (jx, jz) = if def == tree || d.data.plantable {
                 (((hsh & 0xff) as f32 / 255.0 - 0.5) * TILE * 0.55, (((hsh >> 8) & 0xff) as f32 / 255.0 - 0.5) * TILE * 0.55)
             } else {
                 (0.0, 0.0)
@@ -962,7 +973,12 @@ impl Client {
             let wz = z + jz;
             let y = self.heights.at(wx, wz);
             let yaw = ((hsh >> 16) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
-            let s = if def == tree { 0.8 + ((hsh >> 4) & 0x3f) as f32 / 63.0 * 0.5 } else { 1.0 };
+            let mut s = if def == tree || d.data.plantable { 0.8 + ((hsh >> 4) & 0x3f) as f32 / 63.0 * 0.5 } else { 1.0 };
+            if d.data.plantable {
+                // grows from a seedling to a full tree
+                let g = if complete { progress as f32 / (d.build_ticks + d.grow_ticks).max(1) as f32 } else { 0.0 };
+                s *= 0.12 + 0.75 * g.clamp(0.0, 1.0);
+            }
             let model = if def == tree {
                 let t = w.map.terrain_at(tx, ty);
                 if t == ee_sim::map::Terrain::Beach {
@@ -976,7 +992,7 @@ impl Client {
                 self.models.by_def[def as usize]
             };
             // deplete visually: mines shrink as they're mined out
-            let depl = if d.data.amount > 0 && def != tree { (amount as f32 / d.data.amount.max(1) as f32).clamp(0.35, 1.0).sqrt() } else { 1.0 };
+            let depl = if d.data.amount > 0 && def != tree && d.data.regrow == 0 { (amount as f32 / d.data.amount.max(1) as f32).clamp(0.35, 1.0).sqrt() } else { 1.0 };
             let basis = Basis::from_axis_angle(Vector3::UP, yaw).scaled(Vector3::new(s, s * depl, s));
             let xf = Transform3D::new(basis, Vector3::new(wx, y - 0.05, wz));
             let nparts = self.models.list[model].parts.len();

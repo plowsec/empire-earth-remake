@@ -145,7 +145,7 @@ void fragment() {
 	base *= mix(vec3(1.0), v_team, tint_by_color);
 	// team color: keep the surface's shading, replace hue
 	float lum = dot(base, vec3(0.299, 0.587, 0.114));
-	vec3 team = v_team * (0.35 + lum * 1.3);
+	vec3 team = v_team * clamp(0.32 + lum * 0.85, 0.3, 1.0);
 	base = mix(base, team, team_mask);
 
 	// procedural grime / wear: darker toward the ground, noisy streaks

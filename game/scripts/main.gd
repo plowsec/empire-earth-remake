@@ -83,8 +83,9 @@ func _process(dt: float) -> void:
 	if stress > 0 and game_view.is_running():
 		var c: Vector3 = game_view.debug_spawn_battle(stress)
 		rig.focus(c, true)
-		rig.dist = 110.0
-		rig._dist_goal = 110.0
+		var dd: float = start_cfg.get("dist", 110.0)
+		rig.dist = dd
+		rig._dist_goal = dd
 		stress = -1
 	if stress == -1:
 		_perf_t += dt
