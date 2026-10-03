@@ -166,18 +166,22 @@ impl Ai {
     /// Forests near the base thinning out: plant a grove next to a drop-off.
     fn replant(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
         let d = data();
-        if w.tick % 600 != (self.phase * 41) % 600 || v.citizens.len() < 12 {
+        if w.tick.wrapping_sub(self.last_replant) < 20 * 25 || v.citizens.len() < 12 {
             return;
         }
         let near_wood = w.nearest_resource(ee_sim::defs::Res::Wood as u8, self.base, 14, false).is_some();
         let pl = &w.players[self.player as usize];
-        if near_wood || pl.res[0] < 200 {
+        // replant when the home forest is gone, or whenever wood runs low
+        let low = pl.res[1] < 400;
+        if (near_wood && !low) || pl.res[0] < 120 {
             return;
         }
+        self.last_replant = w.tick;
         let sap = d.id("sapling");
         let (bx, by) = self.base_tile;
         let start = self.rng.below(8) as i32;
-        for r in 7..14 {
+        let mut groves = 0;
+        for r in 7..16 {
             for k in 0..8 {
                 let (c, s) = ee_sim::mapgen::sincos_deg((start + k) * 45);
                 let (cx, cy) = (bx + c * r / 1024, by + s * r / 1024);
@@ -188,7 +192,10 @@ impl Ai {
                     for (n, t) in tiles.into_iter().enumerate() {
                         out.push(CommandKind::Build { units: workers.clone(), def: sap, tile: t, queue: n > 0 });
                     }
-                    return;
+                    groves += 1;
+                    if groves >= 2 {
+                        return;
+                    }
                 }
             }
         }
@@ -610,6 +617,10 @@ impl Ai {
 
     fn transports_wanted(&self, v: &View) -> i32 {
         let army = v.land_army.len() as i32;
+        let unclaimed = self.islands.iter().any(|i| !i.claimed && !i.mines.is_empty());
+        if army < 8 && unclaimed && v.citizens.len() >= 18 {
+            return 1;
+        }
         if army < 8 {
             return 0;
         }

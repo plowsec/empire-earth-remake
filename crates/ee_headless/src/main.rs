@@ -132,6 +132,13 @@ fn run_match(seed: u64, players: usize, minutes: u32, diff: i32) {
                 print!("      P{} units near enemy bases: {}", p.id, n);
             }
             println!();
+            for p in &w.players {
+                let sett = w.entities.iter().filter(|e| e.alive && e.owner == p.id && data().def(e.def).data.key == "settlement").count();
+                let tow = w.entities.iter().filter(|e| e.alive && e.owner == p.id && data().def(e.def).data.key == "guard_tower").count();
+                let sam = w.entities.iter().filter(|e| e.alive && e.owner == p.id && data().def(e.def).data.key == "aa_site").count();
+                print!("      P{} towncenters {} towers {} sams {}", p.id, sett, tow, sam);
+            }
+            println!();
             println!("      P0 gatherers f/w/s/g/i {:?} idle {} buildings {:?}", g, idle, bk);
         }
         if s.world.game_over {

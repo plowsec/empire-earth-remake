@@ -1,6 +1,7 @@
 //! Computer opponent. Reads the world (respecting fog of war for enemy info) and
 //! returns the same `CommandKind`s a human produces. Fully deterministic: it can
 //! run on every peer in lockstep, or on the host only.
+mod expand;
 mod plan;
 
 use ee_sim::command::CommandKind;
@@ -41,8 +42,8 @@ impl Difficulty {
         match self {
             Difficulty::Easy => 24,
             Difficulty::Normal => 42,
-            Difficulty::Hard => 58,
-            Difficulty::Hardest => 70,
+            Difficulty::Hard => 80,
+            Difficulty::Hardest => 100,
         }
     }
     /// first attack, in ticks
@@ -120,6 +121,12 @@ pub struct Ai {
     pending: Vec<(DefId, u32)>,
     scouted: bool,
     last_fields_rebuild: Option<u32>,
+    pub(crate) islands: Vec<expand::Island>,
+    pub(crate) island_of: Vec<u16>,
+    pub(crate) home_island: usize,
+    pub(crate) colony: Option<expand::Colony>,
+    pub(crate) last_colony: u32,
+    pub(crate) last_replant: u32,
 }
 
 impl Ai {
@@ -148,6 +155,12 @@ impl Ai {
             pending: Vec::new(),
             scouted: false,
             last_fields_rebuild: None,
+            islands: Vec::new(),
+            island_of: Vec::new(),
+            home_island: 0,
+            colony: None,
+            last_colony: 0,
+            last_replant: 0,
         }
     }
 }
@@ -181,10 +194,13 @@ impl Controller for Ai {
     }
 
     fn debug(&self) -> String {
-        match &self.invasion {
+        let claimed = self.islands.iter().filter(|i| i.claimed).count();
+        let colony = self.colony.as_ref().map(|c| format!("{:?}->isl{}", c.stage, c.island)).unwrap_or_else(|| "-".into());
+        let base = match &self.invasion {
             Some(i) => format!("wave {} stage {:?} units {} transports {} landing {:?}", self.wave, i.stage, i.units.len(), i.transports.len(), i.landing.tile()),
             None => format!("wave {} (no invasion) known {} defending {}", self.wave, self.known.len(), self.defending),
-        }
+        };
+        format!("{base} | islands {claimed}/{} colony {colony}", self.islands.len())
     }
 
     fn think(&mut self, w: &World) -> Vec<CommandKind> {
@@ -205,7 +221,10 @@ impl Controller for Ai {
         self.economy(w, &v, &mut out);
         if (w.tick / interval) % 3 == (self.phase % 3) {
             self.build(w, &v, &mut out);
+        } else if (w.tick / interval) % 3 == ((self.phase + 1) % 3) {
+            self.claim_fields(w, &v, &mut out);
         }
+        self.colonize(w, &v, &mut out);
         self.produce(w, &v, &mut out);
         self.rebuild_fields(w, &v, &mut out);
         self.military(w, &v, &mut out);
@@ -217,6 +236,7 @@ impl Controller for Ai {
 impl Ai {
     fn init(&mut self, w: &World) {
         self.initialized = true;
+        let tile_fix = |a: &mut Ai| a.map_islands(w);
         let cap = data().id("capitol");
         if let Some(c) = w.entities.iter().find(|e| e.alive && e.owner == self.player && e.def == cap) {
             self.base = c.pos;
@@ -225,6 +245,7 @@ impl Ai {
             self.base_tile = *s;
             self.base = FVec::tile_center(s.0, s.1);
         }
+        tile_fix(self);
     }
 
     /// Explore the coast with one early citizen, then return it to the economy.
@@ -372,7 +393,7 @@ impl Ai {
 
         // desired distribution: base weights scaled by scarcity (low stock -> more workers)
         let military_phase = v.count(d.id("barracks")) > 0;
-        let base: [i32; NUM_RES] = if military_phase { [26, 18, 8, 24, 24] } else { [40, 35, 10, 8, 7] };
+        let base: [i32; NUM_RES] = if military_phase { [24, 24, 9, 22, 21] } else { [38, 37, 10, 8, 7] };
         let mut want: [i32; NUM_RES] = [0; NUM_RES];
         for r in 0..NUM_RES {
             want[r] = base[r] * 1000 / (300 + pl.res[r] / 2);
@@ -465,9 +486,12 @@ impl Ai {
             }
             return None;
         }
-        // prefer nodes near the base so citizens don't wander into the enemy
-        let near_base = w.nearest_resource(r as u8, self.base, 34, false);
-        near_base.or_else(|| w.nearest_resource(r as u8, from, 40, false))
+        // nodes on the citizen's own island first (colonists stay where they are),
+        // otherwise near the capitol
+        let here = self.island_at(w, from.tile());
+        let near = w.nearest_resource(r as u8, from, 30, false)
+            .filter(|&n| w.get(n).map_or(false, |e| here.is_none() || self.island_at(w, (e.tile.0 - 1, e.tile.1)) == here || self.island_at(w, (e.tile.0 + 2, e.tile.1 + 1)) == here));
+        near.or_else(|| w.nearest_resource(r as u8, self.base, 34, false))
     }
 }
 
