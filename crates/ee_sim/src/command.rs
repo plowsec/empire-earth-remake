@@ -27,6 +27,10 @@ pub enum CommandKind {
     /// Aircraft: return to the nearest airfield.
     ReturnToBase { units: Vec<EntityId> },
     Delete { units: Vec<EntityId> },
+    /// Loop around the island attacking anything encountered.
+    Scout { units: Vec<EntityId> },
+    /// Granary: lay out farms on every free plot around it and send citizens to work them.
+    RebuildFarms { building: EntityId },
     Resign,
 }
 

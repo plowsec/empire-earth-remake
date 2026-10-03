@@ -223,8 +223,17 @@ pub fn apply(w: &mut World, c: &Command) {
                 give(w, id, Order::Idle, false);
                 if let Some(e) = w.get_mut(id) {
                     e.target = 0;
+                    e.sortie = None;
+                    e.patrol.clear();
                 }
             }
+        }
+        CommandKind::Scout { units } => {
+            let units = owned_units(w, p, units);
+            scout(w, &units);
+        }
+        CommandKind::RebuildFarms { building } => {
+            rebuild_farms(w, p, *building);
         }
         CommandKind::Unload { units, at } => {
             for id in owned_units(w, p, units) {
@@ -239,6 +248,9 @@ pub fn apply(w: &mut World, c: &Command) {
                 let e = w.get(id).unwrap();
                 if w.def_of(e).data.needs_airport {
                     give(w, id, Order::ReturnToBase, false);
+                    if let Some(e) = w.get_mut(id) {
+                        e.sortie = None;
+                    }
                 }
             }
         }
@@ -305,6 +317,13 @@ pub fn move_group(w: &mut World, units: &[EntityId], to: FVec, attack_move: bool
                 } else {
                     dest = to;
                 }
+            }
+            if layer == Layer::Air && w.def_of(w.get(*id).unwrap()).data.needs_airport {
+                give(w, *id, Order::Patrol { at: dest }, queue);
+                if let Some(e) = w.get_mut(*id) {
+                    e.sortie = Some(dest);
+                }
+                continue;
             }
             give(w, *id, Order::Move { to: dest, attack_move }, queue);
             if use_flow && !queue {
@@ -380,5 +399,205 @@ fn smart_target(w: &mut World, p: u8, units: &[EntityId], target: EntityId, queu
     if !movers.is_empty() {
         move_group(w, &movers, tpos, false, queue);
     }
+    // landing ships sail to the beach nearest the units waiting to board
+    if own && tdef.data.cargo > 0 {
+        let boarders: Vec<FVec> = units
+            .iter()
+            .filter_map(|&u| w.get(u))
+            .filter(|e| matches!(e.order, Order::Board { .. }))
+            .map(|e| e.pos)
+            .collect();
+        if !boarders.is_empty() {
+            let n = boarders.len() as i64;
+            let cx = boarders.iter().map(|p| p.x.0 as i64).sum::<i64>() / n;
+            let cy = boarders.iter().map(|p| p.y.0 as i64).sum::<i64>() / n;
+            let center = FVec::new(Fx(cx as i32), Fx(cy as i32));
+            if let Some(shore) = shore_water_near(w, center, 24) {
+                let t = w.get(target).unwrap();
+                if matches!(t.order, Order::Idle | Order::Move { .. }) {
+                    give(w, target, Order::Move { to: shore, attack_move: false }, false);
+                }
+            }
+        }
+    }
     let _ = Class::Building;
+}
+
+/// Water tile (usable by ships) next to land, nearest to `p`.
+pub fn shore_water_near(w: &World, p: FVec, max_r: i32) -> Option<FVec> {
+    let (px, py) = p.tile();
+    for r in 0..=max_r {
+        let mut best: Option<(i32, (i32, i32))> = None;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dy.abs() != r {
+                    continue;
+                }
+                let (x, y) = (px + dx, py + dy);
+                if !w.map.passable(x, y, Layer::Water) {
+                    continue;
+                }
+                let coast = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(ox, oy)| w.map.is_land(x + ox, y + oy));
+                if coast {
+                    let d = dx * dx + dy * dy;
+                    if best.map_or(true, |(b, _)| d < b) {
+                        best = Some((d, (x, y)));
+                    }
+                }
+            }
+        }
+        if let Some((_, (x, y))) = best {
+            return Some(FVec::tile_center(x, y));
+        }
+    }
+    None
+}
+
+/// Land tiles of the island containing (x, y) (or nearest island), capped.
+fn island_tiles(w: &World, x: i32, y: i32) -> Vec<(i32, i32)> {
+    let start = if w.map.is_land(x, y) {
+        Some((x, y))
+    } else {
+        let mut f = None;
+        'o: for r in 1..40 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if (dx as i32).abs() != r && (dy as i32).abs() != r {
+                        continue;
+                    }
+                    if w.map.is_land(x + dx, y + dy) {
+                        f = Some((x + dx, y + dy));
+                        break 'o;
+                    }
+                }
+            }
+        }
+        f
+    };
+    let Some(s) = start else { return vec![] };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut q = std::collections::VecDeque::new();
+    seen.insert(s);
+    q.push_back(s);
+    let mut out = Vec::new();
+    while let Some((cx, cy)) = q.pop_front() {
+        out.push((cx, cy));
+        if out.len() > 60000 {
+            break;
+        }
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let n = (cx + dx, cy + dy);
+            if w.map.is_land(n.0, n.1) && !seen.contains(&n) {
+                seen.insert(n);
+                q.push_back(n);
+            }
+        }
+    }
+    out
+}
+
+/// Give each unit a looping route around its island and set it scouting.
+pub fn scout(w: &mut World, units: &[EntityId]) {
+    if units.is_empty() {
+        return;
+    }
+    for layer in [Layer::Land, Layer::Water, Layer::Air] {
+        let group: Vec<EntityId> = units.iter().copied().filter(|&id| w.def_of(w.get(id).unwrap()).layer == layer).collect();
+        if group.is_empty() {
+            continue;
+        }
+        let n = group.len() as i64;
+        let cx = group.iter().map(|&id| w.get(id).unwrap().pos.x.0 as i64).sum::<i64>() / n;
+        let cy = group.iter().map(|&id| w.get(id).unwrap().pos.y.0 as i64).sum::<i64>() / n;
+        let (tx, ty) = FVec::new(Fx(cx as i32), Fx(cy as i32)).tile();
+        let tiles = island_tiles(w, tx, ty);
+        if tiles.is_empty() {
+            continue;
+        }
+        let ix = tiles.iter().map(|t| t.0 as i64).sum::<i64>() / tiles.len() as i64;
+        let iy = tiles.iter().map(|t| t.1 as i64).sum::<i64>() / tiles.len() as i64;
+        // radius of a disc with the island's area
+        let rad = crate::fixed::isqrt_u64((tiles.len() as u64 * 100) / 314) as i32;
+        let ring = match layer {
+            Layer::Land => rad * 70 / 100,
+            Layer::Water => rad * 125 / 100 + 3,
+            _ => rad * 85 / 100,
+        }
+        .max(4);
+        let mut route = Vec::new();
+        for k in 0..12 {
+            let (c, s) = crate::mapgen::sincos_deg(k * 30);
+            let (px, py) = (ix as i32 + c * ring / 1024, iy as i32 + s * ring / 1024);
+            let snapped = match layer {
+                Layer::Air => Some((px.clamp(1, w.map.w - 2), py.clamp(1, w.map.h - 2))),
+                l => w.map.nearest_passable(px, py, l, 8),
+            };
+            if let Some((sx, sy)) = snapped {
+                route.push(FVec::tile_center(sx, sy));
+            }
+        }
+        if route.len() < 3 {
+            continue;
+        }
+        for &id in &group {
+            let pos = w.get(id).unwrap().pos;
+            let start = route.iter().enumerate().min_by_key(|(_, p)| p.dist2_raw(pos)).map(|(i, _)| i).unwrap_or(0);
+            give(w, id, Order::Scout { idx: start as u8 }, false);
+            if let Some(e) = w.get_mut(id) {
+                e.patrol = route.clone();
+                e.sortie = None;
+            }
+        }
+    }
+}
+
+/// Granary: farm foundations on every free plot of its ring, citizens assigned.
+pub fn rebuild_farms(w: &mut World, p: u8, building: EntityId) {
+    let d = data();
+    let farm = d.id("farm");
+    let Some(g) = w.get(building) else { return };
+    if g.owner != p || !g.complete || g.def != d.id("granary") {
+        return;
+    }
+    let (gx, gy) = g.tile;
+    let gpos = g.pos;
+    let slots = [
+        (gx - 3, gy), (gx + 3, gy), (gx, gy - 3), (gx, gy + 3),
+        (gx - 3, gy - 3), (gx + 3, gy - 3), (gx - 3, gy + 3), (gx + 3, gy + 3),
+    ];
+    let cost = d.def(farm).data.cost;
+    let mut sites = Vec::new();
+    for t in slots {
+        if w.can_place(p, farm, t).is_ok() {
+            if !w.pay(p, &cost) {
+                w.events.push(SimEvent::Notice { owner: p, text: "Not enough wood for more fields" });
+                break;
+            }
+            let id = w.spawn_static(farm, p, t, false);
+            w.events.push(SimEvent::BuildingPlaced { id, def: farm, owner: p });
+            sites.push(id);
+        }
+    }
+    if sites.is_empty() {
+        return;
+    }
+    // one citizen per field: idle ones first, then food gatherers, then the nearest
+    let cit = d.id("citizen");
+    let mut pool: Vec<(i64, EntityId)> = w
+        .entities
+        .iter()
+        .filter(|e| e.alive && e.owner == p && e.def == cit && e.inside == 0 && !matches!(e.order, Order::Build { .. }))
+        .map(|e| {
+            let pri: i64 = match e.order {
+                Order::Idle => 0,
+                Order::Gather { .. } if e.last_res == 0 => 1 << 40,
+                _ => 2 << 40,
+            };
+            (pri + e.pos.dist2_raw(gpos) / 65536, e.id)
+        })
+        .collect();
+    pool.sort();
+    for (site, (_, c)) in sites.iter().zip(pool.iter()) {
+        give(w, *c, Order::Build { site: *site }, false);
+    }
 }

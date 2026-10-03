@@ -104,6 +104,27 @@ impl World {
             if let Some(a) = self.get_mut(id) {
                 a.home = bid;
             }
+            if ud.data.needs_airport {
+                match rally {
+                    Some(r) => {
+                        set_order(self, id, Order::Patrol { at: r });
+                        if let Some(a) = self.get_mut(id) {
+                            a.sortie = Some(r);
+                        }
+                    }
+                    None => {
+                        // park in the hangar until given a mission
+                        if let Some(a) = self.get_mut(id) {
+                            a.inside = bid;
+                            a.action = Action::Landed;
+                        }
+                        if let Some(b) = self.get_mut(bid) {
+                            b.cargo.push(id);
+                        }
+                    }
+                }
+                return;
+            }
         }
         // rally: gather if pointed at a resource, else move there
         if rally_target != 0 {
@@ -180,6 +201,7 @@ impl World {
         for e in self.entities.iter_mut() {
             if e.alive {
                 e.gatherers = 0;
+                e.miners = 0;
             }
         }
         let n = self.entities.len();
@@ -192,8 +214,12 @@ impl World {
                 Order::Gather { node } => node,
                 _ => continue,
             };
+            let working = e.action == Action::Gather;
             if let Some(nd) = self.get_mut(node) {
                 nd.gatherers = nd.gatherers.saturating_add(1);
+                if working {
+                    nd.miners = nd.miners.saturating_add(1);
+                }
             }
         }
     }

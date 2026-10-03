@@ -185,6 +185,7 @@ pub fn apply_damage(w: &mut World, target: EntityId, raw: i32, dt: crate::defs::
         w.kill(target, attacker_owner);
         return;
     }
+    call_for_help(w, target, attacker);
     // retaliate: idle armed units turn on their attacker
     let t = w.get(target).unwrap();
     if t.order == Order::Idle && td.is_unit() && td.class() != Class::Citizen {
@@ -227,7 +228,7 @@ impl World {
         self.events.push(SimEvent::Impact { pos: p.pos, dmg_type: p.dmg_type as u8, splash: p.splash, owner: p.owner });
         // heavy ordnance flattens forests: wood is the resource wars consume
         use crate::defs::DamageType as D;
-        if p.splash.0 > 0 && matches!(p.dmg_type, D::Explosive | D::Bomb | D::NavalGun) {
+        if p.splash.0 > 0 && matches!(p.dmg_type, D::Explosive | D::Bomb | D::NavalGun | D::Nuclear) {
             let r = p.splash.floor_int().max(1);
             let (cx, cy) = p.pos.tile();
             let mut felled = Vec::new();
@@ -245,8 +246,9 @@ impl World {
                     }
                 }
             }
+            let pct = if p.dmg_type == D::Nuclear { 92 } else { 40 };
             for t in felled {
-                if self.rng.chance(40) {
+                if self.rng.chance(pct) {
                     self.kill(t, GAIA);
                 }
             }
@@ -285,3 +287,61 @@ impl World {
 
 #[allow(dead_code)]
 fn _unused(_: FVec) {}
+
+/// A unit under fire it can't answer (e.g. infantry vs helicopter) calls nearby
+/// friends that can hit the attacker and are within their own reach.
+pub fn call_for_help(w: &mut World, victim: EntityId, attacker: EntityId) {
+    let tick = w.tick;
+    let Some(v) = w.get(victim) else { return };
+    let Some(a) = w.get(attacker) else { return };
+    if tick.wrapping_sub(v.help_tick) < 30 && v.help_tick != 0 {
+        return;
+    }
+    let can_answer = can_attack(w, v, a) && data().def(v.def).class() != Class::Citizen;
+    if can_answer {
+        return;
+    }
+    let owner = v.owner;
+    let vpos = v.pos;
+    let apos = a.pos;
+    let vslot = slot_of(victim);
+    w.entities[vslot].help_tick = tick;
+    let mut helpers: Vec<(i64, EntityId)> = Vec::new();
+    w.spatial.for_each(vpos, Fx::from_int(14), |oid, slot| {
+        let o = &w.entities[slot];
+        if oid == victim || o.owner != owner || !o.on_map() {
+            return;
+        }
+        let od = data().def(o.def);
+        if !od.is_unit() || od.class() == Class::Citizen {
+            return;
+        }
+        let free = matches!(o.order, Order::Idle | Order::Patrol { .. } | Order::Scout { .. } | Order::Move { attack_move: true, .. });
+        if !free {
+            return;
+        }
+        let Some(a) = w.get(attacker) else { return };
+        if !can_attack(w, o, a) {
+            return;
+        }
+        // only if the attacker is within this unit's reach (what it can see/chase)
+        let reach = Fx::from_int(od.sight_tiles) + od.max_range;
+        let dist = o.pos.dist(apos);
+        if dist > reach {
+            return;
+        }
+        helpers.push((dist.0 as i64, oid));
+    });
+    helpers.sort();
+    for (_, h) in helpers.into_iter().take(8) {
+        let slot = slot_of(h);
+        let cur = w.entities[slot].order;
+        if matches!(cur, Order::Patrol { .. } | Order::Scout { .. } | Order::Move { .. }) {
+            w.entities[slot].queue.insert(0, cur);
+        }
+        let q = std::mem::take(&mut w.entities[slot].queue);
+        crate::orders::set_order(w, h, Order::Attack { target: attacker });
+        w.entities[slot].queue = q;
+        w.entities[slot].forced_target = false;
+    }
+}

@@ -78,8 +78,9 @@ pub enum DamageType {
     Bomb = 7,
     AirGun = 8,
     Missile = 9,
+    Nuclear = 10,
 }
-pub const NUM_DMG: usize = 10;
+pub const NUM_DMG: usize = 11;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Layer {

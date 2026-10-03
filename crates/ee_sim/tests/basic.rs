@@ -312,3 +312,222 @@ fn artillery_fells_trees() {
     println!("trees {before} -> {after}");
     assert!(after < before);
 }
+
+fn open_spot(w: &World, near: (i32, i32), rmin: i32, rmax: i32) -> (i32, i32) {
+    for r in rmin..rmax {
+        for (dx, dy) in [(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1)] {
+            let t = (near.0 + dx * r, near.1 + dy * r);
+            if (-2..=2).all(|oy| (-2..=2).all(|ox| w.map.passable(t.0 + ox, t.1 + oy, ee_sim::defs::Layer::Land))) {
+                return t;
+            }
+        }
+    }
+    panic!("no open spot");
+}
+
+#[test]
+fn aircraft_patrol_circles_engages_and_resumes_after_refuel() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let air = data().id("airport");
+    let mut tile = None;
+    'f: for r in 6..20 {
+        for dx in -r..=r {
+            for t in [(s.0 + dx, s.1 + r), (s.0 + dx, s.1 - r)] {
+                if w.can_place(0, air, t).is_ok() {
+                    tile = Some(t);
+                    break 'f;
+                }
+            }
+        }
+    }
+    w.spawn_static(air, 0, tile.unwrap(), true);
+    let f = w.spawn(data().id("fighter"), 0, FVec::tile_center(s.0, s.1));
+    let dest = FVec::tile_center(s.0 + 15, s.1);
+    run(&mut w, 1, vec![(0, Command { player: 0, kind: CommandKind::Move { units: vec![f], to: dest, attack_move: false, queue: false } })]);
+    // fly out, circle: must stay near the point and keep moving (not stuck)
+    run(&mut w, 20 * 15, vec![]);
+    let e = w.get(f).unwrap();
+    assert!(matches!(e.order, Order::Patrol { .. }), "order {:?}", e.order);
+    assert!(e.pos.within(dest, ee_sim::fixed::Fx::from_int(8)), "near patrol point");
+    let p0 = e.pos;
+    run(&mut w, 20, vec![]);
+    assert!(w.get(f).unwrap().pos != p0, "still flying circuits");
+    // enemy helicopter shows up: engaged
+    let h = w.spawn(data().id("helicopter"), 1, dest + FVec::new(ee_sim::fixed::Fx::from_int(2), ee_sim::fixed::Fx::ZERO));
+    run(&mut w, 20 * 20, vec![]);
+    assert!(w.get(h).is_none() || w.get(h).unwrap().hp < 620, "helicopter attacked");
+    // eventually: fuel -> land -> refuel -> back on patrol
+    run(&mut w, 20 * 120, vec![]);
+    let e = w.get(f).unwrap();
+    println!("after refuel cycle: order {:?} inside {} fuel {}", e.order, e.inside, e.fuel);
+    assert!(matches!(e.order, Order::Patrol { .. } | Order::ReturnToBase | Order::Attack { .. }) || e.inside != 0);
+    assert_eq!(e.sortie, Some(dest));
+}
+
+#[test]
+fn scout_loops_around_island() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let r = w.spawn(data().id("recon"), 0, FVec::tile_center(s.0 + 4, s.1 + 4));
+    run(&mut w, 1, vec![(0, Command { player: 0, kind: CommandKind::Scout { units: vec![r] } })]);
+    let route = w.get(r).unwrap().patrol.clone();
+    assert!(route.len() >= 8, "route {}", route.len());
+    let mut visited = std::collections::BTreeSet::new();
+    for _ in 0..90 {
+        run(&mut w, 20, vec![]);
+        if let Order::Scout { idx } = w.get(r).unwrap().order {
+            visited.insert(idx);
+        }
+    }
+    println!("visited waypoints {:?}", visited);
+    assert!(visited.len() >= 4);
+}
+
+#[test]
+fn helpless_units_call_for_help() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let spot = open_spot(&w, s, 8, 25);
+    let c = FVec::tile_center(spot.0, spot.1);
+    let rifle = w.spawn(data().id("rifleman"), 0, c);
+    let aa = w.spawn(data().id("aa_vehicle"), 0, c + FVec::new(ee_sim::fixed::Fx::from_int(6), ee_sim::fixed::Fx::ZERO));
+    let heli = w.spawn(data().id("helicopter"), 1, c + FVec::new(ee_sim::fixed::Fx::ZERO, ee_sim::fixed::Fx::from_int(4)));
+    run(&mut w, 20 * 6, vec![(1, Command { player: 1, kind: CommandKind::Attack { units: vec![heli], target: rifle, queue: false } })]);
+    let a = w.get(aa).unwrap();
+    println!("aa order {:?}", a.order);
+    assert!(matches!(a.order, Order::Attack { target } if target == heli) || w.get(heli).is_none());
+}
+
+#[test]
+fn worker_cap_per_node() {
+    let mut w = World::new(MatchConfig::skirmish(9, 2));
+    let cits = units_of(&w, 0, "citizen");
+    let cap = units_of(&w, 0, "capitol")[0];
+    let b = nearest_of(&w, w.get(cap).unwrap().pos, "berries");
+    // isolate: the other bushes are gone, so extra workers must wait
+    let others: Vec<u32> = w.entities.iter().filter(|e| e.alive && e.def == data().id("berries") && e.id != b).map(|e| e.id).collect();
+    for o in others {
+        w.kill(o, ee_sim::mapgen::GAIA);
+    }
+    run(&mut w, 1, vec![(0, Command { player: 0, kind: CommandKind::Target { units: cits.clone(), target: b, queue: false } })]);
+    for _ in 0..40 {
+        run(&mut w, 10, vec![]);
+        let working = cits.iter().filter(|&&c| {
+            let e = w.get(c).unwrap();
+            e.action == ee_sim::entity::Action::Gather && matches!(e.order, Order::Gather { node } if node == b)
+        }).count();
+        assert!(working <= 3, "{working} working a berry bush");
+    }
+}
+
+#[test]
+fn granary_rebuilds_fields() {
+    let mut cfg = MatchConfig::skirmish(9, 2);
+    cfg.reveal = true;
+    let mut w = World::new(cfg);
+    let s = w.starts[0];
+    let gr = data().id("granary");
+    let mut tile = None;
+    'f: for r in 7..30 {
+        for dx in -r..=r {
+            let t = (s.0 + dx, s.1 + r);
+            if (-3..6).all(|oy| (-3..6).all(|ox| w.map.passable(t.0 + ox, t.1 + oy, ee_sim::defs::Layer::Land) && w.explored(0, t.0 + ox, t.1 + oy))) {
+                tile = Some(t);
+                break 'f;
+            }
+        }
+    }
+    let g = w.spawn_static(gr, 0, tile.expect("granary spot"), true);
+    run(&mut w, 1, vec![(0, Command { player: 0, kind: CommandKind::RebuildFarms { building: g } })]);
+    let farms = units_of(&w, 0, "farm").len();
+    println!("farms placed {farms}");
+    assert!(farms >= 4);
+    run(&mut w, 20 * 40, vec![]);
+    let built = units_of(&w, 0, "farm").iter().filter(|&&f| w.get(f).unwrap().complete).count();
+    println!("farms built {built}");
+    assert!(built >= 4);
+}
+
+#[test]
+fn guard_tower_outranges_battleship() {
+    let d = data();
+    let tower = d.def(d.id("guard_tower"));
+    let bs = d.def(d.id("battleship"));
+    let tower_range = tower.weapons.iter().filter(|w| w.vs_water).map(|w| w.range).max().unwrap();
+    assert!(tower_range >= bs.max_range, "tower {:?} vs battleship {:?}", tower_range, bs.max_range);
+}
+
+#[test]
+fn capitol_rally_on_mine_sends_new_citizens_to_mine() {
+    let mut w = World::new(MatchConfig::skirmish(9, 2));
+    let cap = units_of(&w, 0, "capitol")[0];
+    let cpos = w.get(cap).unwrap().pos;
+    let gold = nearest_of(&w, cpos, "gold_mine");
+    let gpos = w.get(gold).unwrap().pos;
+    let cid = data().id("citizen");
+    let before = units_of(&w, 0, "citizen");
+    run(&mut w, 1, vec![
+        (0, Command { player: 0, kind: CommandKind::SetRally { buildings: vec![cap], to: gpos, target: gold } }),
+        (0, Command { player: 0, kind: CommandKind::Train { building: cap, def: cid, count: 2 } }),
+    ]);
+    run(&mut w, 20 * 30, vec![]);
+    let new: Vec<u32> = units_of(&w, 0, "citizen").into_iter().filter(|c| !before.contains(c)).collect();
+    assert_eq!(new.len(), 2);
+    for c in new {
+        let e = w.get(c).unwrap();
+        assert!(matches!(e.order, Order::Gather { node } if node == gold) || matches!(e.order, Order::ReturnCargo), "order {:?}", e.order);
+    }
+}
+
+#[test]
+#[ignore]
+fn debug_rally_mine() {
+    let mut w = World::new(MatchConfig::skirmish(9, 2));
+    let cap = units_of(&w, 0, "capitol")[0];
+    let cpos = w.get(cap).unwrap().pos;
+    let gold = nearest_of(&w, cpos, "gold_mine");
+    let gpos = w.get(gold).unwrap().pos;
+    let cid = data().id("citizen");
+    let before = units_of(&w, 0, "citizen");
+    run(&mut w, 1, vec![
+        (0, Command { player: 0, kind: CommandKind::SetRally { buildings: vec![cap], to: gpos, target: gold } }),
+        (0, Command { player: 0, kind: CommandKind::Train { building: cap, def: cid, count: 1 } }),
+    ]);
+    let g = w.get(gold).unwrap();
+    println!("gold tile {:?} pos {:?} radius {:?}", g.tile, g.pos.tile(), data().def(g.def).radius);
+    for y in 43..51 {
+        let mut l = String::new();
+        for x in 64..74 {
+            let i = w.map.idx(x, y);
+            l.push(if w.map.occupant[i] == gold { 'G' } else if w.map.occupant[i] != 0 { 'T' } else if w.map.pass[i] & 1 != 0 { '.' } else { '#' });
+        }
+        println!("{y} {l}");
+    }
+    for _ in 0..40 {
+        run(&mut w, 10, vec![]);
+        for c in units_of(&w, 0, "citizen").into_iter().filter(|c| !before.contains(c)) {
+            let e = w.get(c).unwrap();
+            println!("t{} {:?} {:?} {:?} goal {:?} stuck {} q {:?}", w.tick, e.pos.tile(), e.order, e.action, e.goal.map(|g| g.tile()), e.stuck, e.queue);
+        }
+    }
+}
+
+#[test]
+fn every_mine_is_reachable_from_its_island() {
+    for seed in 1..8u64 {
+        let w = World::new(MatchConfig::skirmish(seed, 3));
+        for e in w.entities.iter().filter(|e| e.alive && data().def(e.def).data.key.ends_with("_mine")) {
+            let (x0, y0) = e.tile;
+            let mut open = 0;
+            for y in y0 - 1..=y0 + 2 {
+                for x in x0 - 1..=x0 + 2 {
+                    if w.map.passable(x, y, ee_sim::defs::Layer::Land) {
+                        open += 1;
+                    }
+                }
+            }
+            assert!(open >= 3, "seed {seed}: mine at {:?} has {open} open neighbours", e.tile);
+        }
+    }
+}

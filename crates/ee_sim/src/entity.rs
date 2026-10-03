@@ -26,6 +26,10 @@ pub enum Order {
     Board { transport: EntityId },
     Unload { at: FVec },
     ReturnToBase,
+    /// aircraft: fly to `at`, circle it, engage anything in reach; refuel and come back
+    Patrol { at: FVec },
+    /// loop the `patrol` waypoints around the island, engaging enemies met on the way
+    Scout { idx: u8 },
 }
 
 /// What the unit is visibly doing (drives animation on the client).
@@ -115,6 +119,14 @@ pub struct Entity {
     pub home: EntityId,
 
     pub kills: u16,
+    /// aircraft: patrol point to return to after refuelling
+    pub sortie: Option<FVec>,
+    /// scout route
+    pub patrol: Vec<FVec>,
+    /// last tick this unit called for help
+    pub help_tick: u32,
+    /// resource nodes: units actively working it right now
+    pub miners: u8,
 }
 
 impl Entity {
@@ -165,6 +177,10 @@ impl Entity {
             fuel: 0,
             home: 0,
             kills: 0,
+            sortie: None,
+            patrol: Vec::new(),
+            help_tick: 0,
+            miners: 0,
         }
     }
     /// Units inside a transport or landed at an airport are not on the map.

@@ -72,11 +72,20 @@ impl World {
         if self.tick % 20 == 0 {
             e.hp = (e.hp + maxhp / 40 + 1).min(maxhp);
         }
-        // resume queued orders once ready
-        if e.fuel >= max_fuel && !e.queue.is_empty() {
-            let next = e.queue.remove(0);
+        // resume queued orders once ready, else fly the standing sortie
+        if e.fuel >= max_fuel {
             let id = e.id;
-            set_order(self, id, next);
+            if !e.queue.is_empty() {
+                let next = e.queue.remove(0);
+                set_order(self, id, next);
+            } else if e.order == Order::Idle || e.order == Order::ReturnToBase {
+                let home = e.inside;
+                let patrol = e.sortie.or_else(|| self.get(home).and_then(|h| h.rally));
+                if let Some(at) = patrol {
+                    self.entities[i].sortie = Some(at);
+                    set_order(self, id, Order::Patrol { at });
+                }
+            }
         }
     }
 
@@ -126,7 +135,90 @@ impl World {
             Order::Board { transport } => self.behave_board(i, transport),
             Order::Unload { at } => self.behave_unload(i, at),
             Order::ReturnToBase => self.behave_rtb(i),
+            Order::Patrol { at } => self.behave_patrol(i, at),
+            Order::Scout { idx } => self.behave_scout(i, idx),
         }
+    }
+
+    // ------------------------------------------------------------------ patrol / scout
+
+    fn behave_patrol(&mut self, i: usize, at: FVec) {
+        if self.try_acquire(i, true) {
+            return;
+        }
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        let id = e.id;
+        // bombers out of bombs go rearm (the sortie brings them back)
+        if d.weapons.first().map_or(false, |w| w.ammo > 0) && e.ammo <= 0 {
+            set_order(self, id, Order::ReturnToBase);
+            return;
+        }
+        if d.layer != Layer::Air {
+            // ground units: walk there, then stand guard
+            if e.goal.is_none() && !e.pos.within(at, Fx::from_int(2)) && e.stuck == 0 {
+                self.set_goal(i, at, None);
+            }
+            return;
+        }
+        let station = Fx::from_int(5);
+        if !e.pos.within(at, station) {
+            if e.goal.map_or(true, |g| !g.within(at, Fx::ONE)) {
+                self.set_goal(i, at, None);
+            }
+        } else if d.data.hover {
+            // helicopters hover over the point
+            if e.goal.is_some() && e.pos.within(at, Fx::ONE) {
+                let e = &mut self.entities[i];
+                e.goal = None;
+                e.path.clear();
+            } else if e.goal.is_none() && !e.pos.within(at, Fx::ONE) {
+                self.set_goal(i, at, None);
+            }
+        } else if e.goal.is_none() || e.goal.map_or(false, |g| e.pos.within(g, Fx::ONE)) {
+            // jets: fly a circuit of waypoints around the point
+            let rel = e.pos - at;
+            let r = Fx::from_ratio(380, 100);
+            // next waypoint = current direction rotated ~50 degrees around the point
+            let dir = if rel.len2_raw() > 0 { rel.normalized() } else { FVec::new(Fx::ONE, Fx::ZERO) };
+            let c = Fx::from_ratio(643, 1000);
+            let s = Fx::from_ratio(766, 1000);
+            let rot = FVec::new(dir.x.mul(c) - dir.y.mul(s), dir.x.mul(s) + dir.y.mul(c));
+            let wp = at + rot.scale(r);
+            self.set_goal(i, wp, None);
+        }
+        self.entities[i].action = Action::Move;
+    }
+
+    fn behave_scout(&mut self, i: usize, idx: u8) {
+        if self.try_acquire(i, true) {
+            return;
+        }
+        let e = &self.entities[i];
+        let id = e.id;
+        if e.patrol.is_empty() {
+            self.next_order(i);
+            return;
+        }
+        let k = (idx as usize) % e.patrol.len();
+        let wp = e.patrol[k];
+        let reach = Fx::from_ratio(250, 100);
+        let arrived = e.pos.within(wp, reach) || (e.goal.is_none() && e.stuck > 0);
+        if arrived {
+            let n = e.patrol.len();
+            let q = std::mem::take(&mut self.entities[i].queue);
+            set_order(self, id, Order::Scout { idx: ((k + 1) % n) as u8 });
+            self.entities[i].queue = q;
+            return;
+        }
+        if e.goal.is_none() && e.stuck == 0 {
+            self.set_goal(i, wp, None);
+            if self.entities[i].goal.is_none() {
+                // unreachable waypoint: skip it
+                self.entities[i].stuck = 1;
+            }
+        }
+        self.entities[i].action = Action::Move;
     }
 
     // ------------------------------------------------------------------ idle
@@ -140,12 +232,16 @@ impl World {
             return;
         }
         if d.class() == Class::Aircraft {
-            // airborne aircraft without orders loiter, then head home on low fuel
-            if d.data.needs_airport && e.goal.is_none() && self.tick % 40 == (id % 40) {
-                // nothing: orbit handled in movement
-            }
             if self.try_acquire(i, false) {
                 return;
+            }
+            // airborne with nothing to do: resume the sortie or go home and land
+            if d.data.needs_airport {
+                let e = &self.entities[i];
+                match e.sortie {
+                    Some(at) => set_order(self, id, Order::Patrol { at }),
+                    None => set_order(self, id, Order::ReturnToBase),
+                }
             }
             return;
         }
@@ -486,7 +582,27 @@ impl World {
             }
             return;
         }
+        // worker cap: wait for a free spot (or try another node)
+        if e.action != Action::Gather {
+            let n = self.get(node).unwrap();
+            if n.miners as i32 >= crate::world::gather_cap(nd) {
+                if self.tick % 10 == id % 10 {
+                    if let Some(alt) = self.nearest_resource(res, npos, 8, layer == Layer::Water).filter(|&a| a != node) {
+                        set_order(self, id, Order::Gather { node: alt });
+                        return;
+                    }
+                }
+                let e = &mut self.entities[i];
+                e.goal = None;
+                e.action = Action::Idle;
+                return;
+            }
+            if let Some(n) = self.get_mut(node) {
+                n.miners = n.miners.saturating_add(1);
+            }
+        }
         // gathering
+        let e = &self.entities[i];
         let mods = self.mods(owner, e.def);
         let rate = d.gather_rate[res as usize] * (100 + mods.gather_pct[res as usize]) / 100;
         let e = &mut self.entities[i];

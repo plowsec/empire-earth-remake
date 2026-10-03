@@ -11,6 +11,20 @@ use crate::spatial::SpatialHash;
 use std::sync::OnceLock;
 
 static DATA: OnceLock<GameData> = OnceLock::new();
+/// How many workers can harvest a node at the same time.
+pub fn gather_cap(d: &Def) -> i32 {
+    if d.data.walkable {
+        return 1;
+    }
+    match d.data.key.as_str() {
+        "tree" => 2,
+        "berries" => 3,
+        "fish" => 2,
+        _ if d.size() != (1, 1) => 8,
+        _ => 2,
+    }
+}
+
 pub fn data() -> &'static GameData {
     DATA.get_or_init(GameData::load)
 }
@@ -873,9 +887,8 @@ impl World {
                     if !dd.is_resource() || dd.data.resource.map(|r| r as u8) != Some(res) || (e.amount <= 0 && !dd.is_building()) {
                         continue;
                     }
-                    // spread workers: skip crowded nodes
-                    let cap = if dd.size() == (1, 1) { 2 } else { 9 };
-                    if e.gatherers >= cap {
+                    // spread workers: skip nodes already at their worker cap
+                    if e.gatherers as i32 >= gather_cap(dd) + 1 {
                         continue;
                     }
                     let dist = from.dist2_raw(e.pos);

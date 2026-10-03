@@ -371,7 +371,16 @@ pub fn generate(p: &MapParams) -> GenResult {
             for y in fy - 4..=fy + 4 {
                 for x in fx - 5..=fx + 5 {
                     let dd = (x - fx).pow(2) * 9 / 25 + (y - fy).pow(2);
-                    if dd <= 16 && map.in_bounds(x, y) && !clear_core[idx(x, y)]
+                    let near_hard = objects.iter().any(|o| {
+                        let (w, h) = match o.key {
+                            "capitol" => (4, 4),
+                            "gold_mine" | "stone_mine" | "iron_mine" => (2, 2),
+                            "berries" => (1, 1),
+                            _ => return false,
+                        };
+                        x >= o.x - 2 && x < o.x + w + 2 && y >= o.y - 2 && y < o.y + h + 2
+                    });
+                    if dd <= 16 && map.in_bounds(x, y) && !clear_core[idx(x, y)] && !near_hard
                         && can_place(&map, &reserved, x, y, 1, 1, 0) && rng.chance(80)
                     {
                         objects.push(Placement { key: "tree", owner: GAIA, x, y });
