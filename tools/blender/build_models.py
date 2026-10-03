@@ -12,6 +12,17 @@ OUT = os.path.join(ROOT, "game", "assets", "models")
 MODULES = ["build_infantry", "build_vehicles", "build_aircraft", "build_ships", "build_buildings", "build_nature"]
 
 
+def make_lod(key, ratio=0.5):
+    """Decimate the model just built into <key>_lod1.glb (object names/parts kept)."""
+    import bpy
+    import eelib as L
+    for o in bpy.context.scene.objects:
+        if o.type == "MESH":
+            m = o.modifiers.new("Decimate", "DECIMATE")
+            m.ratio = ratio
+    L.export_glb(os.path.join(OUT, f"{key}_lod1.glb"))
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     only = None
@@ -42,6 +53,8 @@ def main():
                 continue
             t0 = time.time()
             mod.build(k, OUT, prev)
+            if mn in ("build_vehicles", "build_aircraft", "build_ships"):
+                make_lod(k)
             print(f"built {k} in {time.time() - t0:.1f}s", flush=True)
 
 

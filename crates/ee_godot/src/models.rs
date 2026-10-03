@@ -41,6 +41,9 @@ pub struct Model {
     /// selection ring radius in meters
     pub radius: f32,
     pub placeholder: bool,
+    /// far-distance version (no shadows)
+    pub lod1: Option<usize>,
+    pub shadows: bool,
 }
 
 pub struct Models {
@@ -82,6 +85,7 @@ fn surface_for(name: &str, def: &Def) -> Option<(i32, i32, f32, f32)> {
 pub fn visual_scale(def: &Def) -> f32 {
     match def.class() {
         Class::Citizen | Class::Infantry => 1.75,
+        Class::Vehicle => 0.88,
         _ => 1.0,
     }
 }
@@ -121,7 +125,16 @@ impl Models {
                 let m = self.load_model(&name, d).unwrap_or_else(|| self.placeholder(d));
                 self.list.push(m);
                 let i = self.list.len() - 1;
-                self.by_name.insert(name, i);
+                self.by_name.insert(name.clone(), i);
+                if let Some(mut lod) = self.load_model(&format!("{name}_lod1"), d) {
+                    lod.shadows = false;
+                    // keep the full model's bounds for selection rings/bars
+                    lod.radius = self.list[i].radius;
+                    lod.height = self.list[i].height;
+                    self.list.push(lod);
+                    let li = self.list.len() - 1;
+                    self.list[i].lod1 = Some(li);
+                }
                 i
             };
             self.by_def.push(idx);
@@ -251,7 +264,7 @@ impl Models {
         let mut root = root;
         root.queue_free();
         let scale = visual_scale(def);
-        Some(Model { parts, height: height * scale, radius: radius * scale, placeholder: false, scale })
+        Some(Model { parts, height: height * scale, radius: radius * scale, placeholder: false, scale, lod1: None, shadows: true })
     }
 
     fn placeholder(&self, def: &Def) -> Model {
@@ -365,7 +378,7 @@ impl Models {
             })
             .collect();
         let radius = if def.is_building() { sw.max(sh) as f32 * TILE * 0.6 } else { (r * 1.3).max(0.6) };
-        Model { parts, height, radius, placeholder: true, scale: 1.0 }
+        Model { parts, height, radius, placeholder: true, scale: 1.0, lod1: None, shadows: true }
     }
 }
 

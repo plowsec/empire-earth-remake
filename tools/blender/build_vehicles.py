@@ -134,6 +134,7 @@ def tank(pal):
             T.append(L.cyl("smoke", 0.06, 0.25, (sx * (1.15 + k * 0.04), -0.75 + k * 0.12, tz + 0.5), pal["olive_dark"], 8, (0.6, 0, 0)))
         T.append(L.box("team_panel", (0.03, 1.1, 0.32), (sx * 1.33, 0.4, tz + 0.3), pal["team"]))
     T.append(L.cyl("antenna", 0.012, 1.6, (-0.95, 1.3, tz + 1.3), pal["black"], 6))
+    T.append(L.box("team_roof", (1.6, 1.3, 0.04), (-0.05, 0.75, tz + 0.63), pal["team"]))
     return finish(body, T, "turret", (0, 0, tz))
 
 
@@ -150,6 +151,7 @@ def aa_vehicle(pal):
     T.append(L.cyl("mast", 0.06, 0.6, (0, 0.95, tz + 1.25), pal["gunmetal"], 8))
     T.append(L.box("radar", (1.3, 0.12, 0.5), (0, 0.95, tz + 1.6), pal["olive_dark"], 0.04, rot=(0.25, 0, 0)))
     T.append(L.sphere("track_radar", 0.32, (0, -0.85, tz + 1.05), pal["olive_dark"], 16, 10, (1.0, 0.7, 1.0)))
+    T.append(L.box("team_roof", (1.6, 1.5, 0.04), (0, 0.15, tz + 0.97), pal["team"]))
     return finish(body, T, "turret", (0, 0, tz))
 
 
@@ -166,6 +168,7 @@ def howitzer(pal):
     for sx in (1, -1):
         T.append(L.box("team_panel", (0.03, 1.6, 0.4), (sx * 1.26, 0.5, tz + 0.65), pal["team"]))
         T.append(L.box("door", (0.03, 0.7, 0.8), (sx * 1.26, 1.4, tz + 0.55), pal["olive_dark"], 0.01))
+    T.append(L.box("team_roof", (2.0, 2.2, 0.04), (0, 0.5, tz + 1.27), pal["team"]))
     # travel lock at the hull front (hull)
     body.append(L.box("travel_lock", (0.3, 0.15, 0.5), (0, -2.75, ht + 0.1), pal["olive_dark"], 0.02))
     return finish(body, T, "turret", (0, 0, tz))
@@ -200,6 +203,8 @@ def recon(pal):
     for sx in (1, -1):
         B.append(L.box("lamp", (0.18, 0.04, 0.12), (sx * 0.8, -L_ / 2 - 0.02, 1.08), pal["steel"]))
     B.append(L.box("spare", (0.6, 0.3, 0.6), (0, L_ / 2 + 0.12, 1.25), pal["rubber"], 0.12))
+    B.append(L.box("team_roof", (1.8, 1.6, 0.04), (0, 1.2, 1.97), pal["team"]))
+    B.append(L.box("team_hood", (1.4, 1.0, 0.04), (0, -1.75, 1.3), pal["team"]))
     # roof gun ring with shield + MG (turret)
     T = [
         L.cyl("ring", 0.42, 0.18, (0, 0.6, 2.04), pal["olive_dark"], 16),

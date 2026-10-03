@@ -309,6 +309,7 @@ func _process(dt: float) -> void:
 		_refresh_selection()
 		_refresh_card()
 	minimap_overlay.queue_redraw()
+	gv.set_show_all_bars(Input.is_key_pressed(KEY_ALT))
 	_update_hover()
 	if debug_label.visible:
 		debug_label.text = "%d fps | %s" % [Engine.get_frames_per_second(), gv.debug_line()]

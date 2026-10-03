@@ -12,6 +12,10 @@ var _frame := 0
 var start_cfg := {}
 var follow_action := false
 var warp_ticks := 0
+var stress := 0
+var _perf_t := 0.0
+var _perf_frames := 0
+var _perf_sim := 0.0
 var _follow_t := 0.0
 
 func _ready() -> void:
@@ -24,6 +28,7 @@ func _ready() -> void:
 		elif a.begins_with("--players="): start_cfg["players"] = int(a.substr(10))
 		elif a.begins_with("--speed="): start_cfg["speed"] = float(a.substr(8))
 		elif a.begins_with("--ai0"): start_cfg["ai_self"] = 1
+		elif a.begins_with("--stress="): stress = int(a.substr(9))
 		elif a == "--autotest":
 			var t = load("res://scripts/autotest.gd").new()
 			t.name = "AutoTest"
@@ -69,6 +74,22 @@ func start_match(cfg: Dictionary) -> void:
 	vfx.bind(game_view, rig)
 
 func _process(dt: float) -> void:
+	if stress > 0 and game_view.is_running():
+		var c: Vector3 = game_view.debug_spawn_battle(stress)
+		rig.focus(c, true)
+		rig.dist = 110.0
+		rig._dist_goal = 110.0
+		stress = -1
+	if stress == -1:
+		_perf_t += dt
+		_perf_frames += 1
+		_perf_sim += game_view.sim_stats()["sim_ms"]
+		if _perf_t >= 3.0:
+			var st: Dictionary = game_view.sim_stats()
+			print("PERF fps %.1f sim %.2f ms/frame units %d projectiles %d" % [_perf_frames / _perf_t, _perf_sim / _perf_frames, st["units"], st["projectiles"]])
+			_perf_t = 0.0
+			_perf_frames = 0
+			_perf_sim = 0.0
 	if warp_ticks > 0 and game_view.is_running():
 		game_view.warp(warp_ticks)
 		warp_ticks = 0

@@ -31,7 +31,10 @@ def drop_obj(ob):
     return ob
 
 
-def skin_body(name, joints, edges, radii, subdiv=2):
+DETAIL = {"subdiv": 1, "segs": 12}
+
+
+def skin_body(name, joints, edges, radii, subdiv=None):
     """joints: list of (x,y,z); edges: index pairs; radii: (rx, ry) per joint."""
     me = bpy.data.meshes.new(name)
     me.from_pydata([tuple(j) for j in joints], edges, [])
@@ -43,9 +46,11 @@ def skin_body(name, joints, edges, radii, subdiv=2):
     for i, r in enumerate(radii):
         sv[i].radius = r
     sv[0].use_root = True
-    ss = ob.modifiers.new("Subsurf", "SUBSURF")
-    ss.levels = subdiv
-    ss.render_levels = subdiv
+    sd = DETAIL["subdiv"] if subdiv is None else subdiv
+    if sd > 0:
+        ss = ob.modifiers.new("Subsurf", "SUBSURF")
+        ss.levels = sd
+        ss.render_levels = sd
     L.apply_all(ob)
     return ob
 
@@ -159,13 +164,14 @@ def human(pal, shirt, pants, skin, glove=None, reach_l=(0.0, -0.36, -0.02), reac
 
 def head_gear(pal, j, hat, hat_mat, band):
     hz = SHOULDER + 0.24
-    parts = [L.sphere("head", 0.108, (0, -0.012, hz), pal["skin"], 16, 10, (0.94, 1.02, 1.12))]
+    sg = DETAIL["segs"]
+    parts = [L.sphere("head", 0.108, (0, -0.012, hz), pal["skin"], sg, max(6, sg * 2 // 3), (0.94, 1.02, 1.12))]
     parts.append(L.box("nose", (0.028, 0.05, 0.05), (0, -0.112, hz - 0.012), pal["skin"], 0.012))
     if hat == "helmet":
-        parts.append(L.sphere("helmet", 0.138, (0, 0.006, hz + 0.04), hat_mat, 18, 10, (1.0, 1.08, 0.74)))
-        parts.append(L.cyl("rim", 0.146, 0.024, (0, 0.006, hz + 0.004), hat_mat, 18))
+        parts.append(L.sphere("helmet", 0.138, (0, 0.006, hz + 0.04), hat_mat, sg, max(6, sg * 2 // 3), (1.0, 1.08, 0.74)))
+        parts.append(L.cyl("rim", 0.146, 0.024, (0, 0.006, hz + 0.004), hat_mat, sg))
         if band:
-            parts.append(L.cyl("band", 0.141, 0.04, (0, 0.006, hz + 0.035), band, 18))
+            parts.append(L.cyl("band", 0.141, 0.04, (0, 0.006, hz + 0.035), band, sg))
         parts.append(L.box("strap", (0.2, 0.02, 0.02), (0, -0.03, hz - 0.08), pal["olive_dark"]))
     elif hat == "cap":
         parts.append(L.sphere("cap", 0.118, (0, 0.004, hz + 0.05), hat_mat, 16, 8, (1.0, 1.06, 0.66)))
@@ -181,13 +187,13 @@ def gear(pal, j, vest, belt, backpack, cross):
     # vest: a slightly inflated skin shell around the torso
     vj = [(0, 0.0, HIP + 0.08), (0, 0.005, HIP + 0.26), (0, 0.0, SHOULDER - 0.06)]
     vr = [(0.165, 0.128), (0.172, 0.13), (0.205, 0.14)]
-    v = skin_body("vest", vj, [(0, 1), (1, 2)], vr, 2)
+    v = skin_body("vest", vj, [(0, 1), (1, 2)], vr)
     v.data.materials.append(vest)
     parts.append(v)
     # collar
-    parts.append(L.cyl("collar", 0.085, 0.05, (0, 0, SHOULDER + 0.01), vest, 16))
+    parts.append(L.cyl("collar", 0.085, 0.05, (0, 0, SHOULDER + 0.01), vest, DETAIL["segs"]))
     if belt:
-        parts.append(L.cyl("belt", 0.158, 0.06, (0, 0.0, HIP + 0.0), belt, 20))
+        parts.append(L.cyl("belt", 0.158, 0.06, (0, 0.0, HIP + 0.0), belt, DETAIL["segs"]))
         for sx in (0.11, -0.11, 0.0):
             parts.append(L.box("pouch", (0.075, 0.05, 0.08), (sx, -0.15, HIP + 0.01), belt, 0.012))
     if backpack:
@@ -349,7 +355,15 @@ INFANTRY = ["citizen", "rifleman", "machine_gunner", "bazooka", "stinger", "snip
 
 
 def build(key, out_dir, preview_dir=None):
+    DETAIL.update(subdiv=1, segs=12)
     soldier(key)
     L.export_glb(f"{out_dir}/{key}.glb")
     if preview_dir:
         L.preview(f"{preview_dir}/{key}.png", 384, elev=14, azim=-32)
+    # far LOD: unsubdivided skin, coarse spheres
+    DETAIL.update(subdiv=0, segs=7)
+    L.NO_BEVEL[0] = True
+    soldier(key)
+    L.export_glb(f"{out_dir}/{key}_lod1.glb")
+    L.NO_BEVEL[0] = False
+    DETAIL.update(subdiv=1, segs=12)

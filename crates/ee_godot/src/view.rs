@@ -264,6 +264,13 @@ impl GameView {
     }
 
     #[func]
+    fn set_show_all_bars(&mut self, on: bool) {
+        if let Some(c) = self.client.as_mut() {
+            c.show_all_bars = on;
+        }
+    }
+
+    #[func]
     fn set_paused(&mut self, p: bool) {
         if let Some(c) = self.client.as_mut() {
             c.session.paused = p;
@@ -826,6 +833,69 @@ impl GameView {
             out.push(&d.to_variant());
         }
         out
+    }
+
+    /// Stress test: spawn `n` mixed units per side near the local player's base,
+    /// facing each other, and order them to attack-move. Returns the battle center.
+    #[func]
+    fn debug_spawn_battle(&mut self, n: i64) -> Vector3 {
+        let Some(c) = self.client.as_mut() else { return Vector3::ZERO };
+        let w = &mut c.session.world;
+        let (sx, sy) = w.starts[0];
+        let mix = ["rifleman", "rifleman", "machine_gunner", "bazooka", "tank", "rifleman", "mortar", "aa_vehicle", "at_gun", "medic"];
+        // find an open area on the island
+        let mut center = (sx, sy + 10);
+        'search: for r in (6..30).rev() {
+            for (dx, dy) in [(0, 1), (1, 0), (0, -1), (-1, 0)] {
+                let t = (sx + dx * r, sy + dy * r);
+                let ok = (-6..=6).all(|oy| (-10..=10).all(|ox| w.map.passable(t.0 + ox, t.1 + oy, ee_sim::defs::Layer::Land)));
+                if ok {
+                    center = t;
+                    break 'search;
+                }
+            }
+        }
+        let mut ids = [Vec::new(), Vec::new()];
+        for side in 0..2u8 {
+            let owner = side;
+            for k in 0..n as i32 {
+                let key = mix[(k as usize) % mix.len()];
+                let def = data().id(key);
+                let row = k / 40;
+                let col = k % 40;
+                let x = center.0 as i32 * 65536 + (col - 20) * 65536 * 45 / 100;
+                let y = center.1 as i32 * 65536 + (if side == 0 { -6 - row } else { 6 + row }) * 65536 * 45 / 100;
+                let p = ee_sim::fixed::FVec::new(ee_sim::fixed::Fx(x), ee_sim::fixed::Fx(y));
+                if w.map.passable_at(p, ee_sim::defs::Layer::Land) {
+                    ids[side as usize].push(w.spawn(def, owner, p));
+                }
+            }
+        }
+        let target = ee_sim::fixed::FVec::tile_center(center.0, center.1);
+        for side in 0..2u8 {
+            let cmd = ee_sim::command::Command {
+                player: side,
+                kind: CommandKind::Move { units: ids[side as usize].clone(), to: target, attack_move: true, queue: false },
+            };
+            w.apply_command(&cmd);
+        }
+        w.recount_pop();
+        let (x, z) = crate::client::to_world2(target);
+        Vector3::new(x, 0.0, z)
+    }
+
+    /// Wall-clock milliseconds the last frame's simulation took (perf HUD).
+    #[func]
+    fn sim_stats(&self) -> VarDictionary {
+        let mut d = dict();
+        let Some(c) = &self.client else { return d };
+        let w = c.world();
+        d.set("units", w.entities.iter().filter(|e| e.alive && e.owner != GAIA && data().def(e.def).is_unit()).count() as i64);
+        d.set("entities", w.entities.iter().filter(|e| e.alive).count() as i64);
+        d.set("projectiles", w.projectiles.len() as i64);
+        d.set("tick", w.tick as i64);
+        d.set("sim_ms", c.last_sim_ms);
+        d
     }
 
     /// Number of entities of `key` owned by the local player (tests/UI).

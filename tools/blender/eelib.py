@@ -242,7 +242,12 @@ def ellipse(cx, cz, rx, rz, y, n=16, flat_bottom=0.0):
 
 # ----------------------------------------------------------------------------- modifiers & ops
 
+NO_BEVEL = [False]
+
+
 def add_bevel(ob, width, segs=2, angle=40):
+    if NO_BEVEL[0]:
+        return None
     m = ob.modifiers.new("Bevel", "BEVEL")
     m.width = width
     m.segments = segs

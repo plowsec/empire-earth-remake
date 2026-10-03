@@ -118,6 +118,8 @@ pub struct Client {
     pub reveal: bool,
     shot_budget: i32,
     deco_batches: Vec<Batch>,
+    pub last_sim_ms: f64,
+    pub show_all_bars: bool,
 }
 
 pub struct StartOptions {
@@ -245,6 +247,8 @@ impl Client {
             reveal: opt.reveal,
             shot_budget: 0,
             deco_batches: Vec::new(),
+            last_sim_ms: 0.0,
+            show_all_bars: false,
         };
         c.build_decorations(&deco_models);
         c.session.world.config.reveal = opt.reveal;
@@ -265,7 +269,9 @@ impl Client {
 
     pub fn update(&mut self, dt: f64, cam: Option<&Gd<Camera3D>>) {
         self.time += dt;
+        let t0 = std::time::Instant::now();
         self.session.advance(dt);
+        self.last_sim_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let evs = std::mem::take(&mut self.session.event_log);
         self.shot_budget = 60;
         for e in &evs {
@@ -578,7 +584,8 @@ impl Client {
         let map = if stat { &mut self.static_batches } else { &mut self.batches };
         if !map.contains_key(&(model, part)) {
             let mesh: Gd<Mesh> = self.models.list[model].parts[part].mesh.clone();
-            let mut b = Batch::new(&mut self.root, &mesh, true, None);
+            let shadows = self.models.list[model].shadows;
+            let mut b = Batch::new(&mut self.root, &mesh, shadows, None);
             b.begin();
             map.insert((model, part), b);
         }
@@ -629,6 +636,8 @@ impl Client {
         let t = self.time as f32;
 
         // camera culling: only draw what's near the view
+        let cam_pos = cam.map(|c| c.get_global_position()).unwrap_or(Vector3::ZERO);
+        let lod_dist2 = 95.0f32 * 95.0;
         let (cull_c, cull_r) = match cam {
             Some(c) => {
                 let o = c.get_global_position();
@@ -743,7 +752,11 @@ impl Client {
                     turret_yaw = world_yaw - yaw;
                 }
             }
-            self.push_model(model, xf, color, custom, turret_yaw, false);
+            let draw_model = match self.models.list[model].lod1 {
+                Some(l) if (p - cam_pos).length_squared() > lod_dist2 => l,
+                _ => model,
+            };
+            self.push_model(draw_model, xf, color, custom, turret_yaw, false);
 
             // selection ring + health bar
             let w = &self.session.world;
@@ -763,7 +776,7 @@ impl Client {
                 self.ring_batch.push(&rxf, ring_col, [0.0; 4]);
             }
             let damaged = hp < maxhp;
-            if selected || (self.hover == id && d.is_unit()) || (damaged && d.is_unit() && owner == me) || (damaged && d.is_building()) || (!complete && d.is_building()) {
+            if selected || (self.hover == id && d.is_unit()) || (self.show_all_bars && damaged) || (damaged && d.is_building() && owner == me) || (!complete && d.is_building()) {
                 let h = self.models.list[model].height;
                 let bw = (r * 1.2).clamp(1.2, 4.5);
                 let bxf = Transform3D::new(Basis::from_scale(Vector3::new(bw, bw, bw)), Vector3::new(p.x, p.y + h + 0.8, p.z));

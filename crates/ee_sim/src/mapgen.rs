@@ -348,6 +348,7 @@ pub fn generate(p: &MapParams) -> GenResult {
         }
         let mines: &[(&'static str, i32, i32)] = &[
             ("gold_mine", 10, 15),
+            ("gold_mine", 14, 20),
             ("gold_mine", 18, 26),
             ("stone_mine", 10, 15),
             ("stone_mine", 20, 28),
