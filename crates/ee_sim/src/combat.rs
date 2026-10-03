@@ -60,12 +60,17 @@ pub fn find_target(w: &World, i: usize) -> Option<EntityId> {
         if !d.weapons.iter().any(|wp| weapon_hits(wp, od)) {
             return;
         }
+        // missiles can only be tracked with early warning radar (which sees them anywhere)
+        let missile = od.data.icbm;
+        if missile && !w.players[owner as usize].radar {
+            return;
+        }
         let dist = w.edge_dist(pos, o);
         if dist > scan {
             return;
         }
         let (tx, ty) = o.pos.tile();
-        if !w.visible(owner, tx, ty) {
+        if !missile && !w.visible(owner, tx, ty) {
             return;
         }
         // priority: armed units first, then other units, buildings last
@@ -272,7 +277,7 @@ impl World {
         self.shockwaves = waves;
     }
 
-    fn impact(&mut self, p: &Proj) {
+    pub(crate) fn impact(&mut self, p: &Proj) {
         self.events.push(SimEvent::Impact { pos: p.pos, dmg_type: p.dmg_type as u8, splash: p.splash, owner: p.owner });
         if p.dmg_type == crate::defs::DamageType::Nuclear && p.splash > Fx::ZERO {
             self.shockwaves.push(crate::world::Shockwave { pos: p.pos, radius: p.splash, age: 0,

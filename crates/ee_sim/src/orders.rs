@@ -341,6 +341,11 @@ pub fn apply(w: &mut World, c: &Command) {
             rebuild_farms(w, p, *building);
         }
         CommandKind::Unload { units, at } => {
+            for b in owned_buildings(w, p, units) {
+                if w.get(b).map_or(false, |e| w.def_of(e).data.garrison) {
+                    w.ungarrison(b);
+                }
+            }
             for id in owned_units(w, p, units) {
                 let e = w.get(id).unwrap();
                 if w.def_of(e).data.cargo > 0 {
@@ -366,6 +371,38 @@ pub fn apply(w: &mut World, c: &Command) {
                 w.kill(id, GAIA);
             }
             w.recount_pop();
+        }
+        CommandKind::Launch { building, at } => {
+            let Some(b) = w.get(*building) else { return };
+            if b.owner != p || !b.complete {
+                return;
+            }
+            let bpos = b.pos;
+            let Some(&m) = b.cargo.iter().find(|&&c| w.get(c).map_or(false, |e| w.def_of(e).data.icbm)) else {
+                w.events.push(crate::world::SimEvent::Notice { owner: p, text: "No missile ready" });
+                return;
+            };
+            if let Some(b) = w.get_mut(*building) {
+                b.cargo.retain(|&c| c != m);
+            }
+            let to = *at;
+            if let Some(e) = w.get_mut(m) {
+                e.inside = 0;
+                e.pos = bpos;
+                e.prev_pos = bpos;
+                e.sortie = Some(bpos);
+                e.order = Order::Strike { at: to };
+                e.goal = Some(to);
+                e.path = vec![to];
+                e.action = Action::Move;
+                e.facing = (to - bpos).normalized();
+            }
+            w.events.push(crate::world::SimEvent::MissileLaunch { id: m, owner: p, from: bpos, to });
+            for q in 0..w.players.len() {
+                if q as u8 != p && w.players[q].radar && !w.players[q].defeated {
+                    w.events.push(crate::world::SimEvent::Notice { owner: q as u8, text: "Nuclear launch detected!" });
+                }
+            }
         }
         CommandKind::Resign => {
             w.resign(p);
@@ -469,6 +506,8 @@ fn smart_target(w: &mut World, p: u8, units: &[EntityId], target: EntityId, queu
         } else if own && tdef.is_building() {
             if !t_complete && !d.builds.is_empty() {
                 Some(Order::Build { site: target })
+            } else if tdef.data.garrison && d.layer == Layer::Land && !(t_damaged && !d.builds.is_empty()) {
+                Some(Order::Board { transport: target })
             } else if tdef.data.walkable && d.gather_rate[0] > 0 {
                 Some(Order::Gather { node: target })
             } else if e.carry > 0 && tdef.data.dropsite.iter().any(|r| *r as u8 == e.carry_res) {

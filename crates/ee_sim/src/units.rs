@@ -71,7 +71,7 @@ impl World {
     fn update_inside(&mut self, i: usize) {
         let e = &self.entities[i];
         let d = data().def(e.def);
-        if d.class() != Class::Aircraft {
+        if d.class() != Class::Aircraft || d.data.icbm {
             return;
         }
         let max_fuel = d.fuel_ticks;
@@ -151,6 +151,7 @@ impl World {
             Order::ReturnToBase => self.behave_rtb(i),
             Order::Patrol { at } => self.behave_patrol(i, at),
             Order::Scout { idx } => self.behave_scout(i, idx),
+            Order::Strike { at } => self.behave_strike(i, at),
         }
     }
 
@@ -849,6 +850,43 @@ impl World {
         best.map(|b| (b.1, b.2))
     }
 
+    /// ICBM: straight to the target point, then detonate there.
+    fn behave_strike(&mut self, i: usize, at: FVec) {
+        let e = &self.entities[i];
+        if e.pos.within(at, Fx::from_ratio(60, 100)) {
+            let d = data().def(e.def);
+            let Some(wp) = d.weapons.first() else { return };
+            let p = crate::world::Proj {
+                owner: e.owner,
+                src: e.id,
+                target: 0,
+                pos: at,
+                aim: at,
+                start: at,
+                speed: Fx::ONE,
+                damage: wp.damage,
+                dmg_type: wp.dmg_type,
+                splash: wp.splash,
+                homing: false,
+                weapon: 0,
+                src_def: e.def,
+                vs_air: false,
+                id: self.next_proj,
+            };
+            self.next_proj = self.next_proj.wrapping_add(1);
+            let id = e.id;
+            self.impact(&p);
+            self.kill(id, crate::mapgen::GAIA);
+            return;
+        }
+        let e = &mut self.entities[i];
+        if e.goal.is_none() {
+            e.goal = Some(at);
+            e.path = vec![at];
+        }
+        e.action = Action::Move;
+    }
+
     // ------------------------------------------------------------------ transport
 
     fn behave_board(&mut self, i: usize, transport: EntityId) {
@@ -867,12 +905,33 @@ impl World {
         }
         let tpos = t.pos;
         let reach = td.radius + Fx::from_ratio(260, 100);
-        if e.pos.within(tpos, reach) {
+        let building = td.is_building();
+        let close = if building { self.edge_dist(e.pos, t) <= data().def(e.def).radius + Fx::from_ratio(120, 100) } else { e.pos.within(tpos, reach) };
+        if building && !close {
+            // walk up to any side of the fortress
+            if self.entities[i].goal.is_none() {
+                let rect = self.goal_rect_for(transport, Fx::ZERO);
+                self.set_goal(i, tpos, rect);
+                if self.entities[i].goal.is_none() {
+                    self.approach_direct(i, tpos);
+                }
+            }
+            self.entities[i].action = Action::Move;
+            if self.entities[i].stuck > 120 {
+                self.next_order(i);
+            }
+            return;
+        }
+        if close {
             let t = self.get_mut(transport).unwrap();
             t.cargo.push(id);
             let e = &mut self.entities[i];
             e.inside = transport;
             e.order = Order::Idle;
+            if building {
+                self.recount_pop();
+            }
+            let e = &mut self.entities[i];
             e.queue.clear();
             e.goal = None;
             e.path.clear();
@@ -1246,7 +1305,7 @@ impl World {
         }
 
         // aircraft keep a loose spacing so formations don't fly through each other
-        if layer == Layer::Air {
+        if layer == Layer::Air && !d.data.icbm {
             let mut push = FVec::ZERO;
             self.spatial.for_each(new_pos, radius.mul_int(4), |oid, slot| {
                 if oid == id {

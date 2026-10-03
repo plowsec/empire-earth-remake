@@ -48,7 +48,11 @@ impl World {
             ProdItem::Unit(u) => data().def(u).build_ticks,
             ProdItem::Tech(t) => data().techs[t as usize].research_ticks,
         };
-        if let ProdItem::Unit(_) = item {
+        if let ProdItem::Unit(u) = item {
+            // silos hold a limited number of missiles
+            if data().def(u).data.icbm && e.cargo.len() as i32 >= data().def(e.def).data.cargo {
+                return;
+            }
             let p = &self.players[owner as usize];
             // pop includes this unit already (see recount_pop)
             if p.pop > p.pop_cap {
@@ -100,6 +104,18 @@ impl World {
         };
         let id = self.spawn(u, owner, pos);
         self.players[owner as usize].stats.trained += 1;
+        if ud.data.icbm {
+            // stored in the silo until launched
+            if let Some(a) = self.get_mut(id) {
+                a.inside = bid;
+                a.home = bid;
+                a.action = Action::Landed;
+            }
+            if let Some(b) = self.get_mut(bid) {
+                b.cargo.push(id);
+            }
+            return;
+        }
         if ud.layer == Layer::Air {
             if let Some(a) = self.get_mut(id) {
                 a.home = bid;

@@ -63,8 +63,10 @@ pub enum ArmorClass {
     Ship = 5,
     Sub = 6,
     None = 7,
+    /// ballistic missiles: only interceptors can touch them
+    Missile = 8,
 }
-pub const NUM_ARMOR: usize = 8;
+pub const NUM_ARMOR: usize = 9;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DamageType {
@@ -79,8 +81,9 @@ pub enum DamageType {
     AirGun = 8,
     Missile = 9,
     Nuclear = 10,
+    Interceptor = 11,
 }
-pub const NUM_DMG: usize = 11;
+pub const NUM_DMG: usize = 12;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Layer {
@@ -188,6 +191,12 @@ pub struct UnitData {
     pub walkable: bool,
     /// can only be built adjacent to this building key (farms next to granaries)
     pub near: Option<String>,
+    /// buildings: garrisoned units are stored and don't count toward population
+    pub garrison: bool,
+    /// ballistic missile: flies to a point and detonates its first weapon there
+    pub icbm: bool,
+    /// early warning radar: detects missile launches, enables interceptors
+    pub radar: bool,
     /// aircraft that must rearm at an airport
     pub needs_airport: bool,
     /// can land aircraft
@@ -245,6 +254,9 @@ impl Default for UnitData {
             grows_into: None,
             grow_time: 0,
             plantable: false,
+            garrison: false,
+            icbm: false,
+            radar: false,
             regrow: 0,
             role: String::new(),
             model: String::new(),

@@ -30,6 +30,8 @@ pub enum Order {
     Patrol { at: FVec },
     /// loop the `patrol` waypoints around the island, engaging enemies met on the way
     Scout { idx: u8 },
+    /// ballistic missile in flight to `at`
+    Strike { at: FVec },
 }
 
 /// What the unit is visibly doing (drives animation on the client).

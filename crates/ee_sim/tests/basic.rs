@@ -803,3 +803,78 @@ fn builders_move_on_to_nearby_unfinished_buildings() {
     assert!(w.get(a).unwrap().complete);
     assert!(w.get(b).unwrap().progress > 0, "builder did not continue on the second site");
 }
+
+#[test]
+fn fortress_garrison_frees_population_and_releases_units() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let fort = w.spawn_static(data().id("fortress"), 0, (s.0 + 8, s.1 + 8), true);
+    let rifle = data().id("rifleman");
+    let ids: Vec<u32> = (0..10).map(|k| w.spawn(rifle, 0, FVec::tile_center(s.0 + 8 + k % 5, s.1 + 14 + k / 5))).collect();
+    w.recount_pop();
+    let before = w.players[0].pop;
+    run(&mut w, 300, vec![(0, Command { player: 0, kind: CommandKind::Target { units: ids.clone(), target: fort, queue: false } })]);
+    assert_eq!(w.get(fort).unwrap().cargo.len(), 10, "all riflemen garrisoned");
+    w.recount_pop();
+    assert_eq!(w.players[0].pop, before - 10);
+    w.apply_command(&Command { player: 0, kind: CommandKind::Unload { units: vec![fort], at: FVec::ZERO } });
+    run(&mut w, 2, vec![]);
+    assert!(ids.iter().all(|&u| w.get(u).unwrap().inside == 0));
+    assert_eq!(w.players[0].pop, before);
+    // garrison again, then the fortress falls: occupants survive
+    w.apply_command(&Command { player: 0, kind: CommandKind::Target { units: ids.clone(), target: fort, queue: false } });
+    run(&mut w, 300, vec![]);
+    w.kill(fort, 1);
+    assert!(ids.iter().all(|&u| w.get(u).map_or(false, |e| e.inside == 0)));
+}
+
+fn launch_setup(radar: bool) -> (World, u32, u32) {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    w.players[0].res = [9000; 5];
+    let (a, b) = (w.starts[0], w.starts[1]);
+    let silo = w.spawn_static(data().id("missile_silo"), 0, (a.0 + 8, a.1 + 8), true);
+    let icbm = data().id("icbm");
+    w.apply_command(&Command { player: 0, kind: CommandKind::Train { building: silo, def: icbm, count: 1 } });
+    w.get_mut(silo).unwrap().prod_progress = data().def(icbm).build_ticks - 1;
+    run(&mut w, 2, vec![]);
+    assert_eq!(w.get(silo).unwrap().cargo.len(), 1, "missile stored in silo");
+    let target = w.spawn_static(data().id("barracks"), 1, (b.0 + 6, b.1 + 6), true);
+    w.spawn_static(data().id("abm_site"), 1, (b.0 - 6, b.1 - 6), true);
+    if radar {
+        w.spawn_static(data().id("radar_station"), 1, (b.0 + 6, b.1 - 7), true);
+    }
+    w.recount_pop();
+    (w, silo, target)
+}
+
+#[test]
+fn icbm_flattens_its_target_without_missile_defense_radar() {
+    let (mut w, silo, target) = launch_setup(false);
+    let at = w.get(target).unwrap().pos;
+    w.apply_command(&Command { player: 0, kind: CommandKind::Launch { building: silo, at } });
+    run(&mut w, 20 * 40, vec![]);
+    assert!(w.get(target).is_none(), "barracks at ground zero destroyed");
+}
+
+#[test]
+fn abm_with_early_warning_radar_intercepts_the_icbm() {
+    let (mut w, silo, target) = launch_setup(true);
+    let at = w.get(target).unwrap().pos;
+    w.apply_command(&Command { player: 0, kind: CommandKind::Launch { building: silo, at } });
+    run(&mut w, 20 * 40, vec![]);
+    assert!(w.get(target).is_some(), "missile should have been shot down");
+}
+
+#[test]
+#[ignore]
+fn dbg_icbm() {
+    let (mut w, silo, target) = launch_setup(false);
+    let at = w.get(target).unwrap().pos;
+    let m = w.get(silo).unwrap().cargo[0];
+    w.apply_command(&Command { player: 0, kind: CommandKind::Launch { building: silo, at } });
+    for k in 0..30 {
+        if let Some(e) = w.get(m) { println!("{k} pos {:?} order {:?} goal {:?} inside {} alive", e.pos.tile(), e.order, e.goal.map(|g| g.tile()), e.inside); } else { println!("{k} missile gone"); break; }
+        run(&mut w, 20, vec![]);
+    }
+    println!("target {:?} at {:?}", w.get(target).map(|e| e.hp), at.tile());
+}

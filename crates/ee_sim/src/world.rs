@@ -102,6 +102,8 @@ pub struct Player {
     pub mods: Vec<UnitMods>,
     pub defeated: bool,
     pub stats: PlayerStats,
+    /// owns a working early warning radar
+    pub radar: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,6 +124,8 @@ pub enum SimEvent {
     /// command feedback for the issuing player's UI
     Notice { owner: u8, text: &'static str },
     PlayerDefeated { player: u8 },
+    /// an ICBM left its silo (clients with radar coverage raise the alarm)
+    MissileLaunch { id: EntityId, owner: u8, from: FVec, to: FVec },
     GameOver { winner_team: Option<u8> },
 }
 
@@ -215,6 +219,7 @@ impl World {
                 mods: vec![UnitMods::default(); d.defs.len()],
                 defeated: false,
                 stats: PlayerStats::default(),
+                radar: false,
             })
             .collect::<Vec<_>>();
         let np = players.len();
@@ -436,9 +441,14 @@ impl World {
             e.cargo.clear();
         }
         self.free.push(slot_of(id) as u32);
-        // anything inside dies with it (transport cargo, landed aircraft)
-        for c in cargo {
-            self.kill(c, killer_owner);
+        // anything inside dies with it (transport cargo, landed aircraft);
+        // a fallen fortress lets its garrison out instead
+        if d.data.garrison {
+            self.release(&cargo, tile, d.size());
+        } else {
+            for c in cargo {
+                self.kill(c, killer_owner);
+            }
         }
         if d.is_resource() {
             self.events.push(SimEvent::ResourceDepleted { id, pos });
@@ -484,15 +494,23 @@ impl World {
         for p in &mut self.players {
             p.pop = 0;
             p.pop_cap = 0;
+            p.radar = false;
         }
         for e in &self.entities {
             if !e.alive || e.owner == GAIA {
                 continue;
             }
             let dd = d.def(e.def);
+            // garrisoned in a fortress: stored, no upkeep
+            let stored = e.inside != 0 && self.get(e.inside).map_or(false, |b| d.def(b.def).data.garrison);
             let Some(p) = self.players.get_mut(e.owner as usize) else { continue };
+            if dd.data.radar && e.complete {
+                p.radar = true;
+            }
             if dd.is_unit() {
-                p.pop += dd.data.pop;
+                if !stored {
+                    p.pop += dd.data.pop;
+                }
             } else if dd.is_building() && e.complete {
                 p.pop_cap += dd.data.provides_pop;
             }
@@ -960,6 +978,50 @@ impl World {
         }
         found.sort();
         found.into_iter().map(|f| (f.1, f.2)).collect()
+    }
+
+    /// Put stored units back on the map around a footprint.
+    fn release(&mut self, units: &[EntityId], tile: (i32, i32), size: (i32, i32)) {
+        let mut ring = 1;
+        let mut spots: Vec<(i32, i32)> = Vec::new();
+        while spots.len() < units.len() && ring < 12 {
+            for y in tile.1 - ring..tile.1 + size.1 + ring {
+                for x in tile.0 - ring..tile.0 + size.0 + ring {
+                    let edge = x == tile.0 - ring || x == tile.0 + size.0 + ring - 1 || y == tile.1 - ring || y == tile.1 + size.1 + ring - 1;
+                    if edge && self.map.passable(x, y, Layer::Land) {
+                        spots.push((x, y));
+                    }
+                }
+            }
+            ring += 1;
+        }
+        for (k, &u) in units.iter().enumerate() {
+            let p = spots.get(k % spots.len().max(1)).map(|&(x, y)| FVec::tile_center(x, y));
+            if let (Some(p), Some(e)) = (p, self.get_mut(u)) {
+                e.inside = 0;
+                e.pos = p;
+                e.prev_pos = p;
+                e.order = Order::Idle;
+                e.action = Action::Idle;
+                e.goal = None;
+                e.path.clear();
+            }
+        }
+        self.recount_pop();
+    }
+
+    /// Empty a garrison building; units walk to its rally point if it has one.
+    pub fn ungarrison(&mut self, bid: EntityId) {
+        let Some(b) = self.get(bid) else { return };
+        let cargo = b.cargo.clone();
+        let (tile, size, rally) = (b.tile, data().def(b.def).size(), b.rally);
+        if let Some(b) = self.get_mut(bid) {
+            b.cargo.clear();
+        }
+        self.release(&cargo, tile, size);
+        if let Some(r) = rally {
+            crate::orders::move_group(self, &cargo, r, false, false);
+        }
     }
 
     /// A free tile next to a footprint where a unit of `layer` can appear.
