@@ -745,3 +745,30 @@ fn formations_put_armor_in_front_and_artillery_behind() {
     tiles.dedup();
     assert_eq!(tiles.len(), slots.len(), "distinct slots");
 }
+
+#[test]
+fn ships_keep_a_wide_berth_after_a_group_move() {
+    let mut w = World::new(MatchConfig::skirmish(3, 2));
+    // open sea: a tile far from every island
+    let mut sea = None;
+    'f: for y in (10..w.map.h - 10).step_by(3) {
+        for x in (10..w.map.w - 10).step_by(3) {
+            if (-8..=8).all(|d: i32| w.map.passable(x + d, y, ee_sim::defs::Layer::Water) && w.map.passable(x, y + d, ee_sim::defs::Layer::Water)) {
+                sea = Some((x, y));
+                break 'f;
+            }
+        }
+    }
+    let (sx, sy) = sea.expect("open sea");
+    let frig = data().id("frigate");
+    let ids: Vec<u32> = (0..6).map(|k| w.spawn(frig, 0, FVec::tile_center(sx + k % 3, sy + k / 3))).collect();
+    let to = FVec::tile_center(sx + 4, sy + 4);
+    run(&mut w, 400, vec![(0, Command { player: 0, kind: CommandKind::Move { units: ids.clone(), to, attack_move: false, queue: false } })]);
+    let r = data().def(frig).radius;
+    for a in 0..ids.len() {
+        for b in a + 1..ids.len() {
+            let (pa, pb) = (w.get(ids[a]).unwrap().pos, w.get(ids[b]).unwrap().pos);
+            assert!(!pa.within(pb, r.mul_int(3)), "frigates {a} and {b} too close");
+        }
+    }
+}

@@ -1203,7 +1203,7 @@ impl World {
         // aircraft keep a loose spacing so formations don't fly through each other
         if layer == Layer::Air {
             let mut push = FVec::ZERO;
-            self.spatial.for_each(new_pos, radius.mul_int(3), |oid, slot| {
+            self.spatial.for_each(new_pos, radius.mul_int(4), |oid, slot| {
                 if oid == id {
                     return;
                 }
@@ -1212,7 +1212,8 @@ impl World {
                 if od.layer != Layer::Air || !o.on_map() {
                     return;
                 }
-                let rs = Fx((radius + od.radius).0 * 3 / 2);
+                // models are far bigger than their hit radius: keep ~2.5x apart
+                let rs = Fx((radius + od.radius).0 * 5 / 2);
                 let delta = new_pos - o.pos;
                 let d2 = delta.len2_raw();
                 if d2 >= rs.0 as i64 * rs.0 as i64 {
@@ -1230,6 +1231,41 @@ impl World {
                 let lim = speed.mul(Fx::from_ratio(1, 3)).max(Fx::from_ratio(2, 100));
                 let pl = push.len();
                 new_pos += if pl > lim { push.with_len(lim) } else { push };
+            }
+        }
+        // ships keep a wide berth (their hulls are much longer than the hit radius)
+        if layer == Layer::Water {
+            let mut push = FVec::ZERO;
+            self.spatial.for_each(new_pos, radius.mul_int(3) + Fx::ONE, |oid, slot| {
+                if oid == id {
+                    return;
+                }
+                let o = &self.entities[slot];
+                let od = data().def(o.def);
+                if od.layer != Layer::Water || !o.on_map() {
+                    return;
+                }
+                let rs = Fx((radius + od.radius).0 * 2);
+                let delta = new_pos - o.pos;
+                let d2 = delta.len2_raw();
+                if d2 >= rs.0 as i64 * rs.0 as i64 {
+                    return;
+                }
+                let dir = if d2 == 0 {
+                    if id > oid { FVec::new(Fx::ONE, Fx::ZERO) } else { FVec::new(-Fx::ONE, Fx::ZERO) }
+                } else {
+                    delta.with_len(Fx::ONE)
+                };
+                let dist = Fx(crate::fixed::isqrt_u64(d2 as u64) as i32);
+                push += dir.scale((rs - dist).mul(Fx::from_ratio(1, 8)));
+            });
+            if push.len2_raw() > 0 {
+                let lim = speed.mul(Fx::from_ratio(1, 3)).max(Fx::from_ratio(2, 100));
+                let pl = push.len();
+                let cand = new_pos + if pl > lim { push.with_len(lim) } else { push };
+                if self.map.passable_at(cand, layer) {
+                    new_pos = cand;
+                }
             }
         }
         // separation for ground and naval units

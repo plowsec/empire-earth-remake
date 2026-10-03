@@ -389,7 +389,13 @@ pub fn move_group(w: &mut World, units: &[EntityId], to: FVec, attack_move: bool
         }
         // largest radius sets spacing
         let maxr = group.iter().map(|&id| w.def_of(w.get(id).unwrap()).radius).max().unwrap_or(Fx::HALF);
-        let spacing = (maxr.mul_int(2) + Fx::from_ratio(30, 100)).max(Fx::from_ratio(70, 100));
+        let spacing = match layer {
+            // hulls and airframes look much bigger than their hit radius
+            Layer::Water => maxr.mul_int(4) + Fx::from_ratio(50, 100),
+            Layer::Air => maxr.mul_int(5),
+            _ => maxr.mul_int(2) + Fx::from_ratio(30, 100),
+        }
+        .max(Fx::from_ratio(70, 100));
         // order units by distance to target so the closest take the front slots
         let mut sorted: Vec<(i64, EntityId)> =
             group.iter().map(|&id| (w.get(id).unwrap().pos.dist2_raw(to), id)).collect();
