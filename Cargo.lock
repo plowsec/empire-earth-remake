@@ -21,6 +21,7 @@ dependencies = [
 name = "ee_ai"
 version = "0.1.0"
 dependencies = [
+ "ee_net",
  "ee_sim",
 ]
 
@@ -47,7 +48,6 @@ dependencies = [
 name = "ee_net"
 version = "0.1.0"
 dependencies = [
- "ee_ai",
  "ee_sim",
  "serde",
 ]

@@ -799,7 +799,7 @@ impl World {
                         continue;
                     }
                     // spread workers: skip crowded nodes
-                    let cap = if dd.size() == (1, 1) { 2 } else { 6 };
+                    let cap = if dd.size() == (1, 1) { 2 } else { 9 };
                     if e.gatherers >= cap {
                         continue;
                     }

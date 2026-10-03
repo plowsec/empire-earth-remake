@@ -16,6 +16,10 @@ pub trait Controller: Send {
     fn player(&self) -> u8;
     /// Called once per tick before the tick executes. Return commands to issue.
     fn think(&mut self, world: &World) -> Vec<CommandKind>;
+    /// Human-readable internal state for debugging/telemetry.
+    fn debug(&self) -> String {
+        String::new()
+    }
 }
 
 /// Network seam. A transport carries each peer's per-tick command bundles.
@@ -187,6 +191,10 @@ impl Session {
     pub fn alpha(&self) -> f32 {
         let step = 1.0 / TICKS_PER_SEC as f64;
         (self.accumulator / step).clamp(0.0, 1.0) as f32
+    }
+
+    pub fn controller_debug(&self) -> Vec<String> {
+        self.controllers.iter().map(|c| format!("P{}: {}", c.player(), c.debug())).collect()
     }
 
     pub fn make_replay(&self) -> Replay {

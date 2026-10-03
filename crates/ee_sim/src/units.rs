@@ -651,7 +651,7 @@ impl World {
             return;
         }
         let tpos = t.pos;
-        let reach = td.radius + Fx::from_ratio(150, 100);
+        let reach = td.radius + Fx::from_ratio(260, 100);
         if e.pos.within(tpos, reach) {
             let t = self.get_mut(transport).unwrap();
             t.cargo.push(id);
@@ -1108,10 +1108,11 @@ impl World {
                 e.stuck += 2;
                 if e.stuck == 40 || e.stuck == 120 {
                     // replan around whatever is in the way
-                    let g = e.goal.unwrap();
-                    e.path.clear();
-                    e.flow = None;
-                    self.set_goal(i, g, None);
+                    if let Some(g) = e.goal {
+                        e.path.clear();
+                        e.flow = None;
+                        self.set_goal(i, g, None);
+                    }
                 } else if e.stuck > 200 {
                     let e = &mut self.entities[i];
                     e.goal = None;
