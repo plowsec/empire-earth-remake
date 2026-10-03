@@ -178,6 +178,13 @@ impl Models {
             _ => 0.12,
         };
         m.set_shader_parameter("wear", &(wear as f32).to_variant());
+        let (team_sat, weathering) = match def.class() {
+            Class::Building => (0.62f32, 1.0f32),
+            Class::Vehicle | Class::Ship | Class::Aircraft => (0.72, 0.35),
+            _ => (0.85, 0.0),
+        };
+        m.set_shader_parameter("team_sat", &team_sat.to_variant());
+        m.set_shader_parameter("weathering", &weathering.to_variant());
         if def.is_resource() {
             if let Some((tex, size)) = &self.fog {
                 m.set_shader_parameter("use_world_fog", &true.to_variant());

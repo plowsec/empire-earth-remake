@@ -22,6 +22,8 @@ uniform float emission_energy = 0.0;
 uniform int anim_mode = 0;          // 0 rigid, 1 infantry, 2 foliage sway, 3 water bob
 uniform float model_height = 2.0;   // for construction clipping
 uniform float wear = 0.25;          // grime amount
+uniform float team_sat = 0.85;      // how saturated the player color is painted
+uniform float weathering = 0.0;     // rain streaks + bleached highlights (buildings)
 // shared tileable surface library, sampled triplanar in model space
 uniform int surface_kind = -1;      // -1 none
 uniform int surface_mode = 0;       // 0: detail (modulate brightness), 1: color (use texture color, tinted)
@@ -147,7 +149,8 @@ void fragment() {
 	base *= mix(vec3(1.0), v_team, tint_by_color);
 	// team color: keep the surface's shading, replace hue
 	float lum = dot(base, vec3(0.299, 0.587, 0.114));
-	vec3 team = v_team * clamp(0.32 + lum * 0.85, 0.3, 1.0);
+	vec3 tcol = mix(vec3(dot(v_team, vec3(0.299, 0.587, 0.114))), v_team, team_sat);
+	vec3 team = tcol * clamp(0.28 + lum * 0.75, 0.26, 0.85);
 	base = mix(base, team, team_mask);
 
 	float srough = roughness;
@@ -184,6 +187,20 @@ void fragment() {
 	float n = texture(detail_noise, v_local.xz * 0.65 + v_local.yy * 0.12).r;
 	float grime = (1.0 - smoothstep(0.0, 0.35, v_height01)) * 0.5 + (n - 0.35) * 0.65;
 	base *= 1.0 - clamp(grime, 0.0, 1.0) * wear;
+	if (weathering > 0.0) {
+		// vertical rain streaks running down walls
+		float st = texture(detail_noise, vec2(v_local.x * 1.9 + v_local.z * 1.4, v_local.y * 0.07)).r;
+		float wall = 1.0 - abs(normalize(v_onormal).y);
+		base *= 1.0 - smoothstep(0.45, 0.8, st) * 0.42 * wall * weathering;
+		// patchy dirt and moss low on walls
+		float patchy = texture(detail_noise, v_local.xz * 0.21 + v_local.yy * 0.05).r;
+		float low = 1.0 - smoothstep(0.0, 0.5, v_height01);
+		base = mix(base, base * vec3(0.72, 0.7, 0.6), smoothstep(0.45, 0.75, patchy) * low * weathering);
+		// paint never stays pristine: compress bright albedo, slight desaturation
+		base = base / (1.0 + base * 0.95 * weathering);
+		float l3 = dot(base, vec3(0.299, 0.587, 0.114));
+		base = mix(vec3(l3), base, 1.0 - 0.18 * weathering);
+	}
 
 	float flags = v_custom.w;
 	int fl = int(round(flags));
@@ -227,6 +244,17 @@ void fragment() {
 		vec2 fog = texture(fog_tex, v_world.xz / map_size).rg;
 		float l2 = dot(base, vec3(0.299, 0.587, 0.114));
 		base = mix(mix(vec3(l2), base, 0.35) * 0.42, base, fog.r) * fog.g;
+	}
+	if (anim_mode == 2 && surface_kind < 0) {
+		// foliage: soften faceted crowns toward a domed normal, vary leaf color,
+		// let light through the canopy
+		vec3 up = normalize((VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+		NORMAL = normalize(mix(NORMAL, up, 0.45));
+		float lv = texture(detail_noise, v_local.xz * 1.3 + v_local.yy * 0.9).r;
+		base *= mix(0.72, 1.12, lv);
+		base = mix(base, base * vec3(1.08, 1.0, 0.8), smoothstep(0.6, 0.9, lv) * 0.4);
+		BACKLIGHT = base * 0.6;
+		srough = 0.9;
 	}
 	ALBEDO = base;
 	ROUGHNESS = srough;

@@ -99,7 +99,11 @@ void fragment() {
 	rough /= max(total, 1e-4);
 
 	// large-scale color variation so fields don't look uniform
-	col *= mix(0.86, 1.10, mn2);
+	col *= mix(0.8, 1.08, mn2);
+	// worn ground: dry, desaturated patches break up the uniform fields
+	float dry = smoothstep(0.35, 0.7, texture(macro_noise, v_world.xz * 0.031).r);
+	float cl = dot(col, vec3(0.299, 0.587, 0.114));
+	col = mix(col, mix(vec3(cl), col, 0.55) * vec3(1.06, 1.0, 0.9), dry * 0.35);
 	col = mix(col, col * vec3(1.05, 1.0, 0.86), smoothstep(0.55, 0.8, mn) * 0.5);
 
 	// wet sand darkening near the waterline

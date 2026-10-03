@@ -34,33 +34,50 @@ def tree(pal):
         P.append(L.cyl("branch", 0.1, 2.0, (math.cos(a) * 0.6, math.sin(a) * 0.6, 3.6), pal["bark"], 6, (0.9 * math.sin(a), -0.9 * math.cos(a), 0), r2=0.05))
     # Broken, asymmetric branch clusters leave gaps through the canopy.
     # Smaller angular lobes avoid the old six overlapping spherical crowns.
-    for i in range(17):
+    for i in range(24):
         a = i * 2.399
-        r = rnd.uniform(0.8, 2.1)
-        z = rnd.uniform(4.3, 6.8)
+        r = rnd.uniform(0.7, 2.3)
+        z = rnd.uniform(4.1, 7.0) - r * 0.25
         x, y = math.cos(a) * r, math.sin(a) * r
         end = Vector((x, y, z))
         start = Vector((0, 0, 3.0 + i % 3 * 0.45))
         branch = L.cyl("branch", 0.08, (end-start).length, (start+end)/2, pal["bark"], 6, r2=0.025)
         branch.rotation_euler = (end-start).to_track_quat("Z", "Y").to_euler()
         P.append(branch)
-        for j in range(2):
-            radius = rnd.uniform(0.65, 1.05)
-            pos = (x + rnd.uniform(-0.45, 0.45), y + rnd.uniform(-0.45, 0.45), z + j * 0.45)
-            crown = L.ico("leaves", radius, pos, pal["leaf_light"] if i % 4 == 0 else pal["leaf"], 1, (1.0, 0.8, 0.7))
-            displace(crown, radius * 0.5, 2.0 / radius, i * 2 + j)
+        for j in range(3):
+            radius = rnd.uniform(0.5, 0.85)
+            pos = (x + rnd.uniform(-0.55, 0.55), y + rnd.uniform(-0.55, 0.55), z + rnd.uniform(-0.2, 0.5))
+            crown = L.ico("leaves", radius, pos, pal["leaf_light"] if (i + j) % 5 == 0 else pal["leaf"], 2, (1.0, 0.85, 0.62))
+            displace(crown, radius * 0.55, 2.6 / radius, i * 3 + j)
             P.append(crown)
     ob = L.join(P, "body")
-    L.smooth(ob, 35)
+    # soft shading: clusters read as foliage masses, not faceted gems
+    L.smooth(ob, 85)
     return [ob]
 
 
 def tree_pine(pal):
     P = [L.cyl("trunk", 0.25, 3.0, (0, 0, 1.5), pal["bark"], 8, r2=0.16)]
-    tiers = [(1.8, 2.4, 2.4), (3.4, 2.0, 2.2), (4.9, 1.6, 2.0), (6.3, 1.15, 1.8), (7.5, 0.7, 1.5)]
-    for i, (z, r, h) in enumerate(tiers):
-        c = L.cyl("tier", r, h, (0, 0, z + h / 2), pal["pine"], 12, r2=0.05)
-        displace(c, 0.18, 1.4, i + 10)
+    # many thin, droopy, ragged tiers instead of a few stacked cones
+    n = 9
+    for i in range(n):
+        t = i / (n - 1)
+        z = 1.6 + t * 6.4
+        r = 2.5 * (1.0 - t) ** 0.9 + 0.35
+        h = 1.5 - t * 0.5
+        c = L.cyl("tier", r, h, (0, 0, z + h / 2), pal["pine"], 18, r2=0.08)
+        L.apply_all(c)
+        rnd = random.Random(40 + i)
+        for v in c.data.vertices:
+            if v.co.z < z + h * 0.3:
+                # ragged, drooping branch tips around the rim
+                rr = math.hypot(v.co.x, v.co.y)
+                if rr > r * 0.7:
+                    k = rnd.uniform(0.86, 1.18)
+                    v.co.x *= k
+                    v.co.y *= k
+                    v.co.z -= (k - 0.86) * 0.7
+        displace(c, 0.08, 1.7, i + 10)
         P.append(c)
     ob = L.join(P, "body")
     L.smooth(ob, 60)
