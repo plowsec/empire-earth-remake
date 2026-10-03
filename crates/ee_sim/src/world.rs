@@ -1005,6 +1005,68 @@ impl World {
         found.into_iter().map(|f| (f.1, f.2)).collect()
     }
 
+    /// Would a building at `tile` leave the ground around it connected? False when the
+    /// footprint would cut walkable land apart (sealing units into a courtyard) or sits
+    /// in an already-enclosed pocket. Walkable buildings (farms) never block.
+    pub fn keeps_paths(&self, def: DefId, tile: (i32, i32)) -> bool {
+        let d = data().def(def);
+        if d.data.walkable || d.data.plantable {
+            return true;
+        }
+        let (sw, sh) = d.size();
+        let (x0, y0) = tile;
+        let m = &self.map;
+        let inside = |x: i32, y: i32| x >= x0 && x < x0 + sw && y >= y0 && y < y0 + sh;
+        let mut ring: Vec<usize> = Vec::new();
+        for y in y0 - 1..=y0 + sh {
+            for x in x0 - 1..=x0 + sw {
+                if (x == x0 - 1 || x == x0 + sw || y == y0 - 1 || y == y0 + sh)
+                    && m.in_bounds(x, y) && m.pass[m.idx(x, y)] & crate::map::PASS_LAND != 0 {
+                    ring.push(m.idx(x, y));
+                }
+            }
+        }
+        let Some(&start) = ring.first() else { return d.data.coastal };
+        // flood over current passability (buildings/trees block), footprint blocked
+        let reach = |pass: &[u8], cap: usize| -> (Vec<bool>, usize) {
+            let n = (m.w * m.h) as usize;
+            let mut seen = vec![false; n];
+            let mut stack = vec![start];
+            seen[start] = true;
+            let mut count = 1;
+            while let Some(i) = stack.pop() {
+                if count >= cap {
+                    break;
+                }
+                let (x, y) = ((i as i32) % m.w, (i as i32) / m.w);
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if !m.in_bounds(nx, ny) || inside(nx, ny) {
+                        continue;
+                    }
+                    let j = m.idx(nx, ny);
+                    if !seen[j] && pass[j] & crate::map::PASS_LAND != 0 {
+                        seen[j] = true;
+                        count += 1;
+                        stack.push(j);
+                    }
+                }
+            }
+            (seen, count)
+        };
+        // the ring must stay one piece: search until every ring tile is found
+        let (seen, count) = reach(&m.pass, 6000);
+        if !ring.iter().all(|&r| seen[r]) {
+            return false;
+        }
+        if count >= 6000 {
+            return true;
+        }
+        // small region: OK on a small island, not when walls cut it off from more land
+        let (_, natural) = reach(&m.base_pass, count * 2 + 20);
+        natural <= count * 2 + 20 - 1
+    }
+
     /// Put stored units back on the map around a footprint.
     fn release(&mut self, units: &[EntityId], tile: (i32, i32), size: (i32, i32)) {
         let mut ring = 1;

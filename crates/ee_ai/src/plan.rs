@@ -198,7 +198,7 @@ impl Ai {
             for k in 0..8 {
                 let (c, s) = ee_sim::mapgen::sincos_deg((start + k) * 45);
                 let (cx, cy) = (bx + c * r / 1024, by + s * r / 1024);
-                let tiles: Vec<(i32, i32)> = (-1..=1).flat_map(|dy| (-1..=1).map(move |dx| (cx + dx, cy + dy))).filter(|&t| w.can_place(self.player, sap, t).is_ok()).collect();
+                let tiles: Vec<(i32, i32)> = (-1..=1).flat_map(|dy| (-1..=1).map(move |dx| (cx + dx, cy + dy))).filter(|&t| self.site_ok(w, sap, t)).collect();
                 if tiles.len() >= 6 {
                     let workers: Vec<EntityId> = v.gatherers[ee_sim::defs::Res::Wood as usize].iter().take(2).copied().collect();
                     let workers = if workers.is_empty() { v.citizens.iter().take(2).copied().collect() } else { workers };
@@ -257,7 +257,7 @@ impl Ai {
                     (gx - 3, gy - 1), (gx + 3, gy + 1), (gx - 1, gy - 3), (gx + 1, gy + 3),
                 ];
                 for c in cands {
-                    if w.can_place(p, def, c).is_ok() {
+                    if self.site_ok(w, def, c) {
                         return Some(c);
                     }
                 }
@@ -305,7 +305,7 @@ impl Ai {
                     let (c, s) = ee_sim::mapgen::sincos_deg(ang);
                     let x = cx + c * r / 1024 - sw / 2;
                     let y = cy + s * r / 1024 - sh / 2;
-                    if w.can_place(p, def, (x, y)).is_ok() && self.margin_clear(w, x, y, sw, sh) && self.reachable_by_land(w, x, y, sw, sh) {
+                    if self.site_ok(w, def, (x, y)) && self.margin_clear(w, x, y, sw, sh) && self.reachable_by_land(w, x, y, sw, sh) {
                         return Some((x, y));
                     }
                 }
@@ -326,7 +326,7 @@ impl Ai {
                 let (c, s) = ee_sim::mapgen::sincos_deg(ang);
                 let x = bx + c * r / 1024 - 1;
                 let y = by + s * r / 1024 - 1;
-                if w.can_place(self.player, def, (x, y)).is_err() || !self.margin_clear(w, x, y, 3, 3) {
+                if !self.site_ok(w, def, (x, y)) || !self.margin_clear(w, x, y, 3, 3) {
                     continue;
                 }
                 let mut free = 0;
@@ -371,7 +371,7 @@ impl Ai {
             }
             for (ox, oy) in [(3, 0), (-4, 0), (0, 3), (0, -4), (3, 3), (-4, -4)] {
                 let t = (mx + ox, my + oy);
-                if w.can_place(self.player, def, t).is_ok() && self.margin_clear(w, t.0, t.1, 3, 3) {
+                if self.site_ok(w, def, t) && self.margin_clear(w, t.0, t.1, 3, 3) {
                     if best.map_or(true, |(bd, _)| dist < bd) {
                         best = Some((dist, t));
                     }
@@ -380,6 +380,11 @@ impl Ai {
             }
         }
         best.map(|b| b.1)
+    }
+
+    /// Placeable, and it won't wall units in (see `World::keeps_paths`).
+    pub(crate) fn site_ok(&self, w: &World, def: DefId, t: (i32, i32)) -> bool {
+        w.can_place(self.player, def, t).is_ok() && w.keeps_paths(def, t)
     }
 
     fn margin_clear(&self, w: &World, x: i32, y: i32, sw: i32, sh: i32) -> bool {
@@ -438,7 +443,7 @@ impl Ai {
                     && self.island_at(w, (x + sw / 2, y - 1)) != Some(self.home_island) && self.island_at(w, (x - 1, y + sh)) != Some(self.home_island) {
                     continue;
                 }
-                if w.can_place(p, def, (x, y)).is_ok() && self.deep_water_near(w, x, y, sw, sh) && self.reachable_by_land(w, x, y, sw, sh) {
+                if self.site_ok(w, def, (x, y)) && self.deep_water_near(w, x, y, sw, sh) && self.reachable_by_land(w, x, y, sw, sh) {
                     best = Some((dist, (x, y)));
                 }
             }
@@ -577,7 +582,7 @@ impl Ai {
             c.food == 0 || pl.res[0] - c.food >= 100 || v.citizens.len() >= cit_target
         };
 
-        let mut reserve = [0i32; 5];
+        let mut reserve = self.nuke_reserve;
         let mut nuclear_queued = false;
         for (bkey, mix) in [("airport", &air), ("naval_yard", &navy), ("tank_factory", &land), ("barracks", &land)] {
             let Some(bs) = v.buildings.get(&id(bkey)) else { continue };
@@ -877,7 +882,7 @@ impl Ai {
         for &building in v.buildings.get(&d.id("granary")).map(Vec::as_slice).unwrap_or(&[]) {
             let (x, y) = w.get(building).unwrap().tile;
             if [(-3, 0), (3, 0), (0, -3), (0, 3), (-3, -3), (3, -3), (-3, 3), (3, 3)]
-                .iter().any(|&(dx, dy)| w.can_place(self.player, farm, (x + dx, y + dy)).is_ok()) {
+                .iter().any(|&(dx, dy)| self.site_ok(w, farm, (x + dx, y + dy))) {
                 out.push(CommandKind::RebuildFarms { building });
                 self.last_fields_rebuild = Some(w.tick);
                 break;

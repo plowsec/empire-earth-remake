@@ -128,7 +128,7 @@ impl Ai {
             for k in 0..16 {
                 let (c, s) = ee_sim::mapgen::sincos_deg(k * 22);
                 let t = (mine.0 + c * r / 1024 - 1, mine.1 + s * r / 1024 - 1);
-                if w.can_place(self.player, def, t).is_ok() && (isl.is_none() || self.island_at(w, t) == isl) {
+                if self.site_ok(w, def, t) && (isl.is_none() || self.island_at(w, t) == isl) {
                     return Some(t);
                 }
             }
@@ -146,7 +146,7 @@ impl Ai {
             for k in 0..12 {
                 let (c, s) = ee_sim::mapgen::sincos_deg(k * 30 + 15);
                 let t = (cx + c * r / 1024 - sw / 2, cy + s * r / 1024 - sh / 2);
-                if w.can_place(self.player, def, t).is_ok() && self.island_at(w, t) == isl {
+                if self.site_ok(w, def, t) && self.island_at(w, t) == isl {
                     return Some(t);
                 }
             }

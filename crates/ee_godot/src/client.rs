@@ -142,7 +142,15 @@ pub struct Client {
     pub replay_path: Option<String>,
     replay_timer: f32,
     replay_final: bool,
+    /// folder for rotating autosaves (None = off, e.g. the menu backdrop)
+    pub autosave_dir: Option<String>,
+    autosave_next: u32,
+    autosave_slot: u32,
+    autosave_final: bool,
 }
+
+/// Autosave interval: 5 minutes of game time.
+const AUTOSAVE_TICKS: u32 = 20 * 60 * 5;
 
 pub struct StartOptions {
     pub seed: u64,
@@ -316,11 +324,39 @@ impl Client {
             replay_path: None,
             replay_timer: 30.0,
             replay_final: false,
+            autosave_dir: None,
+            autosave_next: 0,
+            autosave_slot: 0,
+            autosave_final: false,
         };
+        c.autosave_next = c.session.world.tick + AUTOSAVE_TICKS;
         c.build_decorations(&deco_models);
         c.session.world.config.reveal = reveal;
         c.update_fog(true);
         c
+    }
+
+    /// Save the match as `<autosave_dir>/<name>.eesave`. Serializes now, writes on a
+    /// background thread (`background`) so autosaves don't stall the frame.
+    pub fn save_to(&mut self, name: &str, background: bool) -> Result<String, String> {
+        let dir = self.autosave_dir.clone().ok_or("saving is off")?;
+        let text = crate::save::save(&self.session, self.reveal)?;
+        let path = format!("{dir}/{name}.eesave");
+        let tmp = format!("{path}.tmp");
+        let write = {
+            let path = path.clone();
+            move || std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| e.to_string())
+        };
+        if background {
+            std::thread::spawn(move || {
+                let _ = write();
+            });
+            self.events.push(ClientEvent { kind: "autosaved", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: name.to_string(), dmg: 0, mine: true });
+        } else {
+            write()?;
+        }
+        self.write_replay();
+        Ok(path)
     }
 
     pub fn write_replay(&self) {
@@ -373,6 +409,20 @@ impl Client {
             if self.session.world.entities.iter().any(|e| e.alive && e.def == sap) {
                 self.static_dirty = true;
             }
+        }
+        // rotating autosaves every 5 minutes of game time, and one when the match ends
+        let tick = self.session.world.tick;
+        let over = self.session.world.game_over;
+        if self.autosave_dir.is_some() && (tick >= self.autosave_next || (over && !self.autosave_final)) {
+            self.autosave_next = tick + AUTOSAVE_TICKS;
+            let name = if over {
+                self.autosave_final = true;
+                "Autosave (end of game)".to_string()
+            } else {
+                self.autosave_slot = self.autosave_slot % 3 + 1;
+                format!("Autosave {}", self.autosave_slot)
+            };
+            self.save_to(&name, true);
         }
         // keep the replay file current so a crash or quit still leaves a full record
         self.replay_timer -= dt as f32;

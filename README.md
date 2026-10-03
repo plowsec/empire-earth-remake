@@ -113,7 +113,9 @@ godot --path game -- --scene=main --stress=1500 --reveal # 3000-unit battle benc
 
 ## Saves and replays
 
-Saves (`user://saves/*.eesave`) are full snapshots: world plus AI state, so loading is
+Save from the **Save** button on the top bar (name it, or click an existing save to
+overwrite), or quicksave with `F5`. The game also autosaves every 5 minutes of game time
+(rotating *Autosave 1–3*) and when a match ends. Saves (`user://saves/*.eesave`) are full snapshots: world plus AI state, so loading is
 instant and the game continues bit-identically. Every match is also recorded as a replay
 (`user://replays/*.eerep`, on macOS under `~/Library/Application Support/Godot/app_userdata/`):
 match setup, AI seeds and every command, refreshed every 30 s and on exit.
@@ -125,7 +127,8 @@ ee_headless replay <file.eerep> [minutes_between_reports]
 re-simulates a played game with freshly created AIs fed the human's recorded commands
 (add `--exact` to play back the AI's recorded commands too: reproduces the game even when
 the AI code has changed since),
-prints per-player economy/army/AI-state timelines, and verifies the recorded checksums
+prints per-player economy/army/AI-state timelines (incl. units trapped in walled-in
+pockets; `--dump-trapped` draws the pocket), and verifies the recorded checksums
 (any divergence is reported with its tick).
 
 ## Multiplayer readiness

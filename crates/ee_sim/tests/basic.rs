@@ -929,3 +929,27 @@ fn citizens_sent_to_a_granary_each_take_a_field() {
     let farmers = ids.iter().filter(|&&u| matches!(w.get(u).unwrap().order, Order::Gather { node } if w.get(node).map_or(false, |n| n.def == farm))).count();
     assert_eq!(farmers, 5);
 }
+
+#[test]
+fn placement_check_refuses_sealing_pockets() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let house = data().id("house");
+    // an open 10x10 spot near the start
+    let c = (6i32..30).find_map(|r| (-r..=r).find_map(|dx| {
+        let t = (s.0 + dx, s.1 + r);
+        let ok = (t.1 - 5..t.1 + 5).all(|y| (t.0 - 5..t.0 + 5).all(|x| w.map.passable(x, y, ee_sim::defs::Layer::Land) && w.map.occupant[w.map.idx(x, y)] == 0));
+        if ok { Some(t) } else { None }
+    })).expect("open spot");
+    assert!(w.keeps_paths(house, c), "a house in an open field is fine");
+    // wall in a 4x4 courtyard with houses, leaving a 2-tile gate on the east side
+    for k in -1..=1 {
+        w.spawn_static(house, 0, (c.0 + k * 2, c.1 - 3), true); // north wall
+        w.spawn_static(house, 0, (c.0 + k * 2, c.1 + 3), true); // south wall
+    }
+    w.spawn_static(house, 0, (c.0 - 3, c.1 - 1), true); // west wall
+    w.spawn_static(house, 0, (c.0 - 3, c.1 + 1), true);
+    w.spawn_static(house, 0, (c.0 + 3, c.1 - 1), true); // east wall, gate at y = c.1+1..c.1+2
+    // plugging the gate would seal the courtyard
+    assert!(!w.keeps_paths(house, (c.0 + 3, c.1 + 1)), "closing the gate must be refused");
+}

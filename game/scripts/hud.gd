@@ -198,6 +198,12 @@ func _build() -> void:
 	hb.add_child(pbox)
 	clock_label = _label("00:00", 21, ACCENT, true)
 	hb.add_child(clock_label)
+	var save_btn := Button.new()
+	save_btn.text = "Save"
+	save_btn.tooltip_text = "Save the game (F5 quicksaves)"
+	save_btn.custom_minimum_size = Vector2(64, 32)
+	save_btn.pressed.connect(_open_save_dialog)
+	hb.add_child(save_btn)
 	var menu_btn := Button.new()
 	menu_btn.text = "Menu"
 	menu_btn.custom_minimum_size = Vector2(72, 32)
@@ -852,6 +858,7 @@ func notify(text: String, color := Color(1, 0.95, 0.85)) -> void:
 func _on_event(e: Dictionary) -> void:
 	match e["kind"]:
 		"notice": notify(e["text"], Color(1, 0.8, 0.5))
+		"autosaved": notify("Autosaved (%s)" % e["text"], Color(0.6, 0.85, 1.0))
 		"complete": notify("%s complete" % e["text"], Color(0.7, 1.0, 0.7))
 		"research": notify("Research complete: %s" % e["text"], Color(0.7, 0.85, 1.0))
 		"under_attack": notify("We are under attack!", Color(1, 0.4, 0.35))
@@ -913,10 +920,86 @@ func _toggle_reveal() -> void:
 	gv.set_reveal(_reveal)
 
 func _save_game() -> void:
-	var name := "Save " + Time.get_datetime_string_from_system().replace("T", " ").replace(":", "-")
-	var err: String = gv.save_game(name)
+	_open_save_dialog()
+
+# ---------------------------------------------------------------- save dialog
+
+var save_panel: PanelContainer
+var save_name: LineEdit
+var save_list: VBoxContainer
+
+func _open_save_dialog() -> void:
+	if save_panel == null:
+		_build_save_dialog()
+	menu_panel.visible = false
+	save_panel.visible = true
+	gv.set_paused(true)
+	save_name.text = "Save " + Time.get_datetime_string_from_system().replace("T", " ").replace(":", "-")
+	_refresh_save_list()
+	save_name.grab_focus()
+	save_name.select_all()
+
+func _close_save_dialog() -> void:
+	save_panel.visible = false
+	gv.set_paused(menu_panel.visible)
+
+func _build_save_dialog() -> void:
+	save_panel = PanelContainer.new()
+	save_panel.set_anchors_preset(Control.PRESET_CENTER)
+	save_panel.position = Vector2(-260, -230)
+	save_panel.custom_minimum_size = Vector2(520, 460)
+	save_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	save_panel.visible = false
+	root.add_child(save_panel)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	save_panel.add_child(v)
+	v.add_child(_label("SAVE GAME", 26, ACCENT, true))
+	save_name = LineEdit.new()
+	save_name.custom_minimum_size = Vector2(0, 36)
+	save_name.placeholder_text = "Name of the save"
+	save_name.text_submitted.connect(func(_t): _do_save(save_name.text))
+	v.add_child(save_name)
+	v.add_child(_label("Or click an existing save to overwrite it:", 15, Color(0.75, 0.74, 0.7)))
+	var sc := ScrollContainer.new()
+	sc.custom_minimum_size = Vector2(0, 260)
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(sc)
+	save_list = VBoxContainer.new()
+	save_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sc.add_child(save_list)
+	var hb := HBoxContainer.new()
+	hb.alignment = BoxContainer.ALIGNMENT_END
+	hb.add_theme_constant_override("separation", 10)
+	var cancel := Button.new()
+	cancel.text = "Cancel"
+	cancel.custom_minimum_size = Vector2(110, 36)
+	cancel.pressed.connect(_close_save_dialog)
+	hb.add_child(cancel)
+	var ok := Button.new()
+	ok.text = "Save"
+	ok.custom_minimum_size = Vector2(140, 36)
+	ok.pressed.connect(func(): _do_save(save_name.text))
+	hb.add_child(ok)
+	v.add_child(hb)
+
+func _refresh_save_list() -> void:
+	for c in save_list.get_children():
+		c.queue_free()
+	for sv in gv.list_saves():
+		var n: String = sv["name"]
+		var b := Button.new()
+		b.text = "%s   ·   %s" % [n, sv["time"]]
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.custom_minimum_size = Vector2(0, 30)
+		b.pressed.connect(func(): save_name.text = n)
+		save_list.add_child(b)
+
+func _do_save(name: String) -> void:
+	var err: String = gv.save_game(name.strip_edges())
 	if err == "":
-		notify("Game saved: " + name, Color(0.6, 1.0, 0.6))
+		_close_save_dialog()
+		notify("Game saved: " + name.strip_edges(), Color(0.6, 1.0, 0.6))
 	else:
 		notify("Save failed: " + err, Color(1.0, 0.5, 0.4))
 
@@ -994,6 +1077,8 @@ func _unhandled_input(e: InputEvent) -> void:
 
 func _on_key(k: InputEventKey) -> void:
 	var code := k.keycode
+	if code == KEY_ESCAPE and save_panel != null and save_panel.visible:
+		_close_save_dialog(); return
 	if code == KEY_ESCAPE:
 		if mode != "":
 			if mode == "place": gv.cancel_placement()

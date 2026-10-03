@@ -34,5 +34,7 @@ func _ready() -> void:
 	await get_tree().create_timer(3.0).timeout
 	var later: Dictionary = gv.sim_stats()
 	check("loaded game keeps running", later["tick"] > after["tick"])
+	# leave the player's save folder as we found it
+	gv.delete_save(saves[0]["path"])
 	print("SAVETEST DONE failures=%d" % failures)
 	get_tree().quit(1 if failures > 0 else 0)

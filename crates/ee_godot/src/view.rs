@@ -125,6 +125,7 @@ impl GameView {
         let mut client = Client::new(root, opt, Some(noise.clone()));
         if !demo {
             client.replay_path = Some(new_replay_path(client.world().config.seed));
+            client.autosave_dir = Some(user_dir("saves"));
         }
         self.build_world(&client, &noise);
         self.client = Some(client);
@@ -134,24 +135,23 @@ impl GameView {
     /// Save the running match to user://saves/<name>.eesave. Returns "" or an error.
     #[func]
     fn save_game(&mut self, name: GString) -> GString {
-        let Some(c) = &self.client else { return "no game running".into() };
-        let dir = user_dir("saves");
-        let safe: String = name.to_string().chars().map(|ch| if ch.is_alphanumeric() || ch == '-' || ch == '_' || ch == ' ' { ch } else { '_' }).collect();
-        let safe = if safe.trim().is_empty() { "quicksave".to_string() } else { safe.trim().to_string() };
-        let path = format!("{dir}/{safe}.eesave");
-        match crate::save::save(&c.session, c.reveal) {
-            Ok(text) => {
-                let tmp = format!("{path}.tmp");
-                match std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)) {
-                    Ok(()) => {
-                        c.write_replay();
-                        GString::new()
-                    }
-                    Err(e) => GString::from(&format!("could not write {path}: {e}")),
-                }
-            }
+        let Some(c) = self.client.as_mut() else { return "no game running".into() };
+        let safe: String = name.to_string().chars().map(|ch| if ch.is_alphanumeric() || ch == '-' || ch == '_' || ch == ' ' || ch == '(' || ch == ')' { ch } else { '_' }).collect();
+        let safe = if safe.trim().is_empty() { "Quicksave".to_string() } else { safe.trim().to_string() };
+        if c.autosave_dir.is_none() {
+            c.autosave_dir = Some(user_dir("saves"));
+        }
+        match c.save_to(&safe, false) {
+            Ok(_) => GString::new(),
             Err(e) => GString::from(&format!("save failed: {e}")),
         }
+    }
+
+    /// Delete a save file (from the save dialog / load menu).
+    #[func]
+    fn delete_save(&self, path: GString) -> bool {
+        let p = path.to_string();
+        p.ends_with(".eesave") && std::fs::remove_file(&p).is_ok()
     }
 
     /// Saved games, newest first: [{name, path, time}].
@@ -203,6 +203,7 @@ impl GameView {
         let root = self.base().clone().upcast::<Node>();
         let mut client = Client::from_session(root, session, reveal, Some(noise.clone()));
         client.replay_path = Some(new_replay_path(client.world().config.seed));
+        client.autosave_dir = Some(user_dir("saves"));
         self.build_world(&client, &noise);
         self.client = Some(client);
         self.signals().game_started().emit();

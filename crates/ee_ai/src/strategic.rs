@@ -53,26 +53,50 @@ impl Ai {
         }
 
         // ---- offense (Hard+): silos, missiles, salvos
+        self.nuke_reserve = [0; 5];
         if !hard || !mature {
             return;
         }
         let silos: Vec<EntityId> = v.buildings.get(&silo).cloned().unwrap_or_default();
         let max_silos = if self.diff == Difficulty::Hardest { 2 } else { 1 };
-        let rich = me.res[3] >= 2500 && me.res[4] >= 2000 && me.res[2] >= 1200;
-        if silos.len() < max_silos && rich && self.count_with_sites(w, v, silo) < max_silos {
-            self.build_near(w, v, out, silo, self.base);
-        }
         let icbm = d.id("icbm");
         let cost = d.def(icbm).data.cost;
+        // save up for the next piece of the program (the army spends only above this)
+        let silo_cost = d.def(silo).data.cost.arr();
+        let have_silos = self.count_with_sites(w, v, silo);
+        if have_silos < max_silos {
+            self.nuke_reserve = silo_cost;
+            if w.can_afford(p, &d.def(silo).data.cost) {
+                self.build_near(w, v, out, silo, self.base);
+            }
+        } else {
+            let stock: usize = silos.iter().filter_map(|&s| w.get(s)).map(|e| e.cargo.len() + e.production.len()).sum();
+            if stock < silos.len() * 3 {
+                self.nuke_reserve = cost.arr();
+            }
+        }
         for &s in &silos {
             let Some(se) = w.get(s) else { continue };
             let queued = se.production.iter().filter(|it| matches!(it, ProdItem::Unit(u) if *u == icbm)).count();
-            if se.complete && se.cargo.len() + queued < 3 && queued == 0
-                && me.res[2] >= cost.stone + 400 && me.res[3] >= cost.gold + 600 && me.res[4] >= cost.iron + 400 {
+            if se.complete && se.cargo.len() + queued < 3 && queued == 0 && w.can_afford(p, &cost) {
                 out.push(CommandKind::Train { building: s, def: icbm, count: 1 });
             }
         }
-        if w.tick.wrapping_sub(self.last_salvo) < 20 * 90 {
+        // did the last salvo work? if the target area still stands, assume more interceptors
+        if let Some((at, value_before, tick)) = self.last_strike {
+            if w.tick.wrapping_sub(tick) > 20 * 30 {
+                let blast = Fx::from_int(BLAST);
+                let value_now = self.known.values().filter(|o| o.pos.within(at, blast)).count();
+                if value_now * 10 >= value_before * 7 {
+                    self.extra_cover.push(at);
+                    if self.extra_cover.len() > 24 {
+                        self.extra_cover.remove(0);
+                    }
+                }
+                self.last_strike = None;
+            }
+        }
+        if w.tick.wrapping_sub(self.last_salvo) < 20 * 150 {
             return;
         }
         let mut ready: Vec<(EntityId, usize)> = silos.iter().filter_map(|&s| w.get(s).map(|e| (s, e.cargo.len()))).filter(|x| x.1 > 0).collect();
@@ -82,6 +106,8 @@ impl Ai {
         }
         let capacity = silos.len() * 3;
         let Some((at, needed)) = self.icbm_target(w, stock, capacity) else { return };
+        let value_before = self.known.values().filter(|o| o.pos.within(at, Fx::from_int(BLAST))).count();
+        self.last_strike = Some((at, value_before, w.tick));
         // salvo: every missile at once so the interceptors can't take them one by one
         let mut left = needed;
         for (s, n) in ready.iter_mut() {
@@ -124,7 +150,9 @@ impl Ai {
             } else {
                 0
             };
-            let needed = cover + 1;
+            // failed strikes nearby: the enemy has interceptors we haven't seen
+            let learned = self.extra_cover.iter().filter(|p| p.within(k.pos, Fx::from_int(ABM_RANGE))).count();
+            let needed = cover + learned + 1;
             if needed > capacity {
                 continue;
             }

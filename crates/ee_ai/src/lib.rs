@@ -149,6 +149,15 @@ pub struct Ai {
     pub(crate) missile_alert: u32,
     #[serde(default)]
     pub(crate) last_salvo: u32,
+    /// resources set aside for the nuclear program (silo / next ICBM)
+    #[serde(default)]
+    pub(crate) nuke_reserve: [i32; 5],
+    /// (aim, known buildings there, tick) of the last salvo, to judge if it got through
+    #[serde(default)]
+    pub(crate) last_strike: Option<(FVec, usize, u32)>,
+    /// aim points where missiles were evidently shot down
+    #[serde(default)]
+    pub(crate) extra_cover: Vec<FVec>,
 }
 
 impl Ai {
@@ -186,6 +195,9 @@ impl Ai {
             food_wanted: 0,
             missile_alert: 0,
             last_salvo: 0,
+            nuke_reserve: [0; 5],
+            last_strike: None,
+            extra_cover: Vec::new(),
         }
     }
 }

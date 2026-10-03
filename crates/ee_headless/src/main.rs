@@ -124,6 +124,59 @@ fn run_match(seed: u64, players: usize, minutes: u32, diff: i32, pop_limit: i32,
     }
 }
 
+/// Land units sealed into small pockets (walled in by buildings/forest): per player.
+fn trapped_units(w: &ee_sim::world::World) -> Vec<(usize, usize)> {
+    use ee_sim::world::data;
+    let m = &w.map;
+    let n = (m.w * m.h) as usize;
+    let mut comp = vec![u32::MAX; n];
+    let mut sizes: Vec<usize> = Vec::new();
+    for start in 0..n {
+        if comp[start] != u32::MAX || m.pass[start] & ee_sim::map::PASS_LAND == 0 {
+            continue;
+        }
+        let id = sizes.len() as u32;
+        let mut stack = vec![start];
+        comp[start] = id;
+        let mut size = 0;
+        while let Some(i) = stack.pop() {
+            size += 1;
+            let (x, y) = ((i as i32) % m.w, (i as i32) / m.w);
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if m.in_bounds(nx, ny) {
+                    let j = m.idx(nx, ny);
+                    if comp[j] == u32::MAX && m.pass[j] & ee_sim::map::PASS_LAND != 0 {
+                        comp[j] = id;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        sizes.push(size);
+    }
+    let mut out = vec![(0usize, 0usize); w.players.len()];
+    for e in &w.entities {
+        if !e.alive || e.inside != 0 || e.owner as usize >= out.len() {
+            continue;
+        }
+        let d = data().def(e.def);
+        if !d.is_unit() || d.layer != ee_sim::defs::Layer::Land {
+            continue;
+        }
+        let (tx, ty) = e.pos.tile();
+        if !m.in_bounds(tx, ty) {
+            continue;
+        }
+        out[e.owner as usize].1 += 1;
+        let c = comp[m.idx(tx, ty)];
+        if c != u32::MAX && sizes[c as usize] < 150 {
+            out[e.owner as usize].0 += 1;
+        }
+    }
+    out
+}
+
 fn report(s: &ee_net::Session, t: u32) {
     use ee_sim::world::data;
     let w = &s.world;
@@ -161,6 +214,10 @@ fn report(s: &ee_net::Session, t: u32) {
             println!("      P{} gatherers f/w/s/g/i {:?} idle {} buildings {:?}", pl.id, g, idle, bk);
             }
             for line in s.controller_debug() { println!("      {line}"); }
+            let tr = trapped_units(w);
+            println!("      trapped land units (pocket < 150 tiles) per player: {:?}", tr.iter().map(|(a, b)| format!("{a}/{b}")).collect::<Vec<_>>());
+            let stuck: Vec<usize> = w.players.iter().map(|p| w.entities.iter().filter(|e| e.alive && e.owner == p.id && e.inside == 0 && e.stuck > 60).count()).collect();
+            println!("      units currently stuck (no progress) per player: {stuck:?}");
             // units on enemy islands
             for p in &w.players {
                 let others: Vec<(i32,i32)> = w.starts.iter().enumerate().filter(|(i,_)| *i as u8 != p.id).map(|(_, s)| *s).collect();
@@ -252,5 +309,66 @@ fn run_replay_file(path: &str, every_min: u32, exact: bool) {
         }
     }
     report(&s, s.world.tick);
+    if std::env::args().any(|a| a == "--dump-trapped") {
+        dump_trapped(&s.world);
+    }
     println!("{}", if diverged { "re-simulation DIVERGED from the recording" } else { "re-simulation matched every recorded checksum" });
+}
+
+/// ASCII map around a trapped unit of each player: # building (letter = kind), T tree,
+/// ~ water, . open land, * the trapped units.
+fn dump_trapped(w: &ee_sim::world::World) {
+    use ee_sim::world::data;
+    let m = &w.map;
+    for p in &w.players {
+        // find a unit with no route to its capitol region: pick a unit whose 8-neighbourhood
+        // flood (radius 30) can't escape a small area
+        let mut found = None;
+        for e in &w.entities {
+            if !e.alive || e.owner != p.id || e.inside != 0 || !data().def(e.def).is_unit() || data().def(e.def).layer != ee_sim::defs::Layer::Land {
+                continue;
+            }
+            let (tx, ty) = e.pos.tile();
+            let mut seen = std::collections::HashSet::new();
+            let mut stack = vec![(tx, ty)];
+            seen.insert((tx, ty));
+            while let Some((x, y)) = stack.pop() {
+                if seen.len() > 160 { break; }
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if m.in_bounds(nx, ny) && m.pass[m.idx(nx, ny)] & ee_sim::map::PASS_LAND != 0 && seen.insert((nx, ny)) {
+                        stack.push((nx, ny));
+                    }
+                }
+            }
+            if seen.len() <= 160 {
+                found = Some((tx, ty, seen.len()));
+                break;
+            }
+        }
+        let Some((cx, cy, size)) = found else { continue };
+        println!("P{} trapped pocket of {size} tiles around {:?}:", p.id, (cx, cy));
+        for y in cy - 16..=cy + 16 {
+            let mut row = String::new();
+            for x in cx - 30..=cx + 30 {
+                if !m.in_bounds(x, y) { row.push(' '); continue; }
+                let i = m.idx(x, y);
+                let unit_here = w.entities.iter().any(|e| e.alive && e.inside == 0 && data().def(e.def).is_unit() && e.pos.tile() == (x, y));
+                let occ = m.occupant[i];
+                let ch = if unit_here { '*' } else if let Some(e) = w.get(occ) {
+                    let k = data().def(e.def).data.key.as_str();
+                    match k {
+                        "tree" | "sapling" => 'T',
+                        "house" => 'h', "apartments" => 'A', "farm" => if m.pass[i] & ee_sim::map::PASS_LAND != 0 { ',' } else { 'f' },
+                        "granary" => 'g', "barracks" => 'B', "tank_factory" => 'F', "airport" => 'P', "settlement" => 'S',
+                        "capitol" => 'C', "guard_tower" => 't', "aa_site" => 'a', "hospital" => 'H', "naval_yard" => 'N',
+                        _ if k.ends_with("_mine") => 'M',
+                        _ => '#',
+                    }
+                } else if m.is_water(x, y) { '~' } else if m.pass[i] & ee_sim::map::PASS_LAND != 0 { '.' } else { 'x' };
+                row.push(ch);
+            }
+            println!("  {row}");
+        }
+    }
 }
