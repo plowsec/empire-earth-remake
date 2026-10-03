@@ -29,10 +29,14 @@ pub struct Part {
     pub role: Role,
     /// rotation pivot (model space) for turrets/rotors
     pub pivot: Vector3,
+    /// inverse of the part's rest yaw (turrets aim relative to model forward)
+    pub rest_inv: Basis,
 }
 
 pub struct Model {
     pub parts: Vec<Part>,
+    /// visual scale applied per instance (infantry are exaggerated for readability)
+    pub scale: f32,
     pub height: f32,
     /// selection ring radius in meters
     pub radius: f32,
@@ -40,11 +44,45 @@ pub struct Model {
 }
 
 pub struct Models {
+    surf_albedo: Option<Gd<godot::classes::TextureLayered>>,
+    surf_normal: Option<Gd<godot::classes::TextureLayered>>,
     pub list: Vec<Model>,
     pub by_def: Vec<usize>,
     by_name: HashMap<String, usize>,
     unit_shader: Gd<Shader>,
     noise: Option<Gd<Texture2D>>,
+}
+
+/// Material name -> (surface kind, mode, repeats per meter, strength).
+/// Kinds index the packed surface array: concrete, brick, roof, corrugated,
+/// plaster, wood, paint, fabric, asphalt, rock, bark.
+fn surface_for(name: &str, def: &Def) -> Option<(i32, i32, f32, f32)> {
+    let base = name.split('.').next().unwrap_or(name);
+    let soft = matches!(def.class(), Class::Citizen | Class::Infantry);
+    Some(match base {
+        "concrete" | "concrete_dark" | "stone_light" => (0, 0, 0.35, 0.9),
+        "brick" => (1, 1, 0.45, 1.0),
+        "roof_red" => (2, 1, 0.4, 1.0),
+        "roof_gray" | "metal_sheet" => (3, 0, 0.5, 0.9),
+        "white" | "marble" | "medic_white" => (4, 0, 0.35, 0.8),
+        "wood" | "wood_dark" | "deck" | "crate" => (5, 1, 0.6, 0.9),
+        "asphalt" => (8, 1, 0.3, 1.0),
+        "rock" | "rock_dark" | "iron_ore" => (9, 0, 0.35, 1.0),
+        "bark" | "bark_palm" => (10, 1, 0.8, 0.9),
+        "khaki" | "canvas" => (7, 0, 2.5, 0.6),
+        "team" if soft => (7, 0, 2.5, 0.6),
+        "olive" | "olive_dark" if soft => (7, 0, 2.5, 0.6),
+        "olive" | "olive_dark" | "tan" | "navy_gray" | "navy_dark" | "air_gray" | "air_dark" | "team" | "team_metal"
+        | "hull_red" | "yellow_paint" | "gunmetal" | "steel" => (6, 0, 0.6, 0.55),
+        _ => return None,
+    })
+}
+
+pub fn visual_scale(def: &Def) -> f32 {
+    match def.class() {
+        Class::Citizen | Class::Infantry => 1.75,
+        _ => 1.0,
+    }
 }
 
 fn anim_mode_for(def: &Def) -> i32 {
@@ -58,7 +96,18 @@ fn anim_mode_for(def: &Def) -> i32 {
 impl Models {
     pub fn new(noise: Option<Gd<Texture2D>>) -> Models {
         let unit_shader = godot::tools::load::<Shader>("res://shaders/unit.gdshader");
-        Models { list: Vec::new(), by_def: Vec::new(), by_name: HashMap::new(), unit_shader, noise }
+        let load_arr = |p: &str| -> Option<Gd<godot::classes::TextureLayered>> {
+            godot::tools::try_load::<godot::classes::CompressedTexture2DArray>(p).ok().map(|t| t.upcast())
+        };
+        Models {
+            surf_albedo: load_arr("res://assets/textures/surface_albedo_array.png"),
+            surf_normal: load_arr("res://assets/textures/surface_normal_array.png"),
+            list: Vec::new(),
+            by_def: Vec::new(),
+            by_name: HashMap::new(),
+            unit_shader,
+            noise,
+        }
     }
 
     pub fn load_all(&mut self, defs: &[Def]) {
@@ -108,8 +157,18 @@ impl Models {
             _ => 0.12,
         };
         m.set_shader_parameter("wear", &(wear as f32).to_variant());
+        if let (Some(a), Some(n)) = (&self.surf_albedo, &self.surf_normal) {
+            m.set_shader_parameter("surface_albedo", &a.to_variant());
+            m.set_shader_parameter("surface_normal", &n.to_variant());
+        }
         if let Some(src) = src {
             let name = src.get_name().to_string().to_lowercase();
+            if let Some((kind, mode, scale, strength)) = surface_for(&name, def) {
+                m.set_shader_parameter("surface_kind", &kind.to_variant());
+                m.set_shader_parameter("surface_mode", &mode.to_variant());
+                m.set_shader_parameter("surface_scale", &scale.to_variant());
+                m.set_shader_parameter("surface_strength", &strength.to_variant());
+            }
             if name.starts_with("team") || name.contains("_team") {
                 m.set_shader_parameter("team_mask", &1.0f32.to_variant());
             }
@@ -171,13 +230,18 @@ impl Models {
         let height = (aabb_max.y - aabb_min.y.min(0.0)).max(0.2);
         let parts = raw
             .into_iter()
-            .map(|(mesh, ov, local, role, pivot)| Part { mesh: self.convert_mesh(&mesh, &ov, def, height), local, role, pivot })
+            .map(|(mesh, ov, local, role, pivot)| {
+                let f = local.basis.col_c();
+                let rest_yaw = f.x.atan2(f.z);
+                Part { mesh: self.convert_mesh(&mesh, &ov, def, height), local, role, pivot, rest_inv: Basis::from_axis_angle(Vector3::UP, -rest_yaw) }
+            })
             .collect();
         let ext = (aabb_max - aabb_min).abs();
         let radius = (ext.x.max(ext.z) * 0.55).max(0.5);
         let mut root = root;
         root.queue_free();
-        Some(Model { parts, height, radius, placeholder: false })
+        let scale = visual_scale(def);
+        Some(Model { parts, height: height * scale, radius: radius * scale, placeholder: false, scale })
     }
 
     fn placeholder(&self, def: &Def) -> Model {
@@ -287,11 +351,11 @@ impl Models {
                     sm.set_name("team");
                 }
                 let ov = vec![Some(sm.upcast::<Material>())];
-                Part { mesh: self.convert_mesh(&m, &ov, def, height), local: xf, role, pivot: xf.origin }
+                Part { mesh: self.convert_mesh(&m, &ov, def, height), local: xf, role, pivot: xf.origin, rest_inv: Basis::IDENTITY }
             })
             .collect();
         let radius = if def.is_building() { sw.max(sh) as f32 * TILE * 0.6 } else { (r * 1.3).max(0.6) };
-        Model { parts, height, radius, placeholder: true }
+        Model { parts, height, radius, placeholder: true, scale: 1.0 }
     }
 }
 

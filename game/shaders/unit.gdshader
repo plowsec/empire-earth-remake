@@ -22,11 +22,19 @@ uniform float emission_energy = 0.0;
 uniform int anim_mode = 0;          // 0 rigid, 1 infantry, 2 foliage sway, 3 water bob
 uniform float model_height = 2.0;   // for construction clipping
 uniform float wear = 0.25;          // grime amount
+// shared tileable surface library, sampled triplanar in model space
+uniform int surface_kind = -1;      // -1 none
+uniform int surface_mode = 0;       // 0: detail (modulate brightness), 1: color (use texture color, tinted)
+uniform float surface_scale = 0.5;  // repeats per meter
+uniform float surface_strength = 1.0;
+uniform sampler2DArray surface_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2DArray surface_normal : filter_linear_mipmap_anisotropic, repeat_enable;
 
 varying float v_part;
 varying vec4 v_custom;
 varying vec3 v_team;
 varying vec3 v_local;
+varying vec3 v_onormal;
 varying float v_height01;
 
 mat3 rot_x(float a) {
@@ -70,13 +78,13 @@ void vertex() {
 			if (part == 6) { a = walk * sin(cyc) * 0.12; }
 			if (action > 1.5 && action < 2.5) {
 				// attack: aim forward with a little recoil
-				a = -1.25 + max(0.0, sin(t * 9.0)) * 0.12;
+				a = -1.05 + max(0.0, sin(t * 9.0)) * 0.12;
 			} else if (action > 2.5 && action < 4.5) {
 				// gather/build: overhead chopping swing
-				a = -1.9 + (sin(t * 5.5) * 0.5 + 0.5) * 1.6;
+				a = -1.75 + (sin(t * 5.5) * 0.5 + 0.5) * 1.6;
 			} else if (action > 4.5 && action < 5.5) {
 				// carrying a load: arms forward
-				a = -0.9;
+				a = -0.75;
 			}
 			mat3 r = rot_x(a);
 			v = r * (v - piv) + piv;
@@ -112,6 +120,8 @@ void vertex() {
 		VERTEX.x += sway * k * 0.10 * model_height;
 		VERTEX.z += sway * k * 0.05 * model_height;
 	}
+	v_local = VERTEX;
+	v_onormal = NORMAL;
 }
 
 void fragment() {
@@ -129,6 +139,36 @@ void fragment() {
 	float grime = (1.0 - smoothstep(0.0, 0.35, v_height01)) * 0.5 + (n - 0.5) * 0.6;
 	base *= 1.0 - clamp(grime, 0.0, 1.0) * wear;
 
+	float srough = roughness;
+	if (surface_kind >= 0) {
+		vec3 p = v_local * surface_scale;
+		vec3 on = normalize(v_onormal);
+		vec3 w = pow(abs(on), vec3(4.0));
+		w /= max(w.x + w.y + w.z, 1e-4);
+		float k = float(surface_kind);
+		vec4 ax = texture(surface_albedo, vec3(p.zy, k));
+		vec4 ay = texture(surface_albedo, vec3(p.xz, k));
+		vec4 az = texture(surface_albedo, vec3(p.xy, k));
+		vec4 tex = ax * w.x + ay * w.y + az * w.z;
+		vec4 nx = texture(surface_normal, vec3(p.zy, k));
+		vec4 ny = texture(surface_normal, vec3(p.xz, k));
+		vec4 nz = texture(surface_normal, vec3(p.xy, k));
+		vec2 dx = nx.rg * 2.0 - 1.0;
+		vec2 dy = ny.rg * 2.0 - 1.0;
+		vec2 dz = nz.rg * 2.0 - 1.0;
+		vec3 pert = vec3(0.0, dx.y, dx.x) * w.x + vec3(dy.x, 0.0, dy.y) * w.y + vec3(dz.x, dz.y, 0.0) * w.z;
+		vec3 nm = normalize(on + pert * surface_strength * 0.9);
+		NORMAL = normalize((VIEW_MATRIX * (MODEL_MATRIX * vec4(nm, 0.0))).xyz);
+		float trough = nx.b * w.x + ny.b * w.y + nz.b * w.z;
+		srough = mix(roughness, trough, 0.6 * surface_strength);
+		float tl = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
+		if (surface_mode == 1) {
+			vec3 tint = albedo.rgb / max(dot(albedo.rgb, vec3(0.299, 0.587, 0.114)), 0.05);
+			base = mix(base, tex.rgb * mix(vec3(1.0), tint, 0.35) * (lum / 0.45 * 0.5 + 0.5), surface_strength);
+		} else {
+			base *= mix(1.0, clamp(tl / 0.42, 0.55, 1.5), surface_strength);
+		}
+	}
 	float flags = v_custom.w;
 	int fl = int(round(flags));
 	float progress = v_custom.z;
@@ -160,7 +200,7 @@ void fragment() {
 		base = mix(vec3(lum), base, 0.3) * 0.45;
 	}
 	ALBEDO = base;
-	ROUGHNESS = roughness;
+	ROUGHNESS = srough;
 	METALLIC = metallic;
 	EMISSION = emit;
 }

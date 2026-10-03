@@ -138,13 +138,13 @@ impl GameView {
         tm.set_shader_parameter("map_size", &size.to_variant());
         // per-layer tints (sand, grass, meadow, forest, dirt, grassrock, rock, seabed)
         let tints = PackedColorArray::from(&[
-            Color::from_rgb(1.06, 1.0, 0.92),
-            Color::from_rgb(0.92, 1.0, 0.86),
-            Color::from_rgb(1.0, 1.02, 0.86),
-            Color::from_rgb(0.95, 0.95, 0.9),
-            Color::from_rgb(1.0, 0.96, 0.9),
-            Color::from_rgb(0.98, 1.0, 0.94),
-            Color::from_rgb(0.95, 0.93, 0.9),
+            Color::from_rgb(1.0, 0.95, 0.85),
+            Color::from_rgb(0.62, 0.86, 0.42),
+            Color::from_rgb(0.74, 0.92, 0.46),
+            Color::from_rgb(0.72, 0.78, 0.6),
+            Color::from_rgb(0.86, 0.8, 0.68),
+            Color::from_rgb(0.74, 0.86, 0.6),
+            Color::from_rgb(0.82, 0.8, 0.78),
             Color::from_rgb(0.85, 0.92, 0.85),
         ][..]);
         tm.set_shader_parameter("layer_tint", &tints.to_variant());

@@ -14,7 +14,23 @@ TEXTURES = {
     "cliff": "aerial_rocks_02",
     "seabed": "coast_sand_05",
     "concrete": "dirty_concrete",
+    "mud": "brown_mud_dry",
 }
+# tileable surfaces for buildings/units (triplanar in the unit shader)
+SURFACES = {
+    "s_concrete": "concrete_wall_008",
+    "s_brick": "red_brick_03",
+    "s_roof": "roof_09",
+    "s_corrugated": "corrugated_iron_02",
+    "s_plaster": "white_plaster_02",
+    "s_wood": "weathered_brown_planks",
+    "s_paint": "metal_plate_02",
+    "s_fabric": "denmin_fabric_02",
+    "s_asphalt": "asphalt_02",
+    "s_rock": "rock_face_03",
+    "s_bark": "bark_brown_02",
+}
+TEXTURES.update(SURFACES)
 HDRI = "kloofendal_48d_partly_cloudy_puresky"
 
 def get(url):

@@ -581,14 +581,16 @@ impl Client {
         let nparts = self.models.list[model].parts.len();
         let t = self.time as f32;
         for pi in 0..nparts {
-            let (role, local, pivot) = {
+            let (role, local, pivot, rest_inv) = {
                 let p = &self.models.list[model].parts[pi];
-                (p.role, p.local, p.pivot)
+                (p.role, p.local, p.pivot, p.rest_inv)
             };
+            let sc = self.models.list[model].scale;
+            let xf = if sc != 1.0 { Transform3D::new(xf.basis.scaled(Vector3::splat(sc)), xf.origin) } else { xf };
             let pxf = match role {
                 Role::Body => xf * local,
                 Role::Turret => {
-                    let r = Transform3D::new(Basis::from_axis_angle(Vector3::UP, turret_yaw), Vector3::ZERO);
+                    let r = Transform3D::new(Basis::from_axis_angle(Vector3::UP, turret_yaw) * rest_inv, Vector3::ZERO);
                     let to_p = Transform3D::new(Basis::IDENTITY, pivot);
                     let from_p = Transform3D::new(Basis::IDENTITY, -pivot);
                     xf * to_p * r * from_p * local
