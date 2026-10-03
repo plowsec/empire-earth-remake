@@ -416,7 +416,21 @@ pub fn generate(p: &MapParams) -> GenResult {
                 (4..=7, _) => "iron_mine",
                 _ => "stone_mine",
             };
-            if let Some((x, y)) = find_spot(&map, &reserved, &mut rng, is.cx, is.cy, 0, is.r * 55 / 100, 2, 2, 2) {
+            // narrow (elongated) islands: insist on walkable land all around the mine
+            let mut spot = None;
+            for _ in 0..12 {
+                if let Some((x, y)) = find_spot(&map, &reserved, &mut rng, is.cx, is.cy, 0, is.r * 55 / 100, 2, 2, 2) {
+                    let open = (y - 1..=y + 2)
+                        .flat_map(|yy| (x - 1..=x + 2).map(move |xx| (xx, yy)))
+                        .filter(|&(xx, yy)| !(xx >= x && xx < x + 2 && yy >= y && yy < y + 2) && map.passable(xx, yy, crate::defs::Layer::Land))
+                        .count();
+                    if open >= 10 {
+                        spot = Some((x, y));
+                        break;
+                    }
+                }
+            }
+            if let Some((x, y)) = spot {
                 objects.push(Placement { key, owner: GAIA, x, y });
                 reserve(&mut reserved, x, y, 2, 2);
             }
