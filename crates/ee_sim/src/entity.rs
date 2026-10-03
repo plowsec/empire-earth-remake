@@ -74,6 +74,8 @@ pub struct Entity {
     pub flow: Option<(u8, i32, i32)>,
     pub repath_cd: i32,
     pub stuck: i32,
+    /// goal is "reach the area around" (building/resource), not an exact point
+    pub goal_rect: bool,
     pub vel: FVec,
 
     // combat
@@ -135,6 +137,7 @@ impl Entity {
             flow: None,
             repath_cd: 0,
             stuck: 0,
+            goal_rect: false,
             vel: FVec::ZERO,
             weapon_cd: [0; 3],
             ammo: 0,

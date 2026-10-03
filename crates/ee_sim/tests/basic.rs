@@ -216,3 +216,25 @@ fn debug_dump_area() {
         println!("{y:3} {line}");
     }
 }
+
+#[test]
+#[ignore]
+fn debug_wood_gathering() {
+    let mut w = World::new(MatchConfig::skirmish(9, 2));
+    let cits = units_of(&w, 0, "citizen");
+    let cap = units_of(&w, 0, "capitol")[0];
+    let cpos = w.get(cap).unwrap().pos;
+    let tree = nearest_of(&w, cpos, "tree");
+    println!("tree at {:?}, capitol at {:?}", w.get(tree).unwrap().pos.tile(), cpos.tile());
+    run(&mut w, 1, vec![(0, Command { player: 0, kind: CommandKind::Target { units: cits.clone(), target: tree, queue: false } })]);
+    for s in 0..10 {
+        run(&mut w, 100, vec![]);
+        let mut orders = std::collections::BTreeMap::new();
+        for &c in &cits {
+            let e = w.get(c).unwrap();
+            let k = format!("{:?}/{:?}", e.order, e.action).split(' ').next().unwrap().to_string() + &format!("{:?}", e.action);
+            *orders.entry(k).or_insert(0) += 1;
+        }
+        println!("t={}s wood={} {:?}", (s + 1) * 5, w.players[0].res[1], orders);
+    }
+}

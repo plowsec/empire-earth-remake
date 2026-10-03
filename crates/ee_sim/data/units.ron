@@ -21,7 +21,7 @@
          hp: 75, speed: 150, radius: 20, sight: 600,
          cost: (food: 50), build_time: 120, pop: 1,
          weapons: [(dmg_type: Gun, damage: 4, range: 70, reload: 15)],
-         gather: Some((food: 70, wood: 55, stone: 45, gold: 50, iron: 45)), carry: 10,
+         gather: Some((food: 85, wood: 75, stone: 60, gold: 65, iron: 60)), carry: 10,
          builds: ["house", "settlement", "granary", "farm", "barracks", "tank_factory",
                   "airport", "naval_yard", "hospital", "guard_tower", "aa_site"],
          role: "Gathers resources, constructs and repairs buildings."),

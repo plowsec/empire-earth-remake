@@ -362,6 +362,17 @@ impl World {
         }
     }
 
+    /// Already next to the target area but not in reach: walk straight at it
+    /// (passability stops us at its edge, which is in reach).
+    pub(crate) fn approach_direct(&mut self, i: usize, target: FVec) {
+        let e = &mut self.entities[i];
+        e.goal = Some(target);
+        e.path.clear();
+        e.path.push(target);
+        e.flow = None;
+        e.goal_rect = true;
+    }
+
     /// Goal rect for reaching something: its footprint grown by `reach` tiles.
     pub(crate) fn goal_rect_for(&self, target: EntityId, reach: Fx) -> Option<GoalRect> {
         let t = self.get(target)?;
@@ -388,7 +399,7 @@ impl World {
             let res = e.last_res;
             let from = e.last_node_pos;
             let carry = e.carry;
-            let found = if res != 255 { self.nearest_resource(res, from, 10, layer == Layer::Water) } else { None };
+            let found = if res != 255 { self.nearest_resource(res, from, 18, layer == Layer::Water) } else { None };
             let id = e.id;
             match found {
                 Some(f) => set_order(self, id, Order::Gather { node: f }),
@@ -428,12 +439,21 @@ impl World {
             return;
         }
         let n = self.get(node).unwrap();
+        let crowd_cap = if farm { 1 } else if nd.size() == (1, 1) { 3 } else { 9 };
+        let crowded = n.gatherers as i32 > crowd_cap;
+        let n = self.get(node).unwrap();
         let in_reach = if farm {
             // stand on the farm field
             self.edge_dist(e.pos, n) == Fx::ZERO
         } else {
             self.edge_dist(e.pos, n) <= d.radius + REACH
         };
+        if !in_reach && crowded && (id % 3 != 0 || farm) && self.tick % 10 == id % 10 {
+            if let Some(alt) = self.nearest_resource(res, npos, 7, layer == Layer::Water).filter(|&a| a != node) {
+                set_order(self, id, Order::Gather { node: alt });
+                return;
+            }
+        }
         if !in_reach {
             if e.goal.is_none() {
                 if farm {
@@ -445,9 +465,8 @@ impl World {
                     // aim for the side of the node facing us
                     self.set_goal(i, npos, rect);
                 }
-                if self.entities[i].goal.is_none() || self.entities[i].stuck > 3 {
-                    self.next_order(i);
-                    return;
+                if self.entities[i].goal.is_none() {
+                    self.approach_direct(i, npos);
                 }
             }
             let e = &mut self.entities[i];
@@ -456,7 +475,7 @@ impl World {
                 // unreachable: try another node
                 let e = &mut self.entities[i];
                 e.stuck = 0;
-                let found = self.nearest_resource(res, npos, 8, layer == Layer::Water).filter(|&f| f != node);
+                let found = self.nearest_resource(res, npos, 14, layer == Layer::Water).filter(|&f| f != node);
                 match found {
                     Some(f) => set_order(self, id, Order::Gather { node: f }),
                     None => self.next_order(i),
@@ -536,7 +555,7 @@ impl World {
                 } else {
                     let res = e.last_res;
                     let from = e.last_node_pos;
-                    match self.nearest_resource(res, from, 10, d.layer == Layer::Water) {
+                    match self.nearest_resource(res, from, 18, d.layer == Layer::Water) {
                         Some(f) => set_order(self, id, Order::Gather { node: f }),
                         None => self.next_order(i),
                     }
@@ -553,7 +572,11 @@ impl World {
         };
         if need {
             let rect = self.goal_rect_for(drop, Fx::ZERO);
-            self.set_goal(i, t.pos, rect);
+            let tpos = t.pos;
+            self.set_goal(i, tpos, rect);
+            if self.entities[i].goal.is_none() {
+                self.approach_direct(i, tpos);
+            }
             self.entities[i].stuck = 0;
         }
         self.entities[i].action = Action::Carry;
@@ -590,8 +613,7 @@ impl World {
                 let spos = s.pos;
                 self.set_goal(i, spos, rect);
                 if self.entities[i].goal.is_none() {
-                    self.next_order(i);
-                    return;
+                    self.approach_direct(i, spos);
                 }
             }
             self.entities[i].action = Action::Move;
@@ -923,6 +945,7 @@ impl World {
         }
         let e = &mut self.entities[i];
         e.flow = None;
+        e.goal_rect = rect.is_some();
         if pts.is_empty() {
             if rect.is_some() || from == to {
                 // already there

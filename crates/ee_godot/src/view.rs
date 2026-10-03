@@ -791,6 +791,17 @@ impl GameView {
         }
     }
 
+    /// "" if the current ghost placement is valid, otherwise the reason.
+    #[func]
+    fn placement_error(&self) -> GString {
+        let (Some(def), Some(c)) = (self.place_def, self.client.as_ref()) else { return "not placing".into() };
+        match c.world().can_place(c.me, def, self.ghost_tile) {
+            Ok(()) if self.ghost_ok => GString::new(),
+            Ok(()) => "not enough resources".into(),
+            Err(e) => e.into(),
+        }
+    }
+
     #[func]
     fn is_placing(&self) -> bool {
         self.place_def.is_some()
@@ -815,6 +826,68 @@ impl GameView {
             out.push(&d.to_variant());
         }
         out
+    }
+
+    /// Number of entities of `key` owned by the local player (tests/UI).
+    #[func]
+    fn count_owned(&self, key: GString) -> i64 {
+        let Some(c) = &self.client else { return 0 };
+        let Some(def) = data().try_id(&key.to_string()) else { return 0 };
+        c.world().entities.iter().filter(|e| e.alive && e.owner == c.me && e.def == def).count() as i64
+    }
+
+    /// Debug: describe the local player's first entity of `key`.
+    #[func]
+    fn entity_debug(&self, key: GString) -> GString {
+        let Some(c) = &self.client else { return GString::new() };
+        let Some(def) = data().try_id(&key.to_string()) else { return GString::new() };
+        for e in &c.world().entities {
+            if e.alive && e.owner == c.me && e.def == def {
+                return GString::from(&format!("{} pos {:?} order {:?} action {:?} hp {} progress {} complete {} goal {:?} stuck {}", key, e.pos.tile(), e.order, e.action, e.hp, e.progress, e.complete, e.goal.map(|g| g.tile()), e.stuck));
+            }
+        }
+        GString::from("none")
+    }
+
+    /// Debug: what's under a screen point.
+    #[func]
+    fn debug_pick(&self, p: Vector2) -> GString {
+        let (Some(c), Some(cam)) = (&self.client, &self.camera) else { return GString::new() };
+        let id = c.pick(cam, p);
+        let g = c.ground_at(cam, p);
+        GString::from(&format!("pick {} ground {:?}", id, g))
+    }
+
+    /// Screen position of the local player's first entity of `key` (tests).
+    #[func]
+    fn screen_pos_of(&self, key: GString) -> Vector2 {
+        let (Some(c), Some(cam)) = (&self.client, &self.camera) else { return Vector2::new(-1.0, -1.0) };
+        let Some(def) = data().try_id(&key.to_string()) else { return Vector2::new(-1.0, -1.0) };
+        for e in &c.world().entities {
+            if e.alive && e.owner == c.me && e.def == def {
+                let (x, z) = crate::client::to_world2(e.pos);
+                let y = c.heights.at(x, z).max(0.0) + 1.0;
+                return cam.unproject_position(Vector3::new(x, y, z));
+            }
+        }
+        Vector2::new(-1.0, -1.0)
+    }
+
+    /// Screen position of the nearest resource of `key` to the player's start (tests).
+    #[func]
+    fn screen_pos_of_resource(&self, key: GString) -> Vector2 {
+        let (Some(c), Some(cam)) = (&self.client, &self.camera) else { return Vector2::new(-1.0, -1.0) };
+        let Some(def) = data().try_id(&key.to_string()) else { return Vector2::new(-1.0, -1.0) };
+        let (sx, sy) = c.world().starts[c.me as usize];
+        let home = ee_sim::fixed::FVec::tile_center(sx, sy);
+        let best = c.world().entities.iter().filter(|e| e.alive && e.def == def).min_by_key(|e| e.pos.dist2_raw(home));
+        match best {
+            Some(e) => {
+                let (x, z) = crate::client::to_world2(e.pos);
+                cam.unproject_position(Vector3::new(x, c.heights.at(x, z).max(0.0) + 0.5, z))
+            }
+            None => Vector2::new(-1.0, -1.0),
+        }
     }
 
     /// World position of the biggest recent fight (for demo camera).

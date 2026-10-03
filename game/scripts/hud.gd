@@ -616,6 +616,7 @@ func _unhandled_input(e: InputEvent) -> void:
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
 				if mode == "place":
+					gv.placement_update(mb.position)
 					if not gv.placement_confirm(shift):
 						mode = ""
 					return

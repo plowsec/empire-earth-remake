@@ -24,6 +24,10 @@ func _ready() -> void:
 		elif a.begins_with("--players="): start_cfg["players"] = int(a.substr(10))
 		elif a.begins_with("--speed="): start_cfg["speed"] = float(a.substr(8))
 		elif a.begins_with("--ai0"): start_cfg["ai_self"] = 1
+		elif a == "--autotest":
+			var t = load("res://scripts/autotest.gd").new()
+			t.name = "AutoTest"
+			call_deferred("add_child", t)
 		elif a.begins_with("--dist="): start_cfg["dist"] = float(a.substr(7))
 		elif a.begins_with("--yaw="): start_cfg["yaw"] = float(a.substr(6))
 		elif a.begins_with("--offset="):

@@ -63,6 +63,7 @@ pub fn set_order(w: &mut World, id: EntityId, order: Order) {
     e.flow = None;
     e.stuck = 0;
     e.repath_cd = 0;
+    e.goal_rect = false;
     e.forced_target = matches!(order, Order::Attack { .. });
     if let Order::Attack { target } = order {
         e.target = target;
