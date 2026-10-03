@@ -1,0 +1,8 @@
+target/
+reference/
+game/.godot/
+game/bin/
+*.blend1
+/build/
+.DS_Store
+.venv/

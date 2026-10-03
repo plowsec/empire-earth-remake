@@ -1,0 +1,1129 @@
+//! Per-unit behaviour (order execution) and movement.
+use crate::combat;
+use crate::defs::{Class, Layer};
+use crate::entity::*;
+use crate::fixed::{FVec, Fx, ONE};
+use crate::orders::set_order;
+use crate::path::{astar, smooth, GoalRect};
+use crate::world::{data, SimEvent, World};
+
+/// Interaction reach beyond the unit's own radius.
+const REACH: Fx = Fx(ONE * 45 / 100);
+const ACQUIRE_INTERVAL: u32 = 8;
+
+impl World {
+    pub(crate) fn update_units(&mut self) {
+        let n = self.entities.len();
+        for i in 1..n {
+            let e = &self.entities[i];
+            if !e.alive {
+                continue;
+            }
+            let d = data().def(e.def);
+            if !d.is_unit() {
+                continue;
+            }
+            // cooldowns
+            {
+                let e = &mut self.entities[i];
+                for cd in e.weapon_cd.iter_mut() {
+                    if *cd > 0 {
+                        *cd -= 1;
+                    }
+                }
+                if e.acquire_cd > 0 {
+                    e.acquire_cd -= 1;
+                }
+            }
+            if self.entities[i].inside != 0 {
+                self.update_inside(i);
+                continue;
+            }
+            self.behave(i);
+            if !self.entities[i].alive {
+                continue;
+            }
+            self.move_unit(i);
+            if d.class() == Class::Aircraft {
+                self.update_fuel(i);
+            }
+        }
+    }
+
+    /// Units in transports idle; aircraft at an airfield refuel and rearm.
+    fn update_inside(&mut self, i: usize) {
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        if d.class() != Class::Aircraft {
+            return;
+        }
+        let max_fuel = d.fuel_ticks;
+        let max_ammo = d.weapons.first().map(|w| w.ammo).unwrap_or(0);
+        let maxhp = self.max_hp(e);
+        let e = &mut self.entities[i];
+        e.action = Action::Landed;
+        e.fuel = (e.fuel + max_fuel / 160 + 1).min(max_fuel);
+        if e.fuel >= max_fuel {
+            e.ammo = max_ammo;
+        }
+        if self.tick % 20 == 0 {
+            e.hp = (e.hp + maxhp / 40 + 1).min(maxhp);
+        }
+        // resume queued orders once ready
+        if e.fuel >= max_fuel && !e.queue.is_empty() {
+            let next = e.queue.remove(0);
+            let id = e.id;
+            set_order(self, id, next);
+        }
+    }
+
+    pub(crate) fn next_order(&mut self, i: usize) {
+        let e = &mut self.entities[i];
+        let id = e.id;
+        let next = if e.queue.is_empty() { Order::Idle } else { e.queue.remove(0) };
+        set_order(self, id, next);
+        let e = &mut self.entities[i];
+        if e.order == Order::Idle {
+            e.action = if e.carry > 0 { Action::Idle } else { Action::Idle };
+        }
+    }
+
+    fn behave(&mut self, i: usize) {
+        let order = self.entities[i].order;
+        match order {
+            Order::Idle => self.behave_idle(i),
+            Order::Move { to, attack_move } => {
+                if attack_move && self.try_acquire(i, true) {
+                    return;
+                }
+                let e = &self.entities[i];
+                let is_air = data().def(e.def).layer == Layer::Air;
+                if e.goal.is_none() && e.pos != to && e.stuck == 0 && e.path.is_empty() {
+                    self.set_goal(i, to, None);
+                }
+                let e = &self.entities[i];
+                let arrived = e.goal.is_none() || e.pos.within(to, Fx::from_ratio(10, 100));
+                if arrived {
+                    if is_air {
+                        // aircraft: stay on station (orbit/hover) until the next order
+                        let e = &mut self.entities[i];
+                        if !e.queue.is_empty() {
+                            self.next_order(i);
+                        }
+                    } else {
+                        self.next_order(i);
+                    }
+                }
+            }
+            Order::Attack { target } => self.behave_attack(i, target),
+            Order::Gather { node } => self.behave_gather(i, node),
+            Order::ReturnCargo => self.behave_return(i),
+            Order::Build { site } => self.behave_build(i, site, false),
+            Order::Repair { target } => self.behave_build(i, target, true),
+            Order::Board { transport } => self.behave_board(i, transport),
+            Order::Unload { at } => self.behave_unload(i, at),
+            Order::ReturnToBase => self.behave_rtb(i),
+        }
+    }
+
+    // ------------------------------------------------------------------ idle
+
+    fn behave_idle(&mut self, i: usize) {
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        let id = e.id;
+        if d.data.heal > 0 {
+            self.medic_tick(i);
+            return;
+        }
+        if d.class() == Class::Aircraft {
+            // airborne aircraft without orders loiter, then head home on low fuel
+            if d.data.needs_airport && e.goal.is_none() && self.tick % 40 == (id % 40) {
+                // nothing: orbit handled in movement
+            }
+            if self.try_acquire(i, false) {
+                return;
+            }
+            return;
+        }
+        if d.can_attack() && d.class() != Class::Citizen {
+            self.try_acquire(i, false);
+        } else if d.class() == Class::Citizen {
+            // citizens fight back only if attacked recently
+            if self.tick.wrapping_sub(e.last_hit_tick) < 40 {
+                self.try_acquire(i, false);
+            }
+        }
+        let e = &mut self.entities[i];
+        if e.order == Order::Idle && e.goal.is_none() {
+            e.action = Action::Idle;
+        }
+    }
+
+    /// Look for an enemy in sight; on success switch to Attack (pushing the current
+    /// order back onto the queue when `resume`).
+    pub(crate) fn try_acquire(&mut self, i: usize, resume: bool) -> bool {
+        let e = &self.entities[i];
+        if e.acquire_cd > 0 {
+            return false;
+        }
+        let d = data().def(e.def);
+        if !d.can_attack() {
+            return false;
+        }
+        let id = e.id;
+        let phase = (id % ACQUIRE_INTERVAL) as i32;
+        self.entities[i].acquire_cd = ACQUIRE_INTERVAL as i32 + phase % 3;
+        let Some(t) = combat::find_target(self, i) else { return false };
+        let e = &mut self.entities[i];
+        let cur = e.order;
+        if resume && !matches!(cur, Order::Idle | Order::Attack { .. }) {
+            e.queue.insert(0, cur);
+        }
+        let q = std::mem::take(&mut e.queue);
+        set_order(self, id, Order::Attack { target: t });
+        let e = &mut self.entities[i];
+        e.queue = q;
+        e.forced_target = false;
+        true
+    }
+
+    fn medic_tick(&mut self, i: usize) {
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        let owner = e.owner;
+        let pos = e.pos;
+        let range = Fx::from_ratio(d.data.heal_range, 100);
+        let sight = Fx::from_int(d.sight_tiles);
+        // find the most hurt friendly infantry/citizen in sight
+        let mut best: Option<(i64, usize)> = None;
+        self.spatial.for_each(pos, sight, |_, slot| {
+            let o = &self.entities[slot];
+            if slot == i || o.owner != owner || !o.on_map() {
+                return;
+            }
+            let od = data().def(o.def);
+            if !matches!(od.class(), Class::Infantry | Class::Citizen) {
+                return;
+            }
+            let maxhp = od.data.hp * (100 + self.players[owner as usize].mods[o.def as usize].hp_pct) / 100;
+            if o.hp >= maxhp || !o.pos.within(pos, sight) {
+                return;
+            }
+            let score = o.pos.dist2_raw(pos);
+            if best.map_or(true, |(b, _)| score < b) {
+                best = Some((score, slot));
+            }
+        });
+        let Some((_, slot)) = best else {
+            let e = &mut self.entities[i];
+            if e.goal.is_none() {
+                e.action = Action::Idle;
+            }
+            return;
+        };
+        let tpos = self.entities[slot].pos;
+        if pos.within(tpos, range) {
+            let e = &mut self.entities[i];
+            e.goal = None;
+            e.path.clear();
+            e.action = Action::Attack;
+            e.facing = (tpos - pos).normalized();
+            if self.tick % 20 == (e.id % 20) {
+                let heal = d.data.heal;
+                let t = &mut self.entities[slot];
+                let maxhp = data().def(t.def).data.hp;
+                t.hp = (t.hp + heal).min(maxhp * 2); // clamp below by real max next line
+                let mh = self.max_hp(&self.entities[slot]);
+                let t = &mut self.entities[slot];
+                t.hp = t.hp.min(mh);
+            }
+        } else if self.entities[i].repath_cd == 0 {
+            self.set_goal(i, tpos, None);
+            self.entities[i].repath_cd = 20;
+        } else {
+            self.entities[i].repath_cd -= 1;
+        }
+    }
+
+    // ------------------------------------------------------------------ attack
+
+    fn behave_attack(&mut self, i: usize, target: EntityId) {
+        let e = &self.entities[i];
+        let owner = e.owner;
+        let d = data().def(e.def);
+        let valid = match self.get(target) {
+            Some(t) => t.on_map() && self.can_see(owner, t) && combat::can_attack(self, e, t),
+            None => false,
+        };
+        if !valid {
+            self.entities[i].target = 0;
+            // bombers that lost the target still go home if out of bombs
+            self.next_order(i);
+            if d.class() != Class::Citizen && d.class() != Class::Aircraft {
+                // look around for the next victim right away
+                self.entities[i].acquire_cd = 0;
+                if self.entities[i].order == Order::Idle {
+                    self.try_acquire(i, false);
+                }
+            }
+            return;
+        }
+        // drop auto-acquired targets for something more urgent every so often
+        if !e.forced_target && self.tick % 16 == (e.id % 16) {
+            if let Some(better) = combat::find_target(self, i) {
+                if better != target {
+                    let cur_d = self.get(target).map(|t| self.edge_dist(e.pos, t)).unwrap_or(Fx(i32::MAX));
+                    let new_d = self.get(better).map(|t| self.edge_dist(e.pos, t)).unwrap_or(Fx(i32::MAX));
+                    let range = d.max_range;
+                    if cur_d > range && new_d <= range {
+                        let e = &mut self.entities[i];
+                        e.order = Order::Attack { target: better };
+                        e.target = better;
+                        return;
+                    }
+                }
+            }
+        }
+        let t = self.get(target).unwrap();
+        let tpos = t.pos;
+        let dist = self.edge_dist(e.pos, t);
+        let range = combat::attack_range(self, e, t);
+        let min_range = d.weapons.iter().map(|w| w.min_range).max().unwrap_or(Fx::ZERO);
+        let air = d.layer == Layer::Air;
+        let is_bomber = d.weapons.first().map_or(false, |w| w.ammo > 0);
+        if is_bomber {
+            let e = &self.entities[i];
+            if e.ammo <= 0 {
+                set_order(self, e.id, Order::ReturnToBase);
+                return;
+            }
+            // fly straight over the target and release
+            if e.pos.within(tpos, Fx::from_ratio(60, 100)) || dist <= Fx::from_ratio(30, 100) {
+                combat::fire_ready(self, i, target);
+                let e = &mut self.entities[i];
+                if e.ammo <= 0 {
+                    let id = e.id;
+                    set_order(self, id, Order::ReturnToBase);
+                }
+                return;
+            }
+            let e = &self.entities[i];
+            if e.goal.map_or(true, |g| !g.within(tpos, Fx::from_ratio(50, 100))) {
+                self.set_goal(i, tpos, None);
+            }
+            return;
+        }
+        if dist <= range && dist >= min_range {
+            if air && !d.data.hover {
+                // jets keep flying: strafe through and loop back
+                combat::fire_ready(self, i, target);
+                let e = &self.entities[i];
+                let close = e.pos.within(tpos, Fx::from_int(2));
+                if e.goal.is_none() || close {
+                    let dir = if e.facing.len2_raw() > 0 { e.facing } else { FVec::new(Fx::ONE, Fx::ZERO) };
+                    let beyond = tpos + dir.with_len(Fx::from_int(5));
+                    self.set_goal(i, beyond, None);
+                }
+                return;
+            }
+            let e = &mut self.entities[i];
+            e.goal = None;
+            e.path.clear();
+            e.flow = None;
+            let dir = tpos - e.pos;
+            if dir.len2_raw() > 0 {
+                e.facing = dir.normalized();
+            }
+            e.action = Action::Attack;
+            combat::fire_ready(self, i, target);
+        } else if dist < min_range {
+            // too close for artillery: back off
+            let e = &self.entities[i];
+            let away = e.pos + (e.pos - tpos).with_len(Fx::from_int(3));
+            if e.goal.is_none() {
+                self.set_goal(i, away, None);
+            }
+        } else {
+            let e = &self.entities[i];
+            let need = match e.goal {
+                None => true,
+                Some(g) => e.repath_cd == 0 && !g.within(tpos, Fx::from_int(2)),
+            };
+            if need {
+                let rect = self.goal_rect_for(target, range);
+                self.set_goal(i, tpos, rect);
+                self.entities[i].repath_cd = 15;
+            } else if self.entities[i].repath_cd > 0 {
+                self.entities[i].repath_cd -= 1;
+            }
+            let e = &mut self.entities[i];
+            e.action = Action::Move;
+        }
+    }
+
+    /// Goal rect for reaching something: its footprint grown by `reach` tiles.
+    pub(crate) fn goal_rect_for(&self, target: EntityId, reach: Fx) -> Option<GoalRect> {
+        let t = self.get(target)?;
+        let d = data().def(t.def);
+        let r = reach.floor_int().max(0);
+        if d.is_building() || d.is_resource() {
+            let (sw, sh) = d.size();
+            Some(GoalRect { x0: t.tile.0 - 1 - r, y0: t.tile.1 - 1 - r, x1: t.tile.0 + sw + r, y1: t.tile.1 + sh + r })
+        } else {
+            let (x, y) = t.pos.tile();
+            Some(GoalRect { x0: x - r, y0: y - r, x1: x + r, y1: y + r })
+        }
+    }
+
+    // ------------------------------------------------------------------ economy
+
+    fn behave_gather(&mut self, i: usize, node: EntityId) {
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        let owner = e.owner;
+        let layer = d.layer;
+        let Some(n) = self.get(node) else {
+            // depleted: find another of the same kind nearby
+            let res = e.last_res;
+            let from = e.last_node_pos;
+            let carry = e.carry;
+            let found = if res != 255 { self.nearest_resource(res, from, 10, layer == Layer::Water) } else { None };
+            let id = e.id;
+            match found {
+                Some(f) => set_order(self, id, Order::Gather { node: f }),
+                None if carry > 0 => set_order(self, id, Order::ReturnCargo),
+                None => self.next_order(i),
+            }
+            return;
+        };
+        let nd = data().def(n.def);
+        let (n_owner, n_complete, npos) = (n.owner, n.complete, n.pos);
+        let Some(res) = nd.data.resource else {
+            self.next_order(i);
+            return;
+        };
+        let res = res as u8;
+        if nd.is_building() && (n_owner != owner || !n_complete) {
+            self.next_order(i);
+            return;
+        }
+        let farm = nd.data.walkable;
+        let id = e.id;
+        // carrying something else, or full: drop it off first
+        let cap = d.data.carry;
+        if e.carry > 0 && e.carry_res != res {
+            let e = &mut self.entities[i];
+            e.carry = 0;
+            e.carry_res = 255;
+        }
+        let e = &self.entities[i];
+        if e.carry >= cap {
+            let e = &mut self.entities[i];
+            e.last_node = node;
+            e.last_node_pos = npos;
+            e.last_res = res;
+            e.queue.insert(0, Order::Gather { node });
+            set_order(self, id, Order::ReturnCargo);
+            return;
+        }
+        let n = self.get(node).unwrap();
+        let in_reach = if farm {
+            // stand on the farm field
+            self.edge_dist(e.pos, n) == Fx::ZERO
+        } else {
+            self.edge_dist(e.pos, n) <= d.radius + REACH
+        };
+        if !in_reach {
+            if e.goal.is_none() {
+                if farm {
+                    // pick a spot in the field based on id so farmers spread out
+                    let off = FVec::new(Fx(((id % 3) as i32 - 1) * ONE * 2 / 3), Fx((((id / 3) % 3) as i32 - 1) * ONE * 2 / 3));
+                    self.set_goal(i, npos + off, None);
+                } else {
+                    let rect = self.goal_rect_for(node, Fx::ZERO);
+                    // aim for the side of the node facing us
+                    self.set_goal(i, npos, rect);
+                }
+                if self.entities[i].goal.is_none() || self.entities[i].stuck > 3 {
+                    self.next_order(i);
+                    return;
+                }
+            }
+            let e = &mut self.entities[i];
+            e.action = if e.carry > 0 { Action::Carry } else { Action::Move };
+            if e.stuck > 60 {
+                // unreachable: try another node
+                let e = &mut self.entities[i];
+                e.stuck = 0;
+                let found = self.nearest_resource(res, npos, 8, layer == Layer::Water).filter(|&f| f != node);
+                match found {
+                    Some(f) => set_order(self, id, Order::Gather { node: f }),
+                    None => self.next_order(i),
+                }
+            }
+            return;
+        }
+        // gathering
+        let mods = self.mods(owner, e.def);
+        let rate = d.gather_rate[res as usize] * (100 + mods.gather_pct[res as usize]) / 100;
+        let e = &mut self.entities[i];
+        e.goal = None;
+        e.path.clear();
+        e.flow = None;
+        e.action = Action::Gather;
+        e.last_node = node;
+        e.last_node_pos = npos;
+        e.last_res = res;
+        e.carry_res = res;
+        let dir = npos - e.pos;
+        if dir.len2_raw() > 0 && !farm {
+            e.facing = dir.normalized();
+        }
+        e.gather_acc += rate;
+        let mut got = 0;
+        while e.gather_acc >= 10000 && e.carry < cap {
+            e.gather_acc -= 10000;
+            e.carry += 1;
+            got += 1;
+        }
+        if got > 0 && !farm {
+            let n = self.get_mut(node).unwrap();
+            n.amount -= got;
+            if n.amount <= 0 {
+                self.kill(node, crate::mapgen::GAIA);
+            }
+        }
+    }
+
+    fn behave_return(&mut self, i: usize) {
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        let id = e.id;
+        if e.carry <= 0 {
+            self.next_order(i);
+            return;
+        }
+        let Some(drop) = self.nearest_dropsite(e.owner, e.carry_res, e.pos, d.layer) else {
+            let e = &mut self.entities[i];
+            e.action = Action::Idle;
+            e.goal = None;
+            if self.tick % 40 == 0 {
+                let owner = self.entities[i].owner;
+                self.events.push(SimEvent::Notice { owner, text: "No drop-off site" });
+            }
+            return;
+        };
+        let t = self.get(drop).unwrap();
+        let dist = self.edge_dist(e.pos, t);
+        if dist <= d.radius + REACH + Fx::from_ratio(20, 100) {
+            let e = &mut self.entities[i];
+            let r = e.carry_res as usize;
+            let amt = e.carry;
+            e.carry = 0;
+            e.gather_acc = 0;
+            let owner = e.owner;
+            let p = &mut self.players[owner as usize];
+            p.res[r] += amt;
+            p.stats.gathered[r] += amt as i64;
+            self.events.push(SimEvent::Gathered { owner, res: r as u8, amount: amt });
+            // resume gathering (queued Gather order) or find more
+            let e = &self.entities[i];
+            if e.queue.is_empty() {
+                let last = e.last_node;
+                if self.get(last).is_some() {
+                    set_order(self, id, Order::Gather { node: last });
+                } else {
+                    let res = e.last_res;
+                    let from = e.last_node_pos;
+                    match self.nearest_resource(res, from, 10, d.layer == Layer::Water) {
+                        Some(f) => set_order(self, id, Order::Gather { node: f }),
+                        None => self.next_order(i),
+                    }
+                }
+            } else {
+                self.next_order(i);
+            }
+            return;
+        }
+        let e = &self.entities[i];
+        let need = match e.goal {
+            None => true,
+            Some(_) => e.stuck > 40,
+        };
+        if need {
+            let rect = self.goal_rect_for(drop, Fx::ZERO);
+            self.set_goal(i, t.pos, rect);
+            self.entities[i].stuck = 0;
+        }
+        self.entities[i].action = Action::Carry;
+    }
+
+    fn behave_build(&mut self, i: usize, site: EntityId, repair: bool) {
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        let id = e.id;
+        let Some(s) = self.get(site) else {
+            self.next_order(i);
+            return;
+        };
+        if s.owner != e.owner {
+            self.next_order(i);
+            return;
+        }
+        let sd = data().def(s.def);
+        let maxhp = self.max_hp(s);
+        if (!repair && s.complete) || (repair && (!s.complete || s.hp >= maxhp)) {
+            // finished: farmers start farming their farm
+            let walk = sd.data.walkable;
+            if walk && d.gather_rate[0] > 0 && self.entities[i].queue.is_empty() {
+                set_order(self, id, Order::Gather { node: site });
+            } else {
+                self.next_order(i);
+            }
+            return;
+        }
+        let dist = self.edge_dist(e.pos, s);
+        if dist > d.radius + REACH {
+            if e.goal.is_none() {
+                let rect = self.goal_rect_for(site, Fx::ZERO);
+                let spos = s.pos;
+                self.set_goal(i, spos, rect);
+                if self.entities[i].goal.is_none() {
+                    self.next_order(i);
+                    return;
+                }
+            }
+            self.entities[i].action = Action::Move;
+            if self.entities[i].stuck > 80 {
+                self.next_order(i);
+            }
+            return;
+        }
+        let spos = s.pos;
+        let e = &mut self.entities[i];
+        e.goal = None;
+        e.path.clear();
+        e.action = Action::Build;
+        let dir = spos - e.pos;
+        if dir.len2_raw() > 0 {
+            e.facing = dir.normalized();
+        }
+        let bt = sd.build_ticks;
+        let s = self.get_mut(site).unwrap();
+        if repair {
+            let add = (maxhp / bt.max(1) / 2).max(1);
+            s.hp = (s.hp + add).min(maxhp);
+        } else {
+            s.progress += 1;
+            // hp grows with progress from 10% to 100%
+            let target_hp = maxhp / 10 + (maxhp - maxhp / 10) * s.progress.min(bt) / bt;
+            let prev_target = maxhp / 10 + (maxhp - maxhp / 10) * (s.progress - 1).min(bt) / bt;
+            s.hp = (s.hp + (target_hp - prev_target)).min(maxhp);
+            if s.progress >= bt {
+                s.complete = true;
+                let owner = s.owner;
+                let def = s.def;
+                self.players[owner as usize].stats.built += 1;
+                self.events.push(SimEvent::BuildingComplete { id: site, def, owner });
+                self.recount_pop();
+                if sd.data.airport || sd.data.coastal || !sd.trains.is_empty() {
+                    // rally defaults to the front door
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ transport
+
+    fn behave_board(&mut self, i: usize, transport: EntityId) {
+        let e = &self.entities[i];
+        let size = data().def(e.def).data.cargo_size;
+        let id = e.id;
+        let Some(t) = self.get(transport) else {
+            self.next_order(i);
+            return;
+        };
+        let td = data().def(t.def);
+        let used: i32 = t.cargo.iter().filter_map(|&c| self.get(c)).map(|c| data().def(c.def).data.cargo_size).sum();
+        if t.owner != e.owner || used + size > td.data.cargo {
+            self.next_order(i);
+            return;
+        }
+        let tpos = t.pos;
+        let reach = td.radius + Fx::from_ratio(150, 100);
+        if e.pos.within(tpos, reach) {
+            let t = self.get_mut(transport).unwrap();
+            t.cargo.push(id);
+            let e = &mut self.entities[i];
+            e.inside = transport;
+            e.order = Order::Idle;
+            e.queue.clear();
+            e.goal = None;
+            e.path.clear();
+            e.action = Action::Idle;
+            return;
+        }
+        // walk to the shore tile nearest the ship
+        let need = match e.goal {
+            None => true,
+            Some(g) => e.repath_cd == 0 && !g.within(tpos, Fx::from_int(3)),
+        };
+        if need {
+            let (tx, ty) = tpos.tile();
+            if let Some((lx, ly)) = self.map.nearest_passable(tx, ty, Layer::Land, 4) {
+                self.set_goal(i, FVec::tile_center(lx, ly), None);
+            } else {
+                self.set_goal(i, tpos, None);
+            }
+            self.entities[i].repath_cd = 20;
+        } else if self.entities[i].repath_cd > 0 {
+            self.entities[i].repath_cd -= 1;
+        }
+        self.entities[i].action = Action::Move;
+    }
+
+    fn behave_unload(&mut self, i: usize, at: FVec) {
+        let e = &self.entities[i];
+        if e.cargo.is_empty() {
+            self.next_order(i);
+            return;
+        }
+        // find the water tile closest to `at` that borders land
+        if e.goal.is_none() && e.stuck == 0 {
+            let (ax, ay) = at.tile();
+            let mut best: Option<(i32, (i32, i32))> = None;
+            for r in 0i32..12 {
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        if dx.abs() != r && dy.abs() != r {
+                            continue;
+                        }
+                        let (x, y) = (ax + dx, ay + dy);
+                        if !self.map.passable(x, y, Layer::Water) {
+                            continue;
+                        }
+                        let mut shore = false;
+                        for (ox, oy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                            if self.map.passable(x + ox, y + oy, Layer::Land) {
+                                shore = true;
+                            }
+                        }
+                        if shore {
+                            let dd = dx * dx + dy * dy;
+                            if best.map_or(true, |(b, _)| dd < b) {
+                                best = Some((dd, (x, y)));
+                            }
+                        }
+                    }
+                }
+                if best.is_some() {
+                    break;
+                }
+            }
+            match best {
+                Some((_, (x, y))) => self.set_goal(i, FVec::tile_center(x, y), None),
+                None => {
+                    self.next_order(i);
+                    return;
+                }
+            }
+        }
+        let e = &self.entities[i];
+        let arrived = e.goal.is_none() || e.stuck > 30;
+        if !arrived {
+            // close enough to some land? unload early
+            let (tx, ty) = e.pos.tile();
+            let mut near_land = false;
+            for (ox, oy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)] {
+                if self.map.passable(tx + ox, ty + oy, Layer::Land) {
+                    near_land = true;
+                }
+            }
+            if !(near_land && e.pos.within(at, Fx::from_int(6))) {
+                return;
+            }
+        }
+        // unload: place cargo on nearby land tiles
+        let tpos = e.pos;
+        let cargo = std::mem::take(&mut self.entities[i].cargo);
+        let (tx, ty) = tpos.tile();
+        let mut spots: Vec<(i32, i32)> = Vec::new();
+        for r in 1i32..6 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs() != r && dy.abs() != r {
+                        continue;
+                    }
+                    if self.map.passable(tx + dx, ty + dy, Layer::Land) {
+                        spots.push((tx + dx, ty + dy));
+                    }
+                }
+            }
+            if spots.len() >= cargo.len() {
+                break;
+            }
+        }
+        let mut left = Vec::new();
+        for (k, c) in cargo.into_iter().enumerate() {
+            if spots.is_empty() {
+                left.push(c);
+                continue;
+            }
+            let (sx, sy) = spots[k % spots.len()];
+            let off = Fx(((k / spots.len().max(1)) as i32 % 3 - 1) * ONE / 4);
+            let p = FVec::new(Fx(sx * ONE + ONE / 2) + off, Fx(sy * ONE + ONE / 2) - off);
+            if let Some(u) = self.get_mut(c) {
+                u.inside = 0;
+                u.pos = p;
+                u.prev_pos = p;
+                u.order = Order::Idle;
+                u.goal = None;
+            }
+            // walk toward the clicked spot if it's on land
+            let (ax, ay) = at.tile();
+            if self.map.passable(ax, ay, Layer::Land) {
+                set_order(self, c, Order::Move { to: at, attack_move: true });
+            }
+        }
+        self.entities[i].cargo = left;
+        if self.entities[i].cargo.is_empty() {
+            self.next_order(i);
+        }
+    }
+
+    // ------------------------------------------------------------------ aircraft
+
+    fn behave_rtb(&mut self, i: usize) {
+        let e = &self.entities[i];
+        let owner = e.owner;
+        let home = match self.get(e.home) {
+            Some(h) if h.owner == owner && h.complete && data().def(h.def).data.airport => Some(e.home),
+            _ => {
+                let mut best: Option<(i64, EntityId)> = None;
+                for o in &self.entities {
+                    if o.alive && o.owner == owner && o.complete && data().def(o.def).data.airport {
+                        let dd = o.pos.dist2_raw(e.pos);
+                        if best.map_or(true, |(b, _)| dd < b) {
+                            best = Some((dd, o.id));
+                        }
+                    }
+                }
+                best.map(|b| b.1)
+            }
+        };
+        let Some(home) = home else {
+            // nowhere to land: loiter until fuel runs out
+            self.entities[i].action = Action::Move;
+            return;
+        };
+        let hpos = self.get(home).unwrap().pos;
+        let e = &mut self.entities[i];
+        e.home = home;
+        if e.pos.within(hpos, Fx::from_ratio(60, 100)) {
+            e.inside = home;
+            e.pos = hpos;
+            e.goal = None;
+            e.path.clear();
+            e.action = Action::Landed;
+            e.order = Order::Idle;
+            let id = e.id;
+            if let Some(h) = self.get_mut(home) {
+                if !h.cargo.contains(&id) {
+                    // airports track landed planes in cargo for the UI
+                    h.cargo.push(id);
+                }
+            }
+            return;
+        }
+        if e.goal.map_or(true, |g| g != hpos) {
+            self.set_goal(i, hpos, None);
+        }
+    }
+
+    fn update_fuel(&mut self, i: usize) {
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        if d.fuel_ticks == 0 {
+            return;
+        }
+        let e = &mut self.entities[i];
+        e.fuel -= 1;
+        if e.fuel <= 0 {
+            let id = e.id;
+            self.kill(id, crate::mapgen::GAIA);
+            return;
+        }
+        // head home when fuel only covers the trip back (+20% margin)
+        if !matches!(e.order, Order::ReturnToBase) && self.tick % 10 == (e.id % 10) {
+            let owner = e.owner;
+            let pos = e.pos;
+            let speed = d.speed.0.max(1) as i64;
+            let mut best: Option<i64> = None;
+            for o in &self.entities {
+                if o.alive && o.owner == owner && o.complete && data().def(o.def).data.airport {
+                    let dist = o.pos.dist(pos).0 as i64;
+                    best = Some(best.map_or(dist, |b: i64| b.min(dist)));
+                }
+            }
+            let e = &self.entities[i];
+            if let Some(dist) = best {
+                let need = dist / speed * 12 / 10 + 40;
+                if (e.fuel as i64) < need {
+                    let id = e.id;
+                    let q = std::mem::take(&mut self.entities[i].queue);
+                    set_order(self, id, Order::ReturnToBase);
+                    self.entities[i].queue = q;
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ movement
+
+    /// Plan a path for unit `i` to `to` (optionally any tile of `rect`).
+    pub(crate) fn set_goal(&mut self, i: usize, to: FVec, rect: Option<GoalRect>) {
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        let layer = d.layer;
+        let from = e.pos;
+        if layer == Layer::Air {
+            let e = &mut self.entities[i];
+            e.goal = Some(to);
+            e.path.clear();
+            e.path.push(to);
+            return;
+        }
+        let start = from.tile();
+        let (gx, gy) = to.tile();
+        let goal = rect.unwrap_or(GoalRect::tile(gx, gy));
+        // flow field following for group moves
+        if let Some((li, fx, fy)) = e.flow {
+            let tick = self.tick;
+            if let Some(f) = self.flows.iter_mut().find(|f| f.layer as u8 == li && f.goal == (fx, fy) && f.version == self.map.version) {
+                f.last_used = tick;
+                let e = &mut self.entities[i];
+                e.goal = Some(to);
+                e.path.clear();
+                return;
+            }
+        }
+        let tiles = astar(&self.map, &mut self.scratch, start, goal, layer, 6000);
+        let mut pts = smooth(&self.map, from, &tiles, Some(to), layer);
+        let reached_goal_tile = tiles.last().map_or(goal.x0 <= start.0 && start.0 <= goal.x1 && goal.y0 <= start.1 && start.1 <= goal.y1, |&(x, y)| {
+            x >= goal.x0 && x <= goal.x1 && y >= goal.y0 && y <= goal.y1
+        });
+        // final approach to the exact point when it's walkable
+        if reached_goal_tile && rect.is_none() && self.map.passable(gx, gy, layer) {
+            if let Some(first) = pts.first_mut() {
+                *first = to;
+            } else if from != to {
+                pts.push(to);
+            }
+        }
+        let e = &mut self.entities[i];
+        e.flow = None;
+        if pts.is_empty() {
+            if rect.is_some() || from == to {
+                // already there
+                e.goal = None;
+            } else {
+                e.goal = Some(to);
+                e.path.push(to);
+            }
+        } else {
+            e.goal = Some(to);
+            e.path = pts;
+        }
+    }
+
+    fn move_unit(&mut self, i: usize) {
+        let e = &self.entities[i];
+        let d = data().def(e.def);
+        let layer = d.layer;
+        let pos = e.pos;
+        let id = e.id;
+        let radius = d.radius;
+        let speed = self.unit_speed(e);
+        let mut new_pos = pos;
+        let moving = e.goal.is_some();
+
+        if moving {
+            let goal = e.goal.unwrap();
+            // next waypoint
+            let wp = if let Some((li, fx, fy)) = e.flow.filter(|_| e.path.is_empty()) {
+                let tick = self.tick;
+                let ver = self.map.version;
+                match self.flows.iter_mut().find(|f| f.layer as u8 == li && f.goal == (fx, fy) && f.version == ver) {
+                    Some(f) => {
+                        f.last_used = tick;
+                        let (tx, ty) = pos.tile();
+                        let near_goal = (tx - fx).abs() <= 6 && (ty - fy).abs() <= 6;
+                        let direct = (tick + id) % 8 == 0 && self.map.line_clear(pos, goal, layer);
+                        if near_goal && !direct {
+                            // close to the shared goal: path to our own formation slot
+                            self.entities[i].flow = None;
+                            self.set_goal(i, goal, None);
+                            self.entities[i].path.last().copied().unwrap_or(goal)
+                        } else if direct {
+                            self.entities[i].flow = None;
+                            self.entities[i].path = vec![goal];
+                            goal
+                        } else {
+                            match f.next(&self.map, tx, ty) {
+                                Some((nx, ny)) => FVec::tile_center(nx, ny),
+                                None => {
+                                    // at the shared goal tile: finish to own formation slot
+                                    self.entities[i].flow = None;
+                                    goal
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        // field was invalidated: replan individually
+                        self.entities[i].flow = None;
+                        self.set_goal(i, goal, None);
+                        self.entities[i].path.last().copied().unwrap_or(goal)
+                    }
+                }
+            } else {
+                e.path.last().copied().unwrap_or(goal)
+            };
+            let (np, reached) = pos.step_toward(wp, speed);
+            new_pos = np;
+            let e = &mut self.entities[i];
+            if reached {
+                if !e.path.is_empty() {
+                    e.path.pop();
+                }
+                if e.path.is_empty() && e.flow.is_none() && np == goal {
+                    e.goal = None;
+                }
+            }
+            let dir = np - pos;
+            if dir.len2_raw() > 0 {
+                // smooth turning for render: blend facing
+                let nd = dir.normalized();
+                e.facing = if layer == Layer::Air {
+                    (e.facing.scale(Fx::from_ratio(3, 4)) + nd.scale(Fx::from_ratio(1, 4))).normalized()
+                } else {
+                    nd
+                };
+            }
+            if e.action == Action::Idle || e.action == Action::Attack || e.action == Action::Gather || e.action == Action::Build {
+                e.action = if e.carry > 0 { Action::Carry } else { Action::Move };
+            }
+        } else if layer == Layer::Air && d.data.needs_airport && !d.data.hover {
+            // jets can't hover: orbit the current position
+            let e = &mut self.entities[i];
+            let f = if e.facing.len2_raw() > 0 { e.facing } else { FVec::new(Fx::ONE, Fx::ZERO) };
+            // rotate facing by ~6 degrees per tick (cos≈0.9945, sin≈0.1045)
+            let c = Fx::from_ratio(9945, 10000);
+            let s = Fx::from_ratio(1045, 10000);
+            let rx = f.x.mul(c) - f.y.mul(s);
+            let ry = f.x.mul(s) + f.y.mul(c);
+            e.facing = FVec::new(rx, ry).normalized();
+            new_pos = pos + e.facing.scale(speed).scale(Fx::from_ratio(1, 2));
+            e.action = Action::Move;
+        }
+
+        // separation (not for aircraft, which stack in 3D on the client)
+        if layer != Layer::Air {
+            let mut push = FVec::ZERO;
+            let mut count = 0;
+            let me_moving = moving;
+            self.spatial.for_each(new_pos, radius + Fx::ONE, |oid, slot| {
+                if oid == id || count > 8 {
+                    return;
+                }
+                let o = &self.entities[slot];
+                let od = data().def(o.def);
+                if od.layer != layer || !o.on_map() {
+                    return;
+                }
+                let rs = radius + od.radius;
+                let delta = new_pos - o.pos;
+                let d2 = delta.len2_raw();
+                let rr = rs.0 as i64 * rs.0 as i64;
+                if d2 >= rr {
+                    return;
+                }
+                let dist = Fx(crate::fixed::isqrt_u64(d2 as u64) as i32);
+                let overlap = rs - dist;
+                let dir = if d2 == 0 {
+                    // deterministic tie-break by id
+                    if id > oid { FVec::new(Fx::ONE, Fx::ZERO) } else { FVec::new(-Fx::ONE, Fx::ZERO) }
+                } else {
+                    delta.with_len(Fx::ONE)
+                };
+                // moving units shove idle ones more than the reverse
+                let other_moving = o.goal.is_some();
+                let share = match (me_moving, other_moving) {
+                    (true, false) => Fx::from_ratio(1, 5),
+                    (false, true) => Fx::from_ratio(4, 5),
+                    _ => Fx::HALF,
+                };
+                push += dir.scale(overlap.mul(share));
+                count += 1;
+            });
+            let max_push = speed.max(Fx::from_ratio(3, 100));
+            if push.len2_raw() > 0 {
+                let pl = push.len();
+                let push = if pl > max_push { push.with_len(max_push) } else { push };
+                new_pos += push;
+            }
+            // stay on passable ground: slide along obstacles
+            if !self.map.passable_at(new_pos, layer) {
+                let try_x = FVec::new(new_pos.x, pos.y);
+                let try_y = FVec::new(pos.x, new_pos.y);
+                if self.map.passable_at(try_x, layer) {
+                    new_pos = try_x;
+                } else if self.map.passable_at(try_y, layer) {
+                    new_pos = try_y;
+                } else if self.map.passable_at(pos, layer) {
+                    new_pos = pos;
+                } else {
+                    // pushed into a wall somehow: pop out to the nearest open tile
+                    let (tx, ty) = pos.tile();
+                    if let Some((nx, ny)) = self.map.nearest_passable(tx, ty, layer, 4) {
+                        new_pos = FVec::tile_center(nx, ny);
+                    }
+                }
+            }
+        }
+        let max = Fx::from_int(self.map.w) - Fx::from_ratio(1, 100);
+        new_pos.x = new_pos.x.max(Fx::ZERO).min(max);
+        new_pos.y = new_pos.y.max(Fx::ZERO).min(Fx::from_int(self.map.h) - Fx::from_ratio(1, 100));
+
+        let e = &mut self.entities[i];
+        // stuck detection
+        if moving {
+            let progressed = new_pos.dist2_raw(pos) * 16 > (speed.0 as i64 * speed.0 as i64);
+            if progressed {
+                if e.stuck > 0 {
+                    e.stuck -= 1;
+                }
+            } else {
+                e.stuck += 2;
+                if e.stuck == 40 || e.stuck == 120 {
+                    // replan around whatever is in the way
+                    let g = e.goal.unwrap();
+                    e.path.clear();
+                    e.flow = None;
+                    self.set_goal(i, g, None);
+                } else if e.stuck > 200 {
+                    let e = &mut self.entities[i];
+                    e.goal = None;
+                    e.path.clear();
+                }
+            }
+        }
+        let e = &mut self.entities[i];
+        e.vel = new_pos - pos;
+        e.pos = new_pos;
+        if !moving && e.vel.len2_raw() == 0 && matches!(e.action, Action::Move | Action::Carry) && layer != Layer::Air {
+            e.action = Action::Idle;
+        }
+    }
+}

@@ -1,0 +1,11 @@
+[package]
+name = "ee_godot"
+edition.workspace = true
+version.workspace = true
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+ee_sim.workspace = true
+ee_ai.workspace = true
+ee_net.workspace = true
+godot = { version = "0.5", features = ["api-4-7"] }

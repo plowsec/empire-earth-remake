@@ -1,0 +1,383 @@
+//! Command validation and translation into unit orders. Every command is
+//! re-validated here (ownership, affordability, placement) because in multiplayer
+//! commands arrive from untrusted peers.
+use crate::command::{Command, CommandKind};
+use crate::defs::{Class, Layer};
+use crate::entity::*;
+use crate::fixed::{FVec, Fx};
+use crate::mapgen::GAIA;
+use crate::path::FlowField;
+use crate::world::{data, SimEvent, World};
+
+const MAX_QUEUE: usize = 15;
+
+fn owned_units(w: &World, player: u8, ids: &[EntityId]) -> Vec<EntityId> {
+    let mut out: Vec<EntityId> = ids
+        .iter()
+        .copied()
+        .filter(|&id| match w.get(id) {
+            Some(e) => e.owner == player && w.def_of(e).is_unit(),
+            None => false,
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out.truncate(512);
+    out
+}
+
+fn owned_buildings(w: &World, player: u8, ids: &[EntityId]) -> Vec<EntityId> {
+    let mut out: Vec<EntityId> = ids
+        .iter()
+        .copied()
+        .filter(|&id| match w.get(id) {
+            Some(e) => e.owner == player && w.def_of(e).is_building(),
+            None => false,
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Give `order` to a unit, replacing or queueing.
+pub fn give(w: &mut World, id: EntityId, order: Order, queue: bool) {
+    let Some(e) = w.get_mut(id) else { return };
+    if queue && e.order != Order::Idle {
+        if e.queue.len() < 32 {
+            e.queue.push(order);
+        }
+        return;
+    }
+    e.queue.clear();
+    set_order(w, id, order);
+}
+
+/// Replace the current order, resetting movement state.
+pub fn set_order(w: &mut World, id: EntityId, order: Order) {
+    let tick = w.tick;
+    let Some(e) = w.get_mut(id) else { return };
+    e.order = order;
+    e.goal = None;
+    e.path.clear();
+    e.flow = None;
+    e.stuck = 0;
+    e.repath_cd = 0;
+    e.forced_target = matches!(order, Order::Attack { .. });
+    if let Order::Attack { target } = order {
+        e.target = target;
+    }
+    // landed aircraft take off for any active order
+    if e.inside != 0 && !matches!(order, Order::Idle | Order::ReturnToBase) {
+        let inside = e.inside;
+        if let Some(home) = w.get(inside) {
+            let hp = home.pos;
+            let is_airport = data().def(home.def).data.airport;
+            if is_airport {
+                if let Some(t) = w.get_mut(inside) {
+                    t.cargo.retain(|&c| c != id);
+                }
+                let e = w.get_mut(id).unwrap();
+                e.inside = 0;
+                e.pos = hp;
+                e.prev_pos = hp;
+                e.action = Action::Move;
+                let _ = tick;
+            }
+        }
+    }
+}
+
+/// Square-ish formation offsets, deterministic by index.
+pub fn formation_offset(i: usize, n: usize, spacing: Fx) -> FVec {
+    if n <= 1 {
+        return FVec::ZERO;
+    }
+    let cols = (crate::fixed::isqrt_u64(n as u64) as usize).max(1);
+    let cols = if cols * cols < n { cols + 1 } else { cols };
+    let rows = (n + cols - 1) / cols;
+    let c = (i % cols) as i32;
+    let r = (i / cols) as i32;
+    let ox = spacing.mul_int(c * 2 - (cols as i32 - 1));
+    let oy = spacing.mul_int(r * 2 - (rows as i32 - 1));
+    FVec::new(Fx(ox.0 / 2), Fx(oy.0 / 2))
+}
+
+pub fn apply(w: &mut World, c: &Command) {
+    let p = c.player;
+    if p as usize >= w.players.len() || w.players[p as usize].defeated {
+        return;
+    }
+    match &c.kind {
+        CommandKind::Move { units, to, attack_move, queue } => {
+            let units = owned_units(w, p, units);
+            move_group(w, &units, *to, *attack_move, *queue);
+        }
+        CommandKind::Target { units, target, queue } => {
+            let units = owned_units(w, p, units);
+            smart_target(w, p, &units, *target, *queue, false);
+        }
+        CommandKind::Attack { units, target, queue } => {
+            let units = owned_units(w, p, units);
+            smart_target(w, p, &units, *target, *queue, true);
+        }
+        CommandKind::Build { units, def, tile, queue } => {
+            let units: Vec<EntityId> = owned_units(w, p, units)
+                .into_iter()
+                .filter(|&id| {
+                    let e = w.get(id).unwrap();
+                    w.def_of(e).builds.contains(def)
+                })
+                .collect();
+            if units.is_empty() || *def as usize >= data().defs.len() {
+                return;
+            }
+            if let Err(msg) = w.can_place(p, *def, *tile) {
+                w.events.push(SimEvent::Notice { owner: p, text: msg });
+                return;
+            }
+            let cost = data().def(*def).data.cost;
+            if !w.pay(p, &cost) {
+                w.events.push(SimEvent::Notice { owner: p, text: "Not enough resources" });
+                return;
+            }
+            let site = w.spawn_static(*def, p, *tile, false);
+            w.events.push(SimEvent::BuildingPlaced { id: site, def: *def, owner: p });
+            for id in units {
+                give(w, id, Order::Build { site }, *queue);
+            }
+        }
+        CommandKind::Train { building, def, count } => {
+            let Some(b) = w.get(*building) else { return };
+            if b.owner != p || !b.complete || !w.def_of(b).trains.contains(def) {
+                return;
+            }
+            let cost = data().def(*def).data.cost;
+            for _ in 0..(*count).clamp(1, 10) {
+                let len = w.get(*building).unwrap().production.len();
+                if len >= MAX_QUEUE {
+                    break;
+                }
+                if !w.pay(p, &cost) {
+                    w.events.push(SimEvent::Notice { owner: p, text: "Not enough resources" });
+                    break;
+                }
+                w.get_mut(*building).unwrap().production.push(ProdItem::Unit(*def));
+            }
+        }
+        CommandKind::Research { building, tech } => {
+            let d = data();
+            let Some(t) = d.techs.get(*tech as usize) else { return };
+            let Some(b) = w.get(*building) else { return };
+            if b.owner != p || !b.complete || b.def != t.at || b.production.len() >= MAX_QUEUE {
+                return;
+            }
+            let pl = &w.players[p as usize];
+            if pl.techs[*tech as usize] || pl.researching[*tech as usize] {
+                return;
+            }
+            if !t.requires.iter().all(|r| pl.techs[*r as usize]) {
+                return;
+            }
+            if !w.pay(p, &t.data.cost) {
+                w.events.push(SimEvent::Notice { owner: p, text: "Not enough resources" });
+                return;
+            }
+            w.players[p as usize].researching[*tech as usize] = true;
+            w.get_mut(*building).unwrap().production.push(ProdItem::Tech(*tech));
+        }
+        CommandKind::CancelProduction { building, index } => {
+            let Some(b) = w.get(*building) else { return };
+            if b.owner != p || *index as usize >= b.production.len() {
+                return;
+            }
+            let item = b.production[*index as usize];
+            let b = w.get_mut(*building).unwrap();
+            b.production.remove(*index as usize);
+            if *index == 0 {
+                b.prod_progress = 0;
+            }
+            match item {
+                ProdItem::Unit(u) => {
+                    let cost = data().def(u).data.cost;
+                    w.refund(p, &cost);
+                }
+                ProdItem::Tech(t) => {
+                    let cost = data().techs[t as usize].data.cost;
+                    w.refund(p, &cost);
+                    w.players[p as usize].researching[t as usize] = false;
+                }
+            }
+            w.recount_pop();
+        }
+        CommandKind::SetRally { buildings, to, target } => {
+            for b in owned_buildings(w, p, buildings) {
+                let e = w.get_mut(b).unwrap();
+                e.rally = Some(*to);
+                e.rally_target = *target;
+            }
+        }
+        CommandKind::Stop { units } => {
+            for id in owned_units(w, p, units) {
+                give(w, id, Order::Idle, false);
+                if let Some(e) = w.get_mut(id) {
+                    e.target = 0;
+                }
+            }
+        }
+        CommandKind::Unload { units, at } => {
+            for id in owned_units(w, p, units) {
+                let e = w.get(id).unwrap();
+                if w.def_of(e).data.cargo > 0 {
+                    give(w, id, Order::Unload { at: *at }, false);
+                }
+            }
+        }
+        CommandKind::ReturnToBase { units } => {
+            for id in owned_units(w, p, units) {
+                let e = w.get(id).unwrap();
+                if w.def_of(e).data.needs_airport {
+                    give(w, id, Order::ReturnToBase, false);
+                }
+            }
+        }
+        CommandKind::Delete { units } => {
+            let mut ids = owned_units(w, p, units);
+            ids.extend(owned_buildings(w, p, units));
+            for id in ids {
+                w.kill(id, GAIA);
+            }
+            w.recount_pop();
+        }
+        CommandKind::Resign => {
+            w.resign(p);
+        }
+    }
+}
+
+pub fn move_group(w: &mut World, units: &[EntityId], to: FVec, attack_move: bool, queue: bool) {
+    if units.is_empty() {
+        return;
+    }
+    // group per layer so ships and tanks ordered together each get a sane formation
+    for layer in [Layer::Land, Layer::Water, Layer::Air] {
+        let group: Vec<EntityId> = units
+            .iter()
+            .copied()
+            .filter(|&id| w.def_of(w.get(id).unwrap()).layer == layer)
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        // largest radius sets spacing
+        let maxr = group.iter().map(|&id| w.def_of(w.get(id).unwrap()).radius).max().unwrap_or(Fx::HALF);
+        let spacing = (maxr.mul_int(2) + Fx::from_ratio(30, 100)).max(Fx::from_ratio(70, 100));
+        // order units by distance to target so the closest take the front slots
+        let mut sorted: Vec<(i64, EntityId)> =
+            group.iter().map(|&id| (w.get(id).unwrap().pos.dist2_raw(to), id)).collect();
+        sorted.sort();
+        let n = sorted.len();
+        let use_flow = n >= 8 && layer != Layer::Air;
+        let (gx, gy) = to.tile();
+        if use_flow {
+            let ok = w.map.passable(gx, gy, layer);
+            let goal = if ok { Some((gx, gy)) } else { w.map.nearest_passable(gx, gy, layer, 8) };
+            if let Some(g) = goal {
+                let li = layer as u8;
+                if !w.flows.iter().any(|f| f.layer as u8 == li && f.goal == g && f.version == w.map.version) {
+                    let ff = FlowField::build(&w.map, g, layer, w.tick);
+                    w.flows.push(ff);
+                    if w.flows.len() > 24 {
+                        // evict least recently used
+                        let (oldest, _) = w.flows.iter().enumerate().min_by_key(|(_, f)| f.last_used).unwrap();
+                        w.flows.remove(oldest);
+                    }
+                }
+            }
+        }
+        for (i, (_, id)) in sorted.iter().enumerate() {
+            let mut dest = to + formation_offset(i, n, spacing);
+            let (dx, dy) = dest.tile();
+            if !w.map.passable(dx, dy, layer) {
+                if let Some((nx, ny)) = w.map.nearest_passable(dx, dy, layer, 6) {
+                    dest = FVec::tile_center(nx, ny);
+                } else {
+                    dest = to;
+                }
+            }
+            give(w, *id, Order::Move { to: dest, attack_move }, queue);
+            if use_flow && !queue {
+                let g = if w.map.passable(gx, gy, layer) { Some((gx, gy)) } else { w.map.nearest_passable(gx, gy, layer, 8) };
+                if let (Some(g), Some(e)) = (g, w.get_mut(*id)) {
+                    e.flow = Some((layer as u8, g.0, g.1));
+                }
+            }
+        }
+    }
+}
+
+fn smart_target(w: &mut World, p: u8, units: &[EntityId], target: EntityId, queue: bool, force_attack: bool) {
+    let Some(t) = w.get(target) else { return };
+    let tdef = w.def_of(t);
+    let towner = t.owner;
+    let tpos = t.pos;
+    let enemy = w.is_enemy(p, towner);
+    let own = towner == p;
+    let t_complete = t.complete;
+    let t_damaged = t.hp < w.max_hp(t);
+    let mut plan: Vec<(EntityId, Option<Order>)> = Vec::new();
+    for &id in units {
+        let e = w.get(id).unwrap();
+        let t = w.get(target).unwrap();
+        let d = w.def_of(e);
+        let order = if enemy || force_attack {
+            if crate::combat::can_attack(w, e, t) {
+                Some(Order::Attack { target })
+            } else {
+                None
+            }
+        } else if tdef.is_resource() {
+            let r = tdef.data.resource.unwrap() as usize;
+            let is_fish = w.fish.contains(&target);
+            let can = d.gather_rate[r] > 0 && ((d.layer == Layer::Water) == is_fish);
+            if can { Some(Order::Gather { node: target }) } else { None }
+        } else if own && tdef.is_building() {
+            if !t_complete && !d.builds.is_empty() {
+                Some(Order::Build { site: target })
+            } else if tdef.data.walkable && d.gather_rate[0] > 0 {
+                Some(Order::Gather { node: target })
+            } else if e.carry > 0 && tdef.data.dropsite.iter().any(|r| *r as u8 == e.carry_res) {
+                Some(Order::ReturnCargo)
+            } else if t_damaged && !d.builds.is_empty() {
+                Some(Order::Repair { target })
+            } else if tdef.data.airport && d.data.needs_airport {
+                Some(Order::ReturnToBase)
+            } else {
+                None
+            }
+        } else if own && tdef.data.cargo > 0 && d.layer == Layer::Land {
+            Some(Order::Board { transport: target })
+        } else {
+            None
+        };
+        plan.push((id, order));
+    }
+    let mut movers = Vec::new();
+    for (id, order) in plan {
+        match order {
+            Some(o) => {
+                give(w, id, o, queue);
+                if o == Order::ReturnToBase {
+                    if let Some(e) = w.get_mut(id) {
+                        e.home = target;
+                    }
+                }
+            }
+            None => movers.push(id),
+        }
+    }
+    if !movers.is_empty() {
+        move_group(w, &movers, tpos, false, queue);
+    }
+    let _ = Class::Building;
+}

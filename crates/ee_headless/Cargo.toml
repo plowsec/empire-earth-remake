@@ -1,0 +1,8 @@
+[package]
+name = "ee_headless"
+edition.workspace = true
+version.workspace = true
+[dependencies]
+ee_sim.workspace = true
+ee_ai.workspace = true
+ee_net.workspace = true

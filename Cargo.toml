@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/ee_sim", "crates/ee_ai", "crates/ee_net", "crates/ee_godot", "crates/ee_headless"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+ron = "0.10"
+ee_sim = { path = "crates/ee_sim" }
+ee_ai = { path = "crates/ee_ai" }
+ee_net = { path = "crates/ee_net" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+debug = 1
+lto = "thin"
