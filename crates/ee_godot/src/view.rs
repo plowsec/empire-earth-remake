@@ -898,6 +898,15 @@ impl GameView {
         d
     }
 
+    /// Select all of the local player's entities of `key` (tests/screenshots).
+    #[func]
+    fn select_all_of(&mut self, key: GString, max: i64) {
+        let Some(c) = self.client.as_mut() else { return };
+        let Some(def) = data().try_id(&key.to_string()) else { return };
+        let me = c.me;
+        c.selection = c.world().entities.iter().filter(|e| e.alive && e.owner == me && e.def == def && e.inside == 0).map(|e| e.id).take(max as usize).collect();
+    }
+
     /// Number of entities of `key` owned by the local player (tests/UI).
     #[func]
     fn count_owned(&self, key: GString) -> i64 {

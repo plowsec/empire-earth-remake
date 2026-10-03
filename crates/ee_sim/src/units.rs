@@ -14,7 +14,10 @@ const ACQUIRE_INTERVAL: u32 = 8;
 impl World {
     pub(crate) fn update_units(&mut self) {
         let n = self.entities.len();
-        for i in 1..n {
+        // alternate iteration direction each tick so no player always moves first
+        let forward = self.tick % 2 == 0;
+        for k in 1..n {
+            let i = if forward { k } else { n - k };
             let e = &self.entities[i];
             if !e.alive {
                 continue;

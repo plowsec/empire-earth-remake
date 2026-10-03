@@ -145,6 +145,8 @@ pub struct World {
     pub winner_team: Option<u8>,
     pub starts: Vec<(i32, i32)>,
     pub fish: Vec<EntityId>,
+    /// instant-hit damage resolved at the end of the tick (no first-mover advantage)
+    pub(crate) pending_damage: Vec<(EntityId, i32, crate::defs::DamageType, u8, EntityId)>,
     // ---- caches (not game state; rebuilt deterministically)
     pub(crate) spatial: SpatialHash,
     pub(crate) scratch: PathScratch,
@@ -202,6 +204,7 @@ impl World {
             winner_team: None,
             starts: gen.starts,
             fish: Vec::new(),
+            pending_damage: Vec::new(),
             spatial: SpatialHash::new(w, w),
             scratch: PathScratch::default(),
             flows: Vec::new(),
@@ -498,6 +501,11 @@ impl World {
         self.spatial.rebuild(&self.entities, data());
         self.update_buildings();
         self.update_units();
+        // resolve this tick's instant hits simultaneously
+        let hits = std::mem::take(&mut self.pending_damage);
+        for (target, dmg, dt, owner, src) in hits {
+            crate::combat::apply_damage(self, target, dmg, dt, owner, src);
+        }
         self.update_projectiles();
         if self.tick % 4 == 0 {
             self.update_vision();
@@ -519,10 +527,11 @@ impl World {
     fn check_victory(&mut self) {
         let np = self.players.len();
         let mut alive = vec![false; np];
+        // a player survives while they can still rebuild: any building or citizen
         for e in &self.entities {
             if e.alive && (e.owner as usize) < np {
                 let d = data().def(e.def);
-                if d.is_unit() || d.is_building() {
+                if d.is_building() || d.class() == Class::Citizen {
                     alive[e.owner as usize] = true;
                 }
             }
@@ -531,6 +540,11 @@ impl World {
             if !alive[i] && !self.players[i].defeated {
                 self.players[i].defeated = true;
                 self.events.push(SimEvent::PlayerDefeated { player: i as u8 });
+                // remaining forces surrender
+                let rest: Vec<EntityId> = self.entities.iter().filter(|e| e.alive && e.owner == i as u8).map(|e| e.id).collect();
+                for id in rest {
+                    self.kill(id, GAIA);
+                }
             }
         }
         let mut teams: Vec<u8> = self.players.iter().filter(|p| !p.defeated).map(|p| p.team).collect();

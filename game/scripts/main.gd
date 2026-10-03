@@ -13,6 +13,7 @@ var start_cfg := {}
 var follow_action := false
 var warp_ticks := 0
 var stress := 0
+var select_key := ""
 var _perf_t := 0.0
 var _perf_frames := 0
 var _perf_sim := 0.0
@@ -29,6 +30,7 @@ func _ready() -> void:
 		elif a.begins_with("--speed="): start_cfg["speed"] = float(a.substr(8))
 		elif a.begins_with("--ai0"): start_cfg["ai_self"] = 1
 		elif a.begins_with("--stress="): stress = int(a.substr(9))
+		elif a.begins_with("--select="): select_key = a.substr(9)
 		elif a == "--autotest":
 			var t = load("res://scripts/autotest.gd").new()
 			t.name = "AutoTest"
@@ -74,6 +76,10 @@ func start_match(cfg: Dictionary) -> void:
 	vfx.bind(game_view, rig)
 
 func _process(dt: float) -> void:
+	if select_key != "" and game_view.is_running():
+		var parts := select_key.split(":")
+		game_view.select_all_of(parts[0], int(parts[1]) if parts.size() > 1 else 999)
+		select_key = ""
 	if stress > 0 and game_view.is_running():
 		var c: Vector3 = game_view.debug_spawn_battle(stress)
 		rig.focus(c, true)

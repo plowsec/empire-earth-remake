@@ -126,7 +126,7 @@ pub fn fire_ready(w: &mut World, i: usize, target: EntityId) {
         w.events.push(SimEvent::Shot { from: src, to: target, from_pos: from, to_pos: tpos, weapon: wi as u8 });
         match wp.projectile {
             Projectile::Instant => {
-                apply_damage(w, target, dmg * wp.burst, wp.dmg_type, owner, src);
+                w.pending_damage.push((target, dmg * wp.burst, wp.dmg_type, owner, src));
             }
             Projectile::Ballistic { .. } | Projectile::Homing { .. } => {
                 let homing = matches!(wp.projectile, Projectile::Homing { .. });

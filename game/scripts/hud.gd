@@ -117,6 +117,33 @@ func _label(text: String, size := 17, color := Color(0.92, 0.9, 0.85), title := 
 
 # ---------------------------------------------------------------- layout
 
+func _icon(key: String) -> Texture2D:
+	var path := "res://assets/icons/%s.png" % key
+	if ResourceLoader.exists(path):
+		return load(path)
+	return null
+
+func _console_style() -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.045, 0.05, 0.058, 0.94)
+	sb.border_color = Color(ACCENT, 0.75)
+	sb.border_width_top = 2
+	sb.shadow_color = Color(0, 0, 0, 0.55)
+	sb.shadow_size = 14
+	sb.content_margin_left = 10; sb.content_margin_right = 10
+	sb.content_margin_top = 10; sb.content_margin_bottom = 8
+	return sb
+
+func _inset_style() -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.02, 0.025, 0.03, 0.9)
+	sb.border_color = Color(0.3, 0.27, 0.2, 0.9)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(4)
+	sb.content_margin_left = 8; sb.content_margin_right = 8
+	sb.content_margin_top = 6; sb.content_margin_bottom = 6
+	return sb
+
 func _build() -> void:
 	if root:
 		root.queue_free()
@@ -130,92 +157,107 @@ func _build() -> void:
 	# --- top bar
 	var top := PanelContainer.new()
 	top.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	top.position = Vector2(-460, 6)
-	top.custom_minimum_size = Vector2(920, 44)
+	top.position = Vector2(-470, 4)
+	top.custom_minimum_size = Vector2(940, 46)
 	top.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(top)
 	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 22)
+	hb.add_theme_constant_override("separation", 18)
 	hb.alignment = BoxContainer.ALIGNMENT_CENTER
 	top.add_child(hb)
 	for i in 5:
 		var box := HBoxContainer.new()
-		box.add_theme_constant_override("separation", 6)
-		var icon := ColorRect.new()
-		icon.custom_minimum_size = Vector2(14, 14)
-		icon.color = RES_COLORS[i]
-		var icon_wrap := CenterContainer.new()
-		icon_wrap.add_child(icon)
-		box.add_child(icon_wrap)
-		var nm := _label(RES_NAMES[i].capitalize(), 14, Color(0.7, 0.68, 0.62))
-		box.add_child(nm)
-		var l := _label("0", 20, Color(1, 0.97, 0.9), true)
-		l.custom_minimum_size = Vector2(54, 0)
+		box.add_theme_constant_override("separation", 4)
+		box.tooltip_text = RES_NAMES[i].capitalize()
+		box.mouse_filter = Control.MOUSE_FILTER_PASS
+		var icon := TextureRect.new()
+		icon.texture = _icon("res_" + RES_NAMES[i])
+		icon.custom_minimum_size = Vector2(34, 34)
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		box.add_child(icon)
+		var l := _label("0", 22, Color(1, 0.97, 0.9), true)
+		l.custom_minimum_size = Vector2(62, 0)
 		box.add_child(l)
 		res_labels.append(l)
 		hb.add_child(box)
-	var sep := VSeparator.new()
-	hb.add_child(sep)
-	pop_label = _label("Pop 0/0", 19, Color(0.85, 0.92, 1.0), true)
-	hb.add_child(pop_label)
-	clock_label = _label("00:00", 19, ACCENT, true)
+	hb.add_child(VSeparator.new())
+	var pbox := HBoxContainer.new()
+	var picon := TextureRect.new()
+	picon.texture = _icon("res_pop")
+	picon.custom_minimum_size = Vector2(34, 34)
+	picon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	picon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	pbox.add_child(picon)
+	pop_label = _label("0/0", 21, Color(0.85, 0.92, 1.0), true)
+	pbox.add_child(pop_label)
+	hb.add_child(pbox)
+	clock_label = _label("00:00", 21, ACCENT, true)
 	hb.add_child(clock_label)
 	var menu_btn := Button.new()
 	menu_btn.text = "Menu"
-	menu_btn.custom_minimum_size = Vector2(70, 30)
+	menu_btn.custom_minimum_size = Vector2(72, 32)
 	menu_btn.pressed.connect(_toggle_menu)
 	hb.add_child(menu_btn)
 
-	# --- bottom: minimap (left)
-	var mm_panel := PanelContainer.new()
-	mm_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	mm_panel.position = Vector2(10, -278)
-	mm_panel.custom_minimum_size = Vector2(268, 268)
-	mm_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	root.add_child(mm_panel)
+	# --- bottom console
+	var console := PanelContainer.new()
+	console.add_theme_stylebox_override("panel", _console_style())
+	console.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	console.anchor_top = 1.0
+	console.offset_top = -224
+	console.offset_bottom = 0
+	console.mouse_filter = Control.MOUSE_FILTER_STOP
+	root.add_child(console)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	console.add_child(row)
+
+	# minimap
+	var mm_frame := PanelContainer.new()
+	mm_frame.add_theme_stylebox_override("panel", _inset_style())
+	row.add_child(mm_frame)
 	minimap = TextureRect.new()
 	minimap.texture = gv.minimap_texture()
 	minimap.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	minimap.stretch_mode = TextureRect.STRETCH_SCALE
 	minimap.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	minimap.custom_minimum_size = Vector2(248, 248)
+	minimap.custom_minimum_size = Vector2(194, 194)
 	minimap.mouse_filter = Control.MOUSE_FILTER_STOP
 	minimap.gui_input.connect(_on_minimap_input)
-	mm_panel.add_child(minimap)
+	mm_frame.add_child(minimap)
 	minimap_overlay = Control.new()
 	minimap_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	minimap_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	minimap_overlay.draw.connect(_draw_minimap_overlay)
 	minimap.add_child(minimap_overlay)
 
-	# --- bottom center: selection + queue
-	sel_panel = PanelContainer.new()
-	sel_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	sel_panel.position = Vector2(-420, -196)
-	sel_panel.custom_minimum_size = Vector2(560, 186)
-	sel_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	root.add_child(sel_panel)
+	# selection + production queue
+	var mid := PanelContainer.new()
+	mid.add_theme_stylebox_override("panel", _inset_style())
+	mid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(mid)
 	var sv := VBoxContainer.new()
-	sel_panel.add_child(sv)
+	sv.add_theme_constant_override("separation", 4)
+	mid.add_child(sv)
 	queue_box = HBoxContainer.new()
 	queue_box.add_theme_constant_override("separation", 4)
 	sv.add_child(queue_box)
 	sel_box = VBoxContainer.new()
 	sel_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	sv.add_child(sel_box)
+	sel_panel = mid
 
-	# --- bottom right: command card
-	var card_panel := PanelContainer.new()
-	card_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	card_panel.position = Vector2(-470, -196)
-	card_panel.custom_minimum_size = Vector2(460, 186)
-	card_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	root.add_child(card_panel)
+	# command card
+	var card_frame := PanelContainer.new()
+	card_frame.add_theme_stylebox_override("panel", _inset_style())
+	row.add_child(card_frame)
 	card_grid = GridContainer.new()
 	card_grid.columns = 5
 	card_grid.add_theme_constant_override("h_separation", 5)
 	card_grid.add_theme_constant_override("v_separation", 5)
-	card_panel.add_child(card_grid)
+	card_grid.custom_minimum_size = Vector2(5 * 70 + 4 * 5, 3 * 62 + 2 * 5)
+	card_frame.add_child(card_grid)
 
 	# --- tooltip
 	tooltip = PanelContainer.new()
@@ -233,10 +275,9 @@ func _build() -> void:
 	# --- notifications
 	notice_box = VBoxContainer.new()
 	notice_box.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	notice_box.position = Vector2(-300, 64)
+	notice_box.position = Vector2(-300, 62)
 	notice_box.custom_minimum_size = Vector2(600, 0)
 	notice_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	notice_box.alignment = BoxContainer.ALIGNMENT_BEGIN
 	root.add_child(notice_box)
 
 	hover_label = _label("", 15, Color(1, 1, 0.9))
@@ -248,7 +289,6 @@ func _build() -> void:
 	debug_label.visible = false
 	root.add_child(debug_label)
 
-	# --- drag rectangle
 	drag_rect = Panel.new()
 	var ds := StyleBoxFlat.new()
 	ds.bg_color = Color(0.4, 1.0, 0.5, 0.08)
@@ -299,7 +339,7 @@ func _process(dt: float) -> void:
 	var res: Array = st.get("res", [])
 	for i in min(5, res.size()):
 		res_labels[i].text = str(res[i])
-	pop_label.text = "Pop %d/%d" % [st.get("pop", 0), st.get("pop_cap", 0)]
+	pop_label.text = "%d/%d" % [st.get("pop", 0), st.get("pop_cap", 0)]
 	pop_label.add_theme_color_override("font_color", Color(1, 0.4, 0.35) if st.get("pop", 0) >= st.get("pop_cap", 0) else Color(0.85, 0.92, 1.0))
 	var secs: int = st.get("seconds", 0)
 	clock_label.text = "%02d:%02d" % [secs / 60, secs % 60]
@@ -390,16 +430,23 @@ func _refresh_selection() -> void:
 		var head := HBoxContainer.new()
 		head.add_theme_constant_override("separation", 14)
 		var sw := ColorRect.new()
-		sw.custom_minimum_size = Vector2(6, 46)
+		sw.custom_minimum_size = Vector2(5, 64)
 		sw.color = x["owner_color"]
 		head.add_child(sw)
+		var portrait := TextureRect.new()
+		portrait.texture = _icon(x["key"])
+		portrait.custom_minimum_size = Vector2(76, 76)
+		portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		head.add_child(portrait)
 		var nv := VBoxContainer.new()
 		nv.add_child(_label(x["name"], 24, ACCENT, true))
 		nv.add_child(_label(x.get("role", ""), 14, Color(0.75, 0.73, 0.68)))
 		head.add_child(nv)
 		sel_box.add_child(head)
 		var hp := ProgressBar.new()
-		hp.custom_minimum_size = Vector2(0, 14)
+		hp.custom_minimum_size = Vector2(360, 12)
+		hp.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 		hp.max_value = max(1, x["max_hp"])
 		hp.value = x["hp"]
 		hp.show_percentage = false
@@ -418,15 +465,20 @@ func _refresh_selection() -> void:
 		return
 	# multi-select grid
 	var grid := GridContainer.new()
-	grid.columns = 12
+	grid.columns = 16
 	grid.add_theme_constant_override("h_separation", 3)
 	grid.add_theme_constant_override("v_separation", 3)
 	sel_box.add_child(_label("%d selected" % info.size(), 15, ACCENT, true))
 	sel_box.add_child(grid)
 	for x in info:
 		var b := Button.new()
-		b.custom_minimum_size = Vector2(40, 40)
-		b.text = (x["name"] as String).substr(0, 3)
+		b.custom_minimum_size = Vector2(44, 44)
+		var ic: Texture2D = _icon(x["key"])
+		if ic:
+			b.icon = ic
+			b.expand_icon = true
+		else:
+			b.text = (x["name"] as String).substr(0, 3)
 		b.tooltip_text = "%s  %d/%d" % [x["name"], x["hp"], x["max_hp"]]
 		var f: float = float(x["hp"]) / max(1.0, float(x["max_hp"]))
 		b.add_theme_color_override("font_color", Color(1, 1, 1).lerp(Color(1, 0.3, 0.2), 1.0 - f))
@@ -447,18 +499,35 @@ func _refresh_card() -> void:
 	for c in card_grid.get_children(): c.queue_free()
 	for b in card:
 		var btn := Button.new()
-		btn.custom_minimum_size = Vector2(84, 52)
+		btn.custom_minimum_size = Vector2(70, 62)
 		btn.clip_text = true
-		var label: String = b["label"]
-		btn.text = label if label.length() <= 12 else label.left(11) + "."
-		btn.disabled = not b["enabled"] and b["action"] in ["train", "research"]
-		if not b["enabled"]:
-			btn.modulate = Color(1, 0.75, 0.7)
-		var hk: String = b["hotkey"]
-		if hk != "":
-			btn.text = "%s\n[%s]" % [btn.text, hk]
 		var a: String = b["action"]
 		var k: String = b["key"]
+		var ic: Texture2D = _icon(k) if k != "" and a != "research" else null
+		if ic:
+			btn.icon = ic
+			btn.expand_icon = true
+			btn.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			btn.add_theme_constant_override("icon_max_width", 56)
+		else:
+			var label: String = b["label"]
+			btn.text = label if label.length() <= 10 else label.left(9) + "."
+			btn.autowrap_mode = TextServer.AUTOWRAP_WORD
+			btn.add_theme_font_size_override("font_size", 13)
+		btn.disabled = not b["enabled"] and a in ["train", "research"]
+		if not b["enabled"]:
+			btn.modulate = Color(1, 0.7, 0.65, 0.85)
+		var hk: String = b["hotkey"]
+		if hk != "":
+			var hl := _label(hk if hk.length() <= 2 else hk.left(3), 12, ACCENT, true)
+			hl.position = Vector2(4, 1)
+			hl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			btn.add_child(hl)
+		if a == "research":
+			var tl := _label("R", 11, Color(0.6, 0.85, 1.0), true)
+			tl.position = Vector2(58, 1)
+			tl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			btn.add_child(tl)
 		btn.pressed.connect(func(): _do_action(a, k))
 		btn.mouse_entered.connect(func(): _show_tooltip(b, btn))
 		btn.mouse_exited.connect(func(): tooltip.visible = false)
@@ -478,7 +547,8 @@ func _show_tooltip(b: Dictionary, btn: Control) -> void:
 	tooltip_label.text = t
 	tooltip.visible = true
 	tooltip.reset_size()
-	tooltip.position = btn.global_position + Vector2(-340 + btn.size.x, -tooltip.size.y - 10)
+	var vs := get_viewport().get_visible_rect().size
+	tooltip.position = Vector2(min(btn.global_position.x, vs.x - tooltip.size.x - 8), btn.global_position.y - tooltip.size.y - 10)
 
 func _do_action(action: String, key: String) -> void:
 	if main and main.has_node("Audio"):

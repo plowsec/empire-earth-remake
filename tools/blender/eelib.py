@@ -387,6 +387,7 @@ def export_glb(path, objects=None):
 def preview(path, size=512, cam_dist=None, elev=28, azim=-38, focus_z=None, ortho=False):
     """Render an Eevee beauty shot of everything in the scene (used for review & HUD portraits)."""
     scene = bpy.context.scene
+    bpy.context.view_layer.update()
     objs = [o for o in scene.objects if o.type == "MESH"]
     if not objs:
         return

@@ -83,6 +83,15 @@ impl Ai {
         if cits >= 24 && have(id("settlement")) < 1 + cits / 30 {
             wants.push(id("settlement"));
         }
+        // swimming in resources: more production and defenses
+        let rich = pl.res[1] > 2500 && pl.res[2] > 1500;
+        if rich {
+            for (k, cap) in [("barracks", 3), ("tank_factory", 3), ("airport", 2), ("naval_yard", 3), ("guard_tower", 6), ("aa_site", 4)] {
+                if have(id(k)) < cap {
+                    wants.push(id(k));
+                }
+            }
+        }
         // research
         self.research(w, v, out);
 
@@ -685,6 +694,35 @@ impl Ai {
                     let ships: Vec<EntityId> = v.navy.iter().copied().filter(|&s| w.get(s).map_or(false, |e| e.order == Order::Idle)).collect();
                     if !ships.is_empty() {
                         out.push(CommandKind::Move { units: ships, to: FVec::tile_center(wx, wy), attack_move: true, queue: false });
+                    }
+                }
+            }
+        }
+
+        // ---- hunt: overwhelming advantage or enemy nearly dead -> finish them
+        if attack_time && w.tick % 400 == (self.phase * 13) % 400 {
+            let my_army = v.land_army.len() + v.air.len() * 2 + v.navy.len() * 2;
+            let enemy_buildings = self.known.len();
+            if my_army >= 30 && enemy_buildings <= 6 || my_army >= 60 {
+                if let Some(t) = self.pick_strike_target(w) {
+                    if let Some(tp) = self.known.get(&t).map(|k| k.pos) {
+                        let air: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).map_or(false, |e| e.order == Order::Idle)).collect();
+                        if !air.is_empty() {
+                            out.push(CommandKind::Move { units: air, to: tp, attack_move: true, queue: false });
+                        }
+                        let ships: Vec<EntityId> = v.navy.iter().copied().filter(|&s| w.get(s).map_or(false, |e| e.order == Order::Idle)).collect();
+                        if !ships.is_empty() {
+                            let (tx, ty) = tp.tile();
+                            if let Some((wx, wy)) = self.coast_water_near(w, tx, ty) {
+                                out.push(CommandKind::Move { units: ships, to: FVec::tile_center(wx, wy), attack_move: true, queue: false });
+                            }
+                        }
+                    }
+                } else if let Some(es) = self.enemy_start(w) {
+                    // nothing known: scout their start with aircraft
+                    let air: Vec<EntityId> = v.air.iter().copied().take(3).collect();
+                    if !air.is_empty() {
+                        out.push(CommandKind::Move { units: air, to: es, attack_move: true, queue: false });
                     }
                 }
             }

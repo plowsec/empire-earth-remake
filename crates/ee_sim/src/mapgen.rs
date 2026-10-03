@@ -354,6 +354,7 @@ pub fn generate(p: &MapParams) -> GenResult {
             ("stone_mine", 20, 28),
             ("iron_mine", 10, 15),
             ("iron_mine", 14, 20),
+            ("iron_mine", 18, 24),
             ("iron_mine", 20, 28),
         ];
         for &(key, dmin, dmax) in mines {
