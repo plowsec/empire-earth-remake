@@ -91,6 +91,8 @@ fn run_match(seed: u64, players: usize, minutes: u32, diff: i32, pop_limit: i32,
         s.add_controller(Box::new(Ai::new(p as u8, Difficulty::from_index(diff), seed)));
         s.ai_setup.push(ee_net::AiSetup { player: p as u8, difficulty: diff, seed });
     }
+    s.collect_events = true;
+    let mut launches = vec![0u32; players];
     let t0 = std::time::Instant::now();
     let total = minutes * 60 * 20;
     let mut max_step = std::time::Duration::ZERO;
@@ -98,6 +100,12 @@ fn run_match(seed: u64, players: usize, minutes: u32, diff: i32, pop_limit: i32,
         let st = std::time::Instant::now();
         s.step_once();
         max_step = max_step.max(st.elapsed());
+        for ev in s.event_log.drain(..) {
+            if let ee_sim::world::SimEvent::MissileLaunch { owner, from, to, .. } = ev {
+                launches[owner as usize] += 1;
+                println!("      ** P{owner} ICBM launch at {}m{}s {:?} -> {:?}", t / 1200, (t / 20) % 60, from.tile(), to.tile());
+            }
+        }
         if t % (20 * 60 * 2) == 0 || s.world.game_over {
             report(&s, t);
         }
@@ -107,6 +115,7 @@ fn run_match(seed: u64, players: usize, minutes: u32, diff: i32, pop_limit: i32,
         }
     }
     println!("sim time {:?} for {} ticks, max step {:?}, checksum {:016x}", t0.elapsed(), s.world.tick, max_step, s.world.checksum());
+    println!("ICBM launches per player: {launches:?}");
     if let Some(path) = record {
         std::fs::write(&path, ron::to_string(&s.make_replay()).unwrap()).unwrap();
         println!("recorded {path}");

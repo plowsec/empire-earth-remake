@@ -137,7 +137,7 @@ impl Ai {
     }
 
     /// Plot for a defensive building next to a point.
-    fn defense_plot(&self, w: &World, near: FVec, key: &str) -> Option<(i32, i32)> {
+    pub(crate) fn defense_plot(&self, w: &World, near: FVec, key: &str) -> Option<(i32, i32)> {
         let def = data().id(key);
         let (cx, cy) = near.tile();
         let isl = self.island_at(w, (cx, cy));
@@ -154,7 +154,7 @@ impl Ai {
         None
     }
 
-    fn nearest_citizens(&self, w: &World, v: &View, near: FVec, n: usize, island: Option<usize>) -> Vec<EntityId> {
+    pub(crate) fn nearest_citizens(&self, w: &World, v: &View, near: FVec, n: usize, island: Option<usize>) -> Vec<EntityId> {
         let mut pool: Vec<(i64, EntityId)> = v
             .citizens
             .iter()

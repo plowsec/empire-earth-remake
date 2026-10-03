@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 mod expand;
 mod plan;
+mod strategic;
 
 use ee_sim::command::CommandKind;
 use ee_sim::defs::{Class, DefId, Res, NUM_RES};
@@ -142,6 +143,11 @@ pub struct Ai {
     pub(crate) last_replant: u32,
     /// food workers the economy would like (drives granary/farm expansion)
     pub(crate) food_wanted: i32,
+    /// last tick an enemy missile was seen in flight
+    #[serde(default)]
+    pub(crate) missile_alert: u32,
+    #[serde(default)]
+    pub(crate) last_salvo: u32,
 }
 
 impl Ai {
@@ -177,6 +183,8 @@ impl Ai {
             last_colony: 0,
             last_replant: 0,
             food_wanted: 0,
+            missile_alert: 0,
+            last_salvo: 0,
         }
     }
 }
@@ -252,6 +260,9 @@ impl Controller for Ai {
             self.claim_fields(w, &v, &mut out);
         }
         self.colonize(w, &v, &mut out);
+        if (w.tick / interval) % 4 == (self.phase % 4) {
+            self.strategic(w, &v, &mut out);
+        }
         self.produce(w, &v, &mut out);
         self.rebuild_fields(w, &v, &mut out);
         self.military(w, &v, &mut out);

@@ -65,6 +65,14 @@ their owner has an **Early Warning Radar**, which also sounds the alarm on any e
 A **Fortress** garrisons up to 80 units; stored units don't count toward population.
 **Apartment Blocks** house 50. Population limits go up to 3000.
 
+The AI plays the nuclear game too: Hard and Hardest opponents put up radar and ABM cover
+over their capitol and towns, build silos once rich, and fire salvos sized to saturate the
+interceptors they know about (holding fire to stockpile when a target is too well
+defended). Normal opponents build defenses once they spot an enemy silo or launch.
+
+Citizens right-clicked onto a granary take one field each; extra citizens lay and farm
+new fields on the free plots.
+
 Computer opponents use island scouting and granary field rebuilding. Hard and
 Hardest opponents can invest in a nuclear bomber after their economy matures,
 targeting visible enemy building clusters.

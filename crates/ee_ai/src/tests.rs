@@ -89,3 +89,54 @@ fn patrol_aircraft_can_launch_another_strike() {
     ai.military(&w, &ai.view(&w), &mut cmds);
     assert!(cmds.iter().any(|c| matches!(c, CommandKind::Move { units, .. } if units.len() == 4)));
 }
+
+fn nuclear_setup(abms: usize) -> (World, Ai, EntityId) {
+    let mut w = world();
+    let mut ai = Ai::new(0, Difficulty::Hardest, 9);
+    ai.init(&w);
+    for _ in 0..60 { w.spawn(data().id("citizen"), 0, ai.base); }
+    w.players[0].res = [20000; 5];
+    w.tick = ai.diff.first_attack() * 2;
+    let silo = w.spawn_static(data().id("missile_silo"), 0, (ai.base_tile.0 + 9, ai.base_tile.1 + 9), true);
+    for _ in 0..3 {
+        let m = w.spawn(data().id("icbm"), 0, w.get(silo).unwrap().pos);
+        w.get_mut(m).unwrap().inside = silo;
+        w.get_mut(silo).unwrap().cargo.push(m);
+    }
+    // defenses already up so the AI goes straight to offense
+    w.spawn_static(data().id("radar_station"), 0, (ai.base_tile.0 - 10, ai.base_tile.1 + 8), true);
+    w.spawn_static(data().id("abm_site"), 0, (ai.base_tile.0 - 8, ai.base_tile.1 - 8), true);
+    let s = w.starts[1];
+    for (k, key) in ["barracks", "tank_factory", "airport", "house"].iter().enumerate() {
+        w.spawn_static(data().id(key), 1, (s.0 + 4 + k as i32 * 4, s.1 + 6), true);
+    }
+    w.spawn_static(data().id("radar_station"), 1, (s.0 - 8, s.1 - 6), true);
+    for k in 0..abms {
+        w.spawn_static(data().id("abm_site"), 1, (s.0 - 4 + k as i32 * 3, s.1 + 12), true);
+    }
+    w.recount_pop();
+    ai.observe(&w);
+    (w, ai, silo)
+}
+
+#[test]
+fn ai_fires_icbm_salvos_sized_to_saturate_interceptors() {
+    for abms in [0usize, 2] {
+        let (w, mut ai, silo) = nuclear_setup(abms);
+        let mut cmds = vec![];
+        ai.strategic(&w, &ai.view(&w), &mut cmds);
+        let launches = cmds.iter().filter(|c| matches!(c, CommandKind::Launch { building, .. } if *building == silo)).count();
+        assert_eq!(launches, abms + 1, "with {abms} enemy ABMs: {cmds:?}");
+    }
+}
+
+#[test]
+fn ai_stockpiles_when_the_target_is_too_well_defended() {
+    let (mut w, mut ai, silo) = nuclear_setup(2);
+    // only one missile left: a 3-missile salvo is needed, so hold fire
+    let extra: Vec<EntityId> = w.get(silo).unwrap().cargo[1..].to_vec();
+    for m in extra { w.kill(m, 255); }
+    let mut cmds = vec![];
+    ai.strategic(&w, &ai.view(&w), &mut cmds);
+    assert!(!cmds.iter().any(|c| matches!(c, CommandKind::Launch { .. })), "{cmds:?}");
+}
