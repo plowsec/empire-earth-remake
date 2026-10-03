@@ -208,6 +208,10 @@ void fragment() {
 	}
 	// selection / hover rim light
 	float rim = pow(1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0), 3.0);
+	if ((fl & 1) != 0) {
+		// selected: soft green outline glow
+		emit += vec3(0.35, 1.0, 0.45) * pow(rim, 1.5) * 0.7;
+	}
 	if ((fl & 2) != 0) {
 		emit += vec3(0.6, 0.8, 1.0) * rim * 0.9;
 	}

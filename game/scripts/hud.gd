@@ -224,7 +224,8 @@ func _build() -> void:
 	strip.add_theme_constant_override("separation", 6)
 	utility.add_child(strip)
 	idle_btn = Button.new()
-	idle_btn.custom_minimum_size = Vector2(76, 36)
+	idle_btn.custom_minimum_size = Vector2(110, 46)
+	idle_btn.add_theme_font_size_override("font_size", 20)
 	idle_btn.icon = _icon("citizen")
 	idle_btn.expand_icon = true
 	idle_btn.tooltip_text = "Idle citizens (;). Shift-click: select all idle citizens."
@@ -398,6 +399,7 @@ func _update_hover() -> void:
 	var mp := get_viewport().get_mouse_position()
 	if _over_gui(mp):
 		hover_label.visible = false
+		_set_cursor("")
 		return
 	var h: Dictionary = gv.hover(mp)
 	if h.has("name"):
@@ -410,12 +412,123 @@ func _update_hover() -> void:
 		hover_label.visible = true
 	else:
 		hover_label.visible = false
-	var shape := Input.CURSOR_ARROW
-	if mode == "attack_move" or (h.get("enemy", false) and gv.selection_count() > 0):
-		shape = Input.CURSOR_CROSS
+	var ctx: String = ""
+	if mode == "attack_move":
+		ctx = "attack"
+	elif mode == "unload":
+		ctx = "board"
 	elif mode == "place":
-		shape = Input.CURSOR_DRAG
-	Input.set_default_cursor_shape(shape)
+		ctx = "build"
+	elif gv.selection_count() > 0:
+		ctx = gv.cursor_context(mp)
+	_set_cursor(ctx)
+
+# ---------------------------------------------------------------- cursors
+# Drawn in code: each shows what a right-click would do here.
+var _cursors := {}
+var _cursor_now := "-"
+
+func _cur_img() -> Image:
+	return Image.create(40, 40, false, Image.FORMAT_RGBA8)
+
+func _plot(img: Image, x: float, y: float, c: Color, r := 1.4) -> void:
+	for dy in range(-2, 3):
+		for dx in range(-2, 3):
+			var px := int(x) + dx
+			var py := int(y) + dy
+			if px < 0 or py < 0 or px >= img.get_width() or py >= img.get_height():
+				continue
+			var d := Vector2(px + 0.5 - x, py + 0.5 - y).length()
+			var a: float = clamp(r - d + 0.5, 0.0, 1.0) * c.a
+			if a <= 0.0:
+				continue
+			var old := img.get_pixel(px, py)
+			img.set_pixel(px, py, Color(c.r, c.g, c.b, max(old.a, a)) if old.a < a else old)
+
+func _line(img: Image, a: Vector2, b: Vector2, c: Color, w := 1.4) -> void:
+	var n := int(a.distance_to(b) * 2.0) + 1
+	for i in n + 1:
+		var p := a.lerp(b, float(i) / n)
+		_plot(img, p.x, p.y, Color(0, 0, 0, 0.8), w + 1.2)
+	for i in n + 1:
+		var p := a.lerp(b, float(i) / n)
+		_plot(img, p.x, p.y, c, w)
+
+func _circle(img: Image, ctr: Vector2, r: float, c: Color, w := 1.4) -> void:
+	var pts := []
+	for i in 49:
+		pts.append(ctr + Vector2(cos(i * TAU / 48.0), sin(i * TAU / 48.0)) * r)
+	for i in 48:
+		_line(img, pts[i], pts[i + 1], c, w)
+
+func _build_cursors() -> void:
+	var red := Color(1.0, 0.25, 0.2)
+	var green := Color(0.4, 1.0, 0.45)
+	var gold := Color(1.0, 0.8, 0.25)
+	var blue := Color(0.45, 0.75, 1.0)
+	var c := Vector2(20, 20)
+	# attack: red reticle
+	var img := _cur_img()
+	_circle(img, c, 11, red, 1.6)
+	for d in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
+		_line(img, c + d * 6, c + d * 17, red, 1.6)
+	_plot(img, 20, 20, red, 2.0)
+	_cursors["attack"] = [ImageTexture.create_from_image(img), c]
+	# move: green chevrons pointing down
+	img = _cur_img()
+	_line(img, Vector2(9, 12), Vector2(20, 22), green, 1.8)
+	_line(img, Vector2(31, 12), Vector2(20, 22), green, 1.8)
+	_line(img, Vector2(12, 21), Vector2(20, 29), green, 1.4)
+	_line(img, Vector2(28, 21), Vector2(20, 29), green, 1.4)
+	_cursors["move"] = [ImageTexture.create_from_image(img), Vector2(20, 26)]
+	# gather: pickaxe
+	img = _cur_img()
+	_line(img, Vector2(8, 32), Vector2(28, 12), Color(0.75, 0.55, 0.3), 1.8)
+	_line(img, Vector2(18, 6), Vector2(34, 22), gold, 2.0)
+	_cursors["gather"] = [ImageTexture.create_from_image(img), Vector2(8, 32)]
+	# build / repair: hammer (blue) / wrench (green)
+	img = _cur_img()
+	_line(img, Vector2(8, 33), Vector2(24, 17), Color(0.75, 0.55, 0.3), 1.8)
+	_line(img, Vector2(18, 9), Vector2(32, 23), blue, 3.0)
+	_cursors["build"] = [ImageTexture.create_from_image(img), Vector2(8, 33)]
+	img = _cur_img()
+	_line(img, Vector2(8, 32), Vector2(26, 14), green, 2.0)
+	_circle(img, Vector2(28, 12), 6, green, 1.8)
+	_cursors["repair"] = [ImageTexture.create_from_image(img), Vector2(8, 32)]
+	# board: arrow into a hull
+	img = _cur_img()
+	_line(img, Vector2(20, 4), Vector2(20, 22), blue, 1.8)
+	_line(img, Vector2(13, 15), Vector2(20, 22), blue, 1.8)
+	_line(img, Vector2(27, 15), Vector2(20, 22), blue, 1.8)
+	_line(img, Vector2(6, 27), Vector2(34, 27), blue, 1.8)
+	_line(img, Vector2(6, 27), Vector2(12, 35), blue, 1.8)
+	_line(img, Vector2(34, 27), Vector2(28, 35), blue, 1.8)
+	_line(img, Vector2(12, 35), Vector2(28, 35), blue, 1.8)
+	_cursors["board"] = [ImageTexture.create_from_image(img), Vector2(20, 22)]
+	# land: descending plane arrow
+	img = _cur_img()
+	_line(img, Vector2(20, 6), Vector2(20, 30), blue, 2.0)
+	_line(img, Vector2(8, 16), Vector2(32, 16), blue, 1.8)
+	_line(img, Vector2(14, 28), Vector2(26, 28), blue, 1.6)
+	_line(img, Vector2(6, 36), Vector2(34, 36), green, 1.4)
+	_cursors["land"] = [ImageTexture.create_from_image(img), Vector2(20, 30)]
+	# rally: flag
+	img = _cur_img()
+	_line(img, Vector2(12, 34), Vector2(12, 6), Color(0.85, 0.85, 0.85), 1.6)
+	_line(img, Vector2(12, 7), Vector2(30, 12), gold, 1.8)
+	_line(img, Vector2(30, 12), Vector2(12, 18), gold, 1.8)
+	_cursors["rally"] = [ImageTexture.create_from_image(img), Vector2(12, 34)]
+
+func _set_cursor(ctx: String) -> void:
+	if ctx == _cursor_now:
+		return
+	_cursor_now = ctx
+	if _cursors.is_empty():
+		_build_cursors()
+	if _cursors.has(ctx):
+		Input.set_custom_mouse_cursor(_cursors[ctx][0], Input.CURSOR_ARROW, _cursors[ctx][1])
+	else:
+		Input.set_custom_mouse_cursor(null)
 
 func _over_gui(p: Vector2) -> bool:
 	var c := get_viewport().gui_get_hovered_control()
@@ -437,18 +550,43 @@ func _refresh_selection() -> void:
 	sel_cache = key
 	for c in queue_box.get_children(): c.queue_free()
 	for c in sel_box.get_children(): c.queue_free()
+	# group consecutive identical items: one icon with a count badge
+	var groups := []
 	for item in q:
+		if groups.size() > 0 and groups[-1]["key"] == item["key"]:
+			groups[-1]["count"] += 1
+			groups[-1]["last"] = item["index"]
+		else:
+			groups.append({"key": item["key"], "name": item["name"], "count": 1, "first": item["index"], "last": item["index"], "progress": item["progress"]})
+	for g in groups:
 		var b := Button.new()
-		b.custom_minimum_size = Vector2(64, 30)
-		b.text = (item["name"] as String).left(9)
-		b.tooltip_text = "%s (click to cancel)" % item["name"]
-		var idx: int = item["index"]
-		b.pressed.connect(func(): gv.do_action("cancel", str(idx)))
-		if item["index"] == 0:
+		b.custom_minimum_size = Vector2(50, 44)
+		var ic: Texture2D = _icon(g["key"]) if not (g["key"] as String).begins_with("tech:") else null
+		if ic:
+			b.icon = ic
+			b.expand_icon = true
+		else:
+			b.text = (g["name"] as String).left(6)
+			b.add_theme_font_size_override("font_size", 12)
+		b.tooltip_text = "%s x%d (click: cancel one, Shift-click: cancel all)" % [g["name"], g["count"]]
+		var first: int = g["first"]
+		var last: int = g["last"]
+		b.pressed.connect(func():
+			if Input.is_key_pressed(KEY_SHIFT):
+				for i in range(last, first - 1, -1):
+					gv.do_action("cancel", str(i))
+			else:
+				gv.do_action("cancel", str(last)))
+		if g["count"] > 1:
+			var badge := _label("x%d" % g["count"], 15, Color(1, 0.95, 0.75), true)
+			badge.position = Vector2(26, 24)
+			badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			b.add_child(badge)
+		if g["first"] == 0:
 			var pb := ProgressBar.new()
 			pb.show_percentage = false
-			pb.custom_minimum_size = Vector2(64, 4)
-			pb.value = item["progress"] * 100.0
+			pb.custom_minimum_size = Vector2(50, 4)
+			pb.value = g["progress"] * 100.0
 			var vb := VBoxContainer.new()
 			vb.add_theme_constant_override("separation", 1)
 			vb.add_child(b)
@@ -538,8 +676,12 @@ func _on_idle_pressed() -> void:
 
 func _refresh_strip() -> void:
 	var n: int = gv.idle_citizen_count()
-	idle_btn.text = str(n)
-	idle_btn.modulate = Color(1, 0.85, 0.5) if n > 0 else Color(0.7, 0.7, 0.7, 0.7)
+	idle_btn.text = "Idle %d" % n
+	if n > 0:
+		var pulse := 0.75 + 0.25 * sin(Time.get_ticks_msec() / 180.0)
+		idle_btn.modulate = Color(1.0, 0.75 + 0.15 * pulse, 0.35, 1.0)
+	else:
+		idle_btn.modulate = Color(0.7, 0.7, 0.7, 0.75)
 	var groups: Array = gv.group_info()
 	var key := ""
 	for g in groups:

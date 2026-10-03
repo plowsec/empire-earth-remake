@@ -834,6 +834,9 @@ impl Client {
             if self.hover == id {
                 flags += 2.0;
             }
+            if sel.contains(&id) {
+                flags += 1.0;
+            }
             let act = if carry > 0 && action == Action::Move { Action::Carry } else { action };
             let custom = [t + (id % 97) as f32 * 0.31, act as u8 as f32, prog, flags];
             // turret: aim at the current target
@@ -858,7 +861,7 @@ impl Client {
             let r = self.models.list[model].radius;
             if selected || self.hover == id {
                 let ring_col = if owner == me {
-                    Color::from_rgba(0.3, 1.0, 0.4, if selected { 0.9 } else { 0.45 })
+                    Color::from_rgba(0.35, 1.0, 0.45, if selected { 1.0 } else { 0.5 })
                 } else if w.is_enemy(me, owner) {
                     Color::from_rgba(1.0, 0.25, 0.2, 0.8)
                 } else {

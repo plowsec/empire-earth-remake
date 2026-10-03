@@ -15,6 +15,7 @@ var warp_ticks := 0
 var stress := 0
 var select_key := ""
 var feature_scene := ""
+var place_key := ""
 var _perf_t := 0.0
 var _perf_frames := 0
 var _perf_sim := 0.0
@@ -33,6 +34,7 @@ func _ready() -> void:
 		elif a.begins_with("--stress="): stress = int(a.substr(9))
 		elif a.begins_with("--select="): select_key = a.substr(9)
 		elif a.begins_with("--feature="): feature_scene = a.substr(10)
+		elif a.begins_with("--place="): place_key = a.substr(8)
 		elif a == "--featuretest":
 			var t = load("res://scripts/featuretest.gd").new()
 			t.name = "FeatureTest"
@@ -82,6 +84,13 @@ func start_match(cfg: Dictionary) -> void:
 	vfx.bind(game_view, rig)
 
 func _process(dt: float) -> void:
+	if place_key != "" and game_view.is_running():
+		game_view.select_all_of("citizen", 3)
+		hud.mode = game_view.do_action("build", place_key)
+		place_key = ""
+	if hud.mode == "place" and OS.get_cmdline_user_args().has("--place-center"):
+		var vs := get_viewport().get_visible_rect().size
+		get_viewport().warp_mouse(vs * Vector2(0.62, 0.5))
 	if feature_scene != "" and game_view.is_running():
 		rig.focus(game_view.debug_feature_scene(feature_scene), true)
 		feature_scene = ""

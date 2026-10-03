@@ -28,7 +28,11 @@ pub struct GameView {
     ghost_tile: (i32, i32),
     ghost_ok: bool,
     noise_tex: Option<Gd<Texture2D>>,
+    field_ghosts: Vec<(Gd<MeshInstance3D>, Gd<ShaderMaterial>)>,
 }
+
+/// Farm plots around a granary (relative to its top-left tile; same as RebuildFarms).
+const FIELD_SLOTS: [(i32, i32); 8] = [(-3, 0), (3, 0), (0, -3), (0, 3), (-3, -3), (3, -3), (-3, 3), (3, 3)];
 
 #[godot_api]
 impl INode3D for GameView {
@@ -45,6 +49,7 @@ impl INode3D for GameView {
             ghost_tile: (0, 0),
             ghost_ok: false,
             noise_tex: None,
+            field_ghosts: Vec::new(),
         }
     }
 
@@ -375,6 +380,58 @@ impl GameView {
             }
         }
         d
+    }
+
+    /// What a right-click would do at this screen point, for the mouse cursor:
+    /// "attack", "gather", "build", "repair", "board", "land", "move", "rally" or "".
+    #[func]
+    fn cursor_context(&self, p: Vector2) -> GString {
+        let (Some(c), Some(cam)) = (&self.client, &self.camera) else { return GString::new() };
+        let w = c.world();
+        let units = c.my_selected_units();
+        let buildings = c.my_selected_buildings();
+        if units.is_empty() && buildings.is_empty() {
+            return GString::new();
+        }
+        let target = c.pick(cam, p);
+        if units.is_empty() {
+            return if target != 0 && w.get(target).map_or(false, |t| data().def(t.def).is_resource()) { "gather".into() } else { "rally".into() };
+        }
+        let Some(t) = w.get(target) else { return "move".into() };
+        let td = data().def(t.def);
+        let any = |f: &dyn Fn(&ee_sim::entity::Entity, &ee_sim::defs::Def) -> bool| units.iter().filter_map(|&u| w.get(u)).any(|e| f(e, data().def(e.def)));
+        if w.is_enemy(c.me, t.owner) {
+            if any(&|e, _| ee_sim::combat::can_attack(w, e, t)) {
+                return "attack".into();
+            }
+            return "move".into();
+        }
+        if td.is_resource() {
+            if let Some(r) = td.data.resource {
+                if any(&|_, d| d.gather_rate[r.idx()] > 0) {
+                    return "gather".into();
+                }
+            }
+            return "move".into();
+        }
+        if t.owner == c.me {
+            if td.is_building() && !t.complete && any(&|_, d| !d.builds.is_empty()) {
+                return "build".into();
+            }
+            if td.data.walkable && any(&|_, d| d.gather_rate[0] > 0) {
+                return "gather".into();
+            }
+            if td.is_building() && t.hp < w.max_hp(t) && any(&|_, d| !d.builds.is_empty()) {
+                return "repair".into();
+            }
+            if td.data.airport && any(&|_, d| d.data.needs_airport) {
+                return "land".into();
+            }
+            if td.data.cargo > 0 && any(&|_, d| d.layer == ee_sim::defs::Layer::Land) {
+                return "board".into();
+            }
+        }
+        "move".into()
     }
 
     #[func]
@@ -779,6 +836,28 @@ impl GameView {
             mi.set_cast_shadows_setting(ShadowCastingSetting::OFF);
             root.add_child(&mi);
         }
+        // granaries preview their ring of fields so several can be tiled efficiently
+        self.field_ghosts.clear();
+        if data().def(def).data.key == "granary" {
+            let farm = data().id("farm");
+            let fmodel = &c.models.list[c.models.by_def[farm as usize]];
+            for (ox, oy) in FIELD_SLOTS {
+                let mut fm = ShaderMaterial::new_gd();
+                fm.set_shader(&godot::tools::load::<Shader>("res://shaders/ghost.gdshader"));
+                let mut slot = MeshInstance3D::new_alloc();
+                for part in &fmodel.parts {
+                    let mut mi = MeshInstance3D::new_alloc();
+                    mi.set_mesh(&part.mesh);
+                    mi.set_transform(part.local);
+                    mi.set_material_override(&fm);
+                    mi.set_cast_shadows_setting(ShadowCastingSetting::OFF);
+                    slot.add_child(&mi);
+                }
+                slot.set_position(Vector3::new(ox as f32 * TILE, 0.0, oy as f32 * TILE));
+                root.add_child(&slot);
+                self.field_ghosts.push((slot, fm));
+            }
+        }
         self.base_mut().add_child(&root);
         self.ghost = Some(root);
         self.ghost_mat = Some(mat);
@@ -807,6 +886,30 @@ impl GameView {
         if let Some(m) = self.ghost_mat.as_mut() {
             let col = if ok { Color::from_rgba(0.3, 1.0, 0.45, 0.45) } else { Color::from_rgba(1.0, 0.25, 0.2, 0.45) };
             m.set_shader_parameter("tint", &col.to_variant());
+        }
+        // field slots: green where a farm would fit, red where it's blocked
+        if !self.field_ghosts.is_empty() {
+            let farm = data().id("farm");
+            let me = c.me;
+            let fits: Vec<bool> = FIELD_SLOTS
+                .iter()
+                .map(|&(ox, oy)| {
+                    let t = (tx + ox, ty + oy);
+                    // the granary itself isn't placed yet: test terrain/occupancy only
+                    (0..3).all(|dy| (0..3).all(|dx| {
+                        let (x, y) = (t.0 + dx, t.1 + dy);
+                        c.world().map.in_bounds(x, y)
+                            && c.world().map.occupant[c.world().map.idx(x, y)] == 0
+                            && c.world().map.base_pass[c.world().map.idx(x, y)] & ee_sim::map::PASS_LAND != 0
+                            && c.world().explored(me, x, y)
+                    })) && farm > 0
+                })
+                .collect();
+            for ((slot, fm), fit) in self.field_ghosts.iter_mut().zip(fits) {
+                let col = if fit { Color::from_rgba(0.55, 0.95, 0.35, 0.28) } else { Color::from_rgba(1.0, 0.3, 0.2, 0.22) };
+                fm.set_shader_parameter("tint", &col.to_variant());
+                let _ = slot;
+            }
         }
     }
 
@@ -855,6 +958,7 @@ impl GameView {
     #[func]
     fn cancel_placement(&mut self) {
         self.place_def = None;
+        self.field_ghosts.clear();
         if let Some(mut g) = self.ghost.take() {
             g.queue_free();
         }
