@@ -265,28 +265,13 @@ impl Ai {
             return None;
         }
         if dd.data.coastal {
-            let mut best: Option<(i32, (i32, i32))> = None;
-            for y in by - 34..by + 34 {
-                for x in bx - 34..bx + 34 {
-                    if !w.map.in_bounds(x, y) {
-                        continue;
-                    }
-                    // quick filter: must have water within the footprint ring
-                    if !w.map.is_water(x + sw / 2, y + sh / 2) && !w.map.is_water(x + sw, y + sh / 2) && !w.map.is_water(x - 1, y + sh / 2)
-                        && !w.map.is_water(x + sw / 2, y - 1) && !w.map.is_water(x + sw / 2, y + sh)
-                    {
-                        continue;
-                    }
-                    let dist = (x - bx).pow(2) + (y - by).pow(2);
-                    if best.map_or(false, |(bd, _)| dist >= bd) {
-                        continue;
-                    }
-                    if w.can_place(p, def, (x, y)).is_ok() && self.deep_water_near(w, x, y, sw, sh) && self.reachable_by_land(w, x, y, sw, sh) {
-                        best = Some((dist, (x, y)));
-                    }
+            // big islands: widen the search until we reach the coast
+            for reach in [34, 52, 72] {
+                if let Some(t) = self.coastal_site(w, def, reach) {
+                    return Some(t);
                 }
             }
-            return best.map(|b| b.1);
+            return None;
         }
         if dd.data.key == "granary" {
             return self.granary_site(w, def);
@@ -426,6 +411,39 @@ impl Ai {
             }
         }
         true
+    }
+
+    fn coastal_site(&self, w: &World, def: DefId, reach: i32) -> Option<(i32, i32)> {
+        let (sw, sh) = data().def(def).size();
+        let (bx, by) = self.base_tile;
+        let p = self.player;
+        let mut best: Option<(i32, (i32, i32))> = None;
+        for y in by - reach..by + reach {
+            for x in bx - reach..bx + reach {
+                if !w.map.in_bounds(x, y) {
+                    continue;
+                }
+                // quick filter: must have water within the footprint ring
+                if !w.map.is_water(x + sw / 2, y + sh / 2) && !w.map.is_water(x + sw, y + sh / 2) && !w.map.is_water(x - 1, y + sh / 2)
+                    && !w.map.is_water(x + sw / 2, y - 1) && !w.map.is_water(x + sw / 2, y + sh)
+                {
+                    continue;
+                }
+                let dist = (x - bx).pow(2) + (y - by).pow(2);
+                if best.map_or(false, |(bd, _)| dist >= bd) {
+                    continue;
+                }
+                // must be on our home island so citizens can walk there
+                if self.island_at(w, (x - 1, y)) != Some(self.home_island) && self.island_at(w, (x + sw, y + sh)) != Some(self.home_island)
+                    && self.island_at(w, (x + sw / 2, y - 1)) != Some(self.home_island) && self.island_at(w, (x - 1, y + sh)) != Some(self.home_island) {
+                    continue;
+                }
+                if w.can_place(p, def, (x, y)).is_ok() && self.deep_water_near(w, x, y, sw, sh) && self.reachable_by_land(w, x, y, sw, sh) {
+                    best = Some((dist, (x, y)));
+                }
+            }
+        }
+        best.map(|b| b.1)
     }
 
     fn deep_water_near(&self, w: &World, x: i32, y: i32, sw: i32, sh: i32) -> bool {

@@ -166,6 +166,8 @@ impl Client {
         let sr = opt.start_res;
         cfg.start_res = [sr, sr, sr * 6 / 10, sr * 2 / 3, sr * 2 / 3];
         cfg.players[0].name = "You".into();
+        // part of the match setup (recorded in replays): the sim's visibility depends on it
+        cfg.reveal = opt.reveal;
         for (i, p) in cfg.players.iter_mut().enumerate().skip(1) {
             p.name = format!("AI {}", i);
         }

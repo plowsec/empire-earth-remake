@@ -71,7 +71,8 @@ fn main() {
         Some("replay") => {
             let path = args.get(2).cloned().unwrap_or_default();
             let every: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2);
-            run_replay_file(&path, every);
+            let exact = args.iter().any(|a| a == "--exact");
+            run_replay_file(&path, every, exact);
         }
         _ => eprintln!("usage: ee_headless map <seed> <players> <out.ppm> | match <seed> <players> <minutes> <difficulty> [pop_limit] [record.eerep] | replay <file.eerep> [report_every_minutes]"),
     }
@@ -80,9 +81,10 @@ fn main() {
 fn run_match(seed: u64, players: usize, minutes: u32, diff: i32, pop_limit: i32, record: Option<String>) {
     use ee_ai::{Ai, Difficulty};
     use ee_net::Session;
-    use ee_sim::world::{data, MatchConfig};
+    use ee_sim::world::MatchConfig;
     let mut cfg = MatchConfig::skirmish(seed, players);
     cfg.pop_limit = pop_limit;
+    cfg.map_size = std::env::var("EE_MAP_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
     for p in cfg.players.iter_mut() {
         p.is_ai = true;
     }
@@ -178,7 +180,7 @@ fn report(s: &ee_net::Session, t: u32) {
 
 /// Re-simulate a recorded game: the computer players are recreated and think again
 /// (so their internal state can be inspected), the human's commands are fed back in.
-fn run_replay_file(path: &str, every_min: u32) {
+fn run_replay_file(path: &str, every_min: u32, exact: bool) {
     use ee_ai::{Ai, Difficulty};
     use ee_net::{Replay, Session};
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
@@ -192,24 +194,46 @@ fn run_replay_file(path: &str, every_min: u32) {
     }
     let mut s = Session::single_player(cfg.clone());
     s.input_delay = rep.input_delay;
+    // --reveal-at=<tick>: the player toggled the debug map reveal (diagnostics)
+    let reveal_at: Option<u32> = std::env::args().find_map(|a| a.strip_prefix("--reveal-at=").and_then(|v| v.parse().ok()));
     let ai_players: Vec<u8> = rep.ais.iter().map(|a| a.player).collect();
-    for a in &rep.ais {
-        s.add_controller(Box::new(Ai::new(a.player, Difficulty::from_index(a.difficulty), a.seed)));
+    // --exact: play back every recorded command (AI ones too) instead of re-running the
+    // AIs, so the game is reproduced even if the AI code changed since it was recorded
+    if !exact {
+        for a in &rep.ais {
+            s.add_controller(Box::new(Ai::new(a.player, Difficulty::from_index(a.difficulty), a.seed)));
+        }
     }
     let mut human = 0;
+    // AI activity: commands per player per minute, by kind
+    let mut activity: std::collections::BTreeMap<(u32, u8), std::collections::BTreeMap<String, u32>> = Default::default();
     for tc in &rep.ticks {
         for c in &tc.commands {
-            if !ai_players.contains(&c.player) {
+            let ai = ai_players.contains(&c.player);
+            if exact || !ai {
+                // recorded ticks are execution ticks; schedule directly
                 s.schedule(tc.tick, c.clone());
+            }
+            if !ai {
                 human += 1;
             }
+            let kind = format!("{:?}", c.kind);
+            let kind = kind.split(|ch: char| !ch.is_alphanumeric()).next().unwrap_or("?").to_string();
+            *activity.entry((tc.tick / 1200, c.player)).or_default().entry(kind).or_default() += 1;
         }
+    }
+    println!("commands per minute (player: kind counts):");
+    for ((m, p), kinds) in &activity {
+        println!("  {m:>3}m P{p}: {kinds:?}");
     }
     println!("replay {path}: {} players, {} AIs, {} human commands, {} ticks ({}m{}s)",
         cfg.players.len(), rep.ais.len(), human, rep.end_tick, rep.end_tick / 1200, (rep.end_tick / 20) % 60);
     let checks: std::collections::BTreeMap<u32, u64> = rep.checksums.iter().copied().collect();
     let mut diverged = false;
     for t in 0..rep.end_tick {
+        if reveal_at == Some(t) {
+            s.world.config.reveal = true;
+        }
         s.step_once();
         let tick = s.world.tick - 1;
         if let Some(&want) = checks.get(&tick) {

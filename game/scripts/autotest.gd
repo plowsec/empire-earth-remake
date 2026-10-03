@@ -150,5 +150,6 @@ func _process(_dt: float) -> void:
 			print("wood now ", gv.player_state()["res"][1], " ", gv.entity_debug("citizen"))
 			check("wood gathered", gv.player_state()["res"][1] > 1430)
 			print("AUTOTEST DONE failures=%d" % failures)
+			gv.write_replay()
 			get_tree().quit(1 if failures > 0 else 0)
 	step += 1

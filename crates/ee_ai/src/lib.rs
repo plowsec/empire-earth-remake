@@ -52,12 +52,13 @@ impl Difficulty {
     /// workforce goal: grows with the population limit so long games keep scaling
     fn citizen_target(self, pop_limit: i32) -> usize {
         let (base, pct) = match self {
-            Difficulty::Easy => (30, 18),
-            Difficulty::Normal => (60, 30),
-            Difficulty::Hard => (90, 36),
-            Difficulty::Hardest => (110, 40),
+            Difficulty::Easy => (30, 14),
+            Difficulty::Normal => (60, 20),
+            Difficulty::Hard => (90, 24),
+            Difficulty::Hardest => (110, 26),
         };
-        (base.max(pop_limit * pct / 100) as usize).min(700)
+        // past a few hundred workers more citizens only starve the army of food and room
+        (base.max(pop_limit * pct / 100) as usize).min(420)
     }
     /// first attack, in ticks
     fn first_attack(self) -> u32 {

@@ -122,7 +122,9 @@ match setup, AI seeds and every command, refreshed every 30 s and on exit.
 ee_headless replay <file.eerep> [minutes_between_reports]
 ```
 
-re-simulates a played game with freshly created AIs fed the human's recorded commands,
+re-simulates a played game with freshly created AIs fed the human's recorded commands
+(add `--exact` to play back the AI's recorded commands too: reproduces the game even when
+the AI code has changed since),
 prints per-player economy/army/AI-state timelines, and verifies the recorded checksums
 (any divergence is reported with its tick).
 
