@@ -512,7 +512,7 @@ impl GameView {
             if td.is_building() && !t.complete && any(&|_, d| !d.builds.is_empty()) {
                 return "build".into();
             }
-            if td.data.walkable && any(&|_, d| d.gather_rate[0] > 0) {
+            if (td.data.walkable || td.data.key == "granary") && any(&|_, d| d.gather_rate[0] > 0) {
                 return "gather".into();
             }
             if td.is_building() && t.hp < w.max_hp(t) && any(&|_, d| !d.builds.is_empty()) {

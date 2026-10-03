@@ -980,6 +980,8 @@ impl World {
         let Some(t) = self.get(like) else { return vec![] };
         let def = t.def;
         let from = t.pos;
+        let owner = t.owner;
+        let building = d.def(def).is_building();
         let cap = gather_cap(d.def(def));
         let (cx, cy) = from.tile();
         let mut found: Vec<(i64, EntityId, i32)> = Vec::new();
@@ -993,7 +995,7 @@ impl World {
                     continue;
                 }
                 let Some(e) = self.get(occ) else { continue };
-                if e.def != def || (e.amount <= 0 && !d.def(def).is_building()) {
+                if e.def != def || (e.amount <= 0 && !building) || (building && (e.owner != owner || !e.complete)) {
                     continue;
                 }
                 found.push((from.dist2_raw(e.pos), occ, (cap - e.gatherers as i32).max(0)));

@@ -898,3 +898,34 @@ fn save_load_continues_bit_identically() {
     }
     assert_eq!(a.checksum(), b.checksum(), "saved game diverged after loading");
 }
+
+#[test]
+fn citizens_sent_to_a_granary_each_take_a_field() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    w.players[0].res = [5000; 5];
+    let s = w.starts[0];
+    // a clear 9x9 spot for the granary ring
+    let gran = data().id("granary");
+    let farm = data().id("farm");
+    let tile = (8i32..30).find_map(|r| (-r..=r).find_map(|dx| {
+        let t = (s.0 + dx, s.1 + r);
+        let ok = (t.1 - 3..t.1 + 6).all(|y| (t.0 - 3..t.0 + 6).all(|x| w.map.passable(x, y, ee_sim::defs::Layer::Land) && !w.map.is_water(x, y)));
+        if ok && w.can_place(0, gran, t).is_ok() { Some(t) } else { None }
+    })).expect("granary plot");
+    let g = w.spawn_static(gran, 0, tile, true);
+    let f1 = w.spawn_static(farm, 0, (tile.0 - 3, tile.1), true);
+    let f2 = w.spawn_static(farm, 0, (tile.0 + 3, tile.1), true);
+    let cit = data().id("citizen");
+    let gp = w.get(g).unwrap().pos;
+    let ids: Vec<u32> = (0..5).map(|k| w.spawn(cit, 0, gp + FVec::new(ee_sim::fixed::Fx::from_int(k - 2), ee_sim::fixed::Fx::from_int(6)))).collect();
+    w.apply_command(&Command { player: 0, kind: CommandKind::Target { units: ids.clone(), target: g, queue: false } });
+    let orders: Vec<Order> = ids.iter().map(|&u| w.get(u).unwrap().order).collect();
+    let farming: Vec<u32> = orders.iter().filter_map(|o| match o { Order::Gather { node } => Some(*node), _ => None }).collect();
+    assert!(farming.contains(&f1) && farming.contains(&f2), "both free fields staffed: {orders:?}");
+    let building = orders.iter().filter(|o| matches!(o, Order::Build { .. })).count();
+    assert_eq!(building, 3, "the other three lay new fields: {orders:?}");
+    // they finish their fields and start farming
+    run(&mut w, 20 * 40, vec![]);
+    let farmers = ids.iter().filter(|&&u| matches!(w.get(u).unwrap().order, Order::Gather { node } if w.get(node).map_or(false, |n| n.def == farm))).count();
+    assert_eq!(farmers, 5);
+}

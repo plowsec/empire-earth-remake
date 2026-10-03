@@ -480,6 +480,19 @@ pub fn move_group(w: &mut World, units: &[EntityId], to: FVec, attack_move: bool
 
 fn smart_target(w: &mut World, p: u8, units: &[EntityId], target: EntityId, queue: bool, force_attack: bool) {
     let Some(t) = w.get(target) else { return };
+    // citizens sent to one of our granaries take a field each
+    if !force_attack && t.owner == p && t.complete && t.def == data().id("granary") {
+        let cit = data().id("citizen");
+        let farmers: Vec<EntityId> = units.iter().copied().filter(|&u| w.get(u).map_or(false, |e| e.def == cit)).collect();
+        if !farmers.is_empty() {
+            staff_granary(w, p, &farmers, target, queue);
+            let rest: Vec<EntityId> = units.iter().copied().filter(|u| !farmers.contains(u)).collect();
+            if !rest.is_empty() {
+                smart_target(w, p, &rest, target, queue, false);
+            }
+            return;
+        }
+    }
     let tdef = w.def_of(t);
     let towner = t.owner;
     let tpos = t.pos;
@@ -528,7 +541,7 @@ fn smart_target(w: &mut World, p: u8, units: &[EntityId], target: EntityId, queu
     }
     // many gatherers on one land node: spread them over neighbouring nodes of the
     // same kind (each tree/mine up to its worker cap), nearest workers first
-    if !queue && tdef.is_resource() && !w.fish.contains(&target) && !tdef.is_building() {
+    if !queue && tdef.is_resource() && !w.fish.contains(&target) && (!tdef.is_building() || tdef.data.walkable) {
         let gath: Vec<EntityId> = plan.iter().filter(|(_, o)| matches!(o, Some(Order::Gather { .. }))).map(|x| x.0).collect();
         let cap = crate::world::gather_cap(tdef);
         if gath.len() as i32 > cap {
@@ -734,6 +747,76 @@ pub fn scout(w: &mut World, units: &[EntityId]) {
 }
 
 /// Granary: farm foundations on every free plot of its ring, citizens assigned.
+/// One citizen per field around a granary: free fields first, then unfinished ones,
+/// then new fields on empty plots (paid for) until everyone has work.
+fn staff_granary(w: &mut World, p: u8, citizens: &[EntityId], granary: EntityId, queue: bool) {
+    let d = data();
+    let farm = d.id("farm");
+    let Some(g) = w.get(granary) else { return };
+    let (gx, gy) = g.tile;
+    let gpos = g.pos;
+    // nearest citizens get the nearest fields
+    let mut todo: Vec<EntityId> = citizens.to_vec();
+    todo.sort_by_key(|&u| (w.get(u).map_or(0, |e| e.pos.dist2_raw(gpos)), u));
+    let mut fields: Vec<(i64, EntityId, bool)> = w
+        .entities
+        .iter()
+        .filter(|e| e.alive && e.owner == p && e.def == farm && e.pos.within(gpos, Fx::from_int(6)))
+        .filter(|e| if e.complete { e.gatherers == 0 } else { true })
+        .map(|e| (e.pos.dist2_raw(gpos), e.id, e.complete))
+        .collect();
+    fields.sort();
+    // a citizen already farming here keeps its field
+    todo.retain(|&u| {
+        let keep = w.get(u).map_or(false, |e| matches!(e.order, Order::Gather { node } if w.get(node).map_or(false, |n| n.def == farm && n.pos.within(gpos, Fx::from_int(6)))));
+        !keep
+    });
+    let mut it = todo.into_iter();
+    for (_, f, complete) in fields {
+        let Some(u) = it.next() else { return };
+        if complete {
+            give(w, u, Order::Gather { node: f }, queue);
+            if let Some(n) = w.get_mut(f) {
+                n.gatherers = n.gatherers.saturating_add(1);
+            }
+        } else {
+            // finish the field, then farm it (behave_build hands farms over)
+            give(w, u, Order::Build { site: f }, queue);
+        }
+    }
+    let slots = [
+        (gx - 3, gy), (gx + 3, gy), (gx, gy - 3), (gx, gy + 3),
+        (gx - 3, gy - 3), (gx + 3, gy - 3), (gx - 3, gy + 3), (gx + 3, gy + 3),
+    ];
+    let cost = d.def(farm).data.cost;
+    for t in slots {
+        let Some(u) = it.next() else { return };
+        if w.can_place(p, farm, t).is_err() {
+            // keep this citizen for the next plot
+            let rest: Vec<EntityId> = std::iter::once(u).chain(it).collect();
+            it = rest.into_iter();
+            continue;
+        }
+        if !w.pay(p, &cost) {
+            w.events.push(SimEvent::Notice { owner: p, text: "Not enough wood for more fields" });
+            return;
+        }
+        let id = w.spawn_static(farm, p, t, false);
+        w.events.push(SimEvent::BuildingPlaced { id, def: farm, owner: p });
+        give(w, u, Order::Build { site: id }, queue);
+    }
+    let left: Vec<EntityId> = it.collect();
+    if !left.is_empty() {
+        w.events.push(SimEvent::Notice { owner: p, text: "All fields around this granary are taken" });
+        // drop off anything carried there, then stand by
+        for u in left {
+            if w.get(u).map_or(false, |e| e.carry > 0) {
+                give(w, u, Order::ReturnCargo, queue);
+            }
+        }
+    }
+}
+
 pub fn rebuild_farms(w: &mut World, p: u8, building: EntityId) {
     let d = data();
     let farm = d.id("farm");
