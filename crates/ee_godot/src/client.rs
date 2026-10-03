@@ -656,6 +656,7 @@ impl Client {
                 }
             }
         };
+        let mut units: Vec<(i32, i32, Color)> = Vec::new();
         for e in &w.entities {
             if !e.alive || e.inside != 0 {
                 continue;
@@ -676,12 +677,24 @@ impl Client {
             if e.owner == GAIA {
                 continue;
             }
-            if e.owner != self.me && !w.can_see(self.me, e) {
+            let radar_track = d.data.icbm && w.players[self.me as usize].radar;
+            if e.owner != self.me && !w.can_see(self.me, e) && !radar_track {
                 continue;
             }
             let c = player_color(w.players[e.owner as usize].color);
-            let r = if d.is_building() { d.size().0 / 2 } else { 0 };
-            plot(&mut self.minimap_buf, tx, ty, c, r);
+            if d.is_building() {
+                plot(&mut self.minimap_buf, tx, ty, c, d.size().0 / 2);
+            } else {
+                units.push((tx, ty, if d.data.icbm { Color::WHITE } else { c }));
+            }
+        }
+        // units last and bold (outlined 3x3 blips) so armies and fleets stand out
+        for &(tx, ty, _) in &units {
+            plot(&mut self.minimap_buf, tx, ty, Color::from_rgb(0.05, 0.05, 0.05), 2);
+        }
+        for &(tx, ty, c) in &units {
+            let bright = Color::from_rgb((c.r * 0.8 + 0.2).min(1.0), (c.g * 0.8 + 0.2).min(1.0), (c.b * 0.8 + 0.2).min(1.0));
+            plot(&mut self.minimap_buf, tx, ty, bright, 1);
         }
         for (_, r) in &self.remembered {
             let (tx, ty) = r.pos.tile();
