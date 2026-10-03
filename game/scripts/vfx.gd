@@ -333,9 +333,12 @@ func on_event(e: Dictionary) -> void:
 				_flash(pos, 2.0, 8.0)
 			if audio: audio.play_shot(dmg, pos, e["text"])
 		"impact":
+			var dmg: int = e["dmg"]
+			if dmg == 10:
+				_nuke(pos, e["size"])
+				return
 			if not _near_camera(pos): return
 			var size: float = max(e["size"], 1.5)
-			var dmg: int = e["dmg"]
 			if dmg in EXPLOSIVE:
 				var s: float = clamp(size / 3.0, 0.6, 3.5)
 				_play("fire", pos + Vector3.UP * 0.5, s)
@@ -378,6 +381,103 @@ func on_event(e: Dictionary) -> void:
 			_marker(pos, Color(1, 0.3, 0.25) if e["mine"] else Color(0.4, 1.0, 0.5))
 		_:
 			if audio: audio.on_event(e)
+
+func _emissive(col: Color, energy: float, alpha := 1.0) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(col, alpha)
+	m.emission_enabled = true
+	m.emission = col
+	m.emission_energy_multiplier = energy
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.disable_receive_shadows = true
+	return m
+
+func _nuke(pos: Vector3, radius: float) -> void:
+	var r: float = max(radius, 20.0)
+	# blinding flash
+	var flash := OmniLight3D.new()
+	flash.light_color = Color(1.0, 0.92, 0.8)
+	flash.omni_range = r * 6.0
+	flash.light_energy = 40.0
+	add_child(flash)
+	flash.global_position = pos + Vector3.UP * 15.0
+	var tw := create_tween()
+	tw.tween_property(flash, "light_energy", 6.0, 0.4)
+	tw.tween_property(flash, "light_energy", 0.0, 3.0)
+	tw.tween_callback(flash.queue_free)
+	# fireball
+	var fb := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 1.0
+	sm.height = 2.0
+	fb.mesh = sm
+	var fmat := _emissive(Color(1.0, 0.55, 0.15), 6.0)
+	fb.material_override = fmat
+	fb.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(fb)
+	fb.global_position = pos
+	var t2 := create_tween().set_parallel(true)
+	t2.tween_property(fb, "scale", Vector3.ONE * r * 0.55, 1.0).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_EXPO)
+	t2.tween_property(fb, "global_position", pos + Vector3.UP * r * 1.2, 6.0)
+	t2.tween_property(fmat, "emission_energy_multiplier", 0.2, 6.0)
+	t2.tween_property(fmat, "albedo_color", Color(0.25, 0.2, 0.18, 0.0), 8.0)
+	t2.chain().tween_callback(fb.queue_free)
+	# mushroom stem + cap
+	var smoke := StandardMaterial3D.new()
+	smoke.albedo_color = Color(0.42, 0.38, 0.34, 0.9)
+	smoke.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	smoke.albedo_texture = smoke_tex
+	var stem := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.35
+	cm.bottom_radius = 0.6
+	cm.height = 1.0
+	stem.mesh = cm
+	stem.material_override = smoke
+	add_child(stem)
+	stem.global_position = pos
+	stem.scale = Vector3(r * 0.25, 0.1, r * 0.25)
+	var cap := MeshInstance3D.new()
+	var cs := SphereMesh.new()
+	cs.radius = 1.0
+	cs.height = 1.2
+	cap.mesh = cs
+	cap.material_override = smoke
+	add_child(cap)
+	cap.global_position = pos
+	cap.scale = Vector3.ONE * 0.1
+	var t3 := create_tween().set_parallel(true)
+	t3.tween_property(stem, "scale", Vector3(r * 0.22, r * 1.6, r * 0.22), 5.0).set_ease(Tween.EASE_OUT)
+	t3.tween_property(stem, "global_position", pos + Vector3.UP * r * 0.8, 5.0).set_ease(Tween.EASE_OUT)
+	t3.tween_property(cap, "scale", Vector3(r * 0.9, r * 0.5, r * 0.9), 5.0).set_ease(Tween.EASE_OUT)
+	t3.tween_property(cap, "global_position", pos + Vector3.UP * r * 1.7, 5.0).set_ease(Tween.EASE_OUT)
+	t3.chain().tween_property(smoke, "albedo_color:a", 0.0, 14.0)
+	t3.chain().tween_callback(func(): stem.queue_free(); cap.queue_free())
+	# shockwave ring along the ground
+	var ring := MeshInstance3D.new()
+	var tm := TorusMesh.new()
+	tm.inner_radius = 0.92
+	tm.outer_radius = 1.0
+	ring.mesh = tm
+	var rmat := _emissive(Color(1.0, 0.9, 0.75), 2.0, 0.8)
+	ring.material_override = rmat
+	add_child(ring)
+	ring.global_position = pos + Vector3.UP * 1.0
+	var t4 := create_tween().set_parallel(true)
+	t4.tween_property(ring, "scale", Vector3(r * 2.4, 3.0, r * 2.4), 2.2).set_ease(Tween.EASE_OUT)
+	t4.tween_property(rmat, "albedo_color:a", 0.0, 2.2)
+	t4.chain().tween_callback(ring.queue_free)
+	for k in 6:
+		var a := k * TAU / 6.0
+		_play("fire", pos + Vector3(cos(a), 0.3, sin(a)) * r * 0.4, 6.0)
+		_play("smoke", pos + Vector3(cos(a), 0.0, sin(a)) * r * 0.6, 7.0)
+	_scorch(pos, r * 2.2)
+	if audio:
+		audio.ui("explosion_big_0", 6.0)
+		audio._play3d(audio._load("collapse"), pos, 10.0)
+	if rig and rig.has_method("shake"):
+		rig.shake(1.6)
 
 func _marker(pos: Vector3, col: Color) -> void:
 	var m := MeshInstance3D.new()

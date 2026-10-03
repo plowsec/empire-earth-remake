@@ -16,6 +16,10 @@ var map_size := Vector2(800, 800)
 var game_view: Node = null
 var edge_pan := true
 var _mid_drag := false
+var _shake := 0.0
+
+func shake(strength: float) -> void:
+	_shake = max(_shake, strength)
 
 @onready var cam: Camera3D = $Camera3D
 
@@ -93,6 +97,9 @@ func _apply() -> void:
 	var offset := back * cos(pitch) * dist + Vector3.UP * sin(pitch) * dist
 	cam.global_position = target + offset
 	cam.look_at(target, Vector3.UP)
+	if _shake > 0.01:
+		cam.global_position += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * _shake
+		_shake *= 0.92
 	cam.fov = lerp(42.0, 38.0, t)
 	cam.far = 2400.0
 	cam.near = 0.5

@@ -5,7 +5,7 @@ from mathutils import Vector
 
 import eelib as L
 
-KEYS = ["fighter", "strike_fighter", "bomber", "helicopter"]
+KEYS = ["fighter", "strike_fighter", "bomber", "helicopter", "nuke_bomber"]
 
 
 def fuselage(name, length, sections, mat):
@@ -163,11 +163,42 @@ def helicopter(pal):
     return [body, rotor, trotor]
 
 
+def nuke_bomber(pal):
+    """Long-range strategic bomber in anti-flash white with a yellow nuclear band."""
+    white = L.mat("antiflash", (0.82, 0.83, 0.82), 0.45, 0.2)
+    dark = pal["air_dark"]
+    P = []
+    ln = 13.0
+    P.append(fuselage("fus", ln, [
+        (0.0, 0.05, 0.06, 0.0), (0.05, 0.35, 0.38, 0.0), (0.15, 0.55, 0.6, 0.1), (0.5, 0.6, 0.65, 0.1),
+        (0.85, 0.42, 0.5, 0.15), (1.0, 0.15, 0.25, 0.3)], white))
+    P.append(L.sphere("cockpit", 0.42, (0, -5.4, 0.55), pal["glass"], 14, 8, (1.0, 1.5, 0.6)))
+    for s in (1, -1):
+        P.append(wing("wing", 0.2, 3.2, 0.0, 1.1, 8.0, 0.45, 0.22, white, sweep=3.2, side=s))
+        for k, off in enumerate((2.4, 4.8)):
+            y = 0.2 + off * 0.42
+            P.append(L.cyl("pod", 0.3, 1.8, (off * s, y - 0.4, -0.05), dark, 14, (math.pi / 2, 0, 0)))
+            P.append(L.cyl("pod_in", 0.24, 0.1, (off * s, y - 1.3, -0.05), pal["black"], 14, (math.pi / 2, 0, 0)))
+        P.append(wing("stab", 5.6, 1.6, 0.0, 0.7, 3.0, 0.4, 0.1, white, sweep=1.2, side=s))
+        P.append(L.box("team_tip", (1.0, 1.0, 0.03), (7.5 * s, 3.9, 0.5), pal["team"]))
+    fin = wing("fin", 5.4, 2.4, 0.0, 1.0, 3.2, 0.0, 0.12, white, sweep=1.6, side=1)
+    fin.rotation_euler = (0, math.radians(-90), 0)
+    fin.location = (0, 0, 0.5)
+    P.append(fin)
+    band = L.mat("nuke_yellow", (0.85, 0.65, 0.05), 0.5)
+    P.append(L.cyl("band", 0.63, 0.5, (0, -1.0, 0.1), band, 18, (math.pi / 2, 0, 0)))
+    P.append(L.cyl("band2", 0.64, 0.12, (0, -1.35, 0.1), pal["black"], 18, (math.pi / 2, 0, 0)))
+    P.append(L.cyl("band3", 0.64, 0.12, (0, -0.65, 0.1), pal["black"], 18, (math.pi / 2, 0, 0)))
+    ob = L.join(P, "body")
+    L.smooth(ob, 35)
+    return [ob]
+
+
 def build(key, out_dir, preview_dir=None):
     L.reset()
     L.clear_mat_cache()
     pal = L.P()
-    {"fighter": fighter, "strike_fighter": strike_fighter, "bomber": bomber, "helicopter": helicopter}[key](pal)
+    {"fighter": fighter, "strike_fighter": strike_fighter, "bomber": bomber, "helicopter": helicopter, "nuke_bomber": nuke_bomber}[key](pal)
     L.export_glb(f"{out_dir}/{key}.glb")
     if preview_dir:
         L.preview(f"{preview_dir}/{key}.png", 384, elev=35, azim=-40)
