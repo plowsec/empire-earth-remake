@@ -92,6 +92,7 @@ pub struct Client {
     static_batches: HashMap<(usize, usize), Batch>,
     static_dirty: bool,
     ring_batch: Batch,
+    team_batch: Batch,
     bar_batch: Batch,
     tracer_batch: Batch,
     proj_batch: Batch,
@@ -198,6 +199,8 @@ impl Client {
         };
         let ring_mat = shader_mat("res://shaders/ring.gdshader");
         let ring_batch = Batch::new(&mut root, &quad.clone().upcast(), false, Some(&ring_mat));
+        let team_mat = shader_mat("res://shaders/team_disc.gdshader");
+        let team_batch = Batch::new(&mut root, &quad.clone().upcast(), false, Some(&team_mat));
         let bar_quad = {
             let mut q = QuadMesh::new_gd();
             q.set_size(Vector2::new(1.0, 0.14));
@@ -253,6 +256,7 @@ impl Client {
             static_batches: HashMap::new(),
             static_dirty: true,
             ring_batch,
+            team_batch,
             bar_batch,
             tracer_batch,
             proj_batch,
@@ -740,6 +744,7 @@ impl Client {
             b.begin();
         }
         self.ring_batch.begin();
+        self.team_batch.begin();
         self.bar_batch.begin();
         self.tracer_batch.begin();
         self.proj_batch.begin();
@@ -925,6 +930,13 @@ impl Client {
             let maxhp = w.max_hp(&w.entities[i]).max(1);
             let selected = sel.contains(&id);
             let r = self.models.list[model].radius;
+            if d.is_unit() && !d.data.icbm {
+                let gy = if d.layer == Layer::Air { self.heights.at(p.x, p.z).max(0.0) + 0.1 } else { p.y + 0.08 };
+                let tr = if matches!(d.class(), Class::Citizen | Class::Infantry) { (r * 1.25).max(0.9) } else { r * 0.95 };
+                let txf = Transform3D::new(Basis::from_scale(Vector3::new(tr * 2.0, 1.0, tr * 2.0)), Vector3::new(p.x, gy, p.z));
+                let a = if d.layer == Layer::Air { 0.5 } else { 1.0 };
+                self.team_batch.push(&txf, Color::from_rgba(color.r, color.g, color.b, a), [0.0; 4]);
+            }
             if selected || self.hover == id {
                 let ring_col = if owner == me {
                     Color::from_rgba(0.35, 1.0, 0.45, if selected { 1.0 } else { 0.5 })
@@ -1190,6 +1202,7 @@ impl Client {
             b.finish();
         }
         self.ring_batch.finish();
+        self.team_batch.finish();
         self.bar_batch.finish();
         self.tracer_batch.finish();
         self.proj_batch.finish();

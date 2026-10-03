@@ -184,6 +184,14 @@ impl Models {
             _ => (0.85, 0.0),
         };
         m.set_shader_parameter("team_sat", &team_sat.to_variant());
+        let band = match def.class() {
+            Class::Citizen | Class::Infantry => Vector2::new(0.66, 0.76),
+            Class::Vehicle => Vector2::new(0.42, 0.52),
+            Class::Ship => Vector2::new(0.3, 0.38),
+            Class::Aircraft => Vector2::new(0.45, 0.6),
+            _ => Vector2::ZERO,
+        };
+        m.set_shader_parameter("team_band", &band.to_variant());
         m.set_shader_parameter("weathering", &weathering.to_variant());
         if def.is_resource() {
             if let Some((tex, size)) = &self.fog {

@@ -23,7 +23,8 @@ uniform int anim_mode = 0;          // 0 rigid, 1 infantry, 2 foliage sway, 3 wa
 uniform float model_height = 2.0;   // for construction clipping
 uniform float wear = 0.25;          // grime amount
 uniform float team_sat = 0.85;      // how saturated the player color is painted
-uniform float weathering = 0.0;     // rain streaks + bleached highlights (buildings)
+uniform float weathering = 0.0;
+uniform vec2 team_band = vec2(0.0);  // height01 range painted in the player color (EE-style strip)     // rain streaks + bleached highlights (buildings)
 // shared tileable surface library, sampled triplanar in model space
 uniform int surface_kind = -1;      // -1 none
 uniform int surface_mode = 0;       // 0: detail (modulate brightness), 1: color (use texture color, tinted)
@@ -202,10 +203,19 @@ void fragment() {
 		base = mix(vec3(l3), base, 1.0 - 0.18 * weathering);
 	}
 
+	// player color strip: tells friend from foe in a melee
+	if (team_band.y > 0.0 && v_height01 > team_band.x && v_height01 < team_band.y && (int(round(v_custom.w)) & 16) == 0) {
+		base = v_team * 0.85;
+		srough = 0.5;
+	}
+
 	float flags = v_custom.w;
 	int fl = int(round(flags));
 	float progress = v_custom.z;
 	vec3 emit = emission.rgb * emission_energy;
+	if (team_band.y > 0.0 && v_height01 > team_band.x && v_height01 < team_band.y) {
+		emit += v_team * 0.22;
+	}
 
 	// construction: geometry rises from the ground; the unbuilt part is a blueprint
 	if (progress < 0.999) {
