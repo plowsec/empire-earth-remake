@@ -480,6 +480,8 @@ func _show_tooltip(b: Dictionary, btn: Control) -> void:
 	tooltip.position = btn.global_position + Vector2(-340 + btn.size.x, -tooltip.size.y - 10)
 
 func _do_action(action: String, key: String) -> void:
+	if main and main.has_node("Audio"):
+		main.get_node("Audio").ui("ui_click", -10.0)
 	var m: String = gv.do_action(action, key)
 	if m != "":
 		mode = m

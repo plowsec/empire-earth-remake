@@ -335,7 +335,7 @@ impl Client {
                     pos: a,
                     to: b,
                     size: wp.damage as f32,
-                    text: format!("{:?}", wp.dmg_type),
+                    text: sd.data.key.clone(),
                     dmg: wp.dmg_type as i32,
                     mine: src.owner == me,
                 });

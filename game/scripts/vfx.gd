@@ -289,7 +289,7 @@ func on_event(e: Dictionary) -> void:
 			if dmg in [1, 6]:
 				_play("puff", pos, 2.0)
 				_flash(pos, 2.0, 8.0)
-			if audio: audio.play_shot(dmg, pos)
+			if audio: audio.play_shot(dmg, pos, e["text"])
 		"impact":
 			if not _near_camera(pos): return
 			var size: float = max(e["size"], 1.5)
@@ -303,6 +303,7 @@ func on_event(e: Dictionary) -> void:
 				if audio: audio.play_explosion(s, pos)
 			else:
 				_play("blood", pos, 1.0)
+				if audio: audio.play_hit(pos)
 		"splash":
 			if not _near_camera(pos): return
 			var s: float = clamp(max(e["size"], 2.0) / 3.0, 0.6, 3.0)
@@ -318,6 +319,7 @@ func on_event(e: Dictionary) -> void:
 				_play("smoke", pos + Vector3.UP, s * 3.0)
 				_flash(pos, 8.0, 25.0)
 				if audio: audio.play_explosion(3.0, pos)
+				if audio: audio._play3d(audio._load("collapse"), pos, 4.0)
 			elif t == 1 or t == 3:
 				var s: float = clamp(e["size"] / 3.0, 0.8, 3.0)
 				_play("fire", pos + Vector3.UP, s * 1.4)
