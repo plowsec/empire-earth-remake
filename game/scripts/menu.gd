@@ -17,7 +17,7 @@ var credits_panel: Control
 var orbit := 0.0
 var _hot_t := 0.0
 var _focus := Vector3.ZERO
-var opts := {"players": 2, "difficulty": 1, "map_size": 1, "resources": 100, "start_res": 1500, "pop_limit": 300, "seed": 0, "reveal": 0}
+var opts := {"players": 2, "difficulty": 3, "map_size": 2, "resources": 150, "start_res": 10000, "pop_limit": 3000, "seed": 0, "reveal": 1}
 
 func _ready() -> void:
 	preload("res://scripts/env_setup.gd").apply($WorldEnvironment, $Sun)

@@ -46,7 +46,8 @@ pub struct LobbySettings {
 
 impl Default for LobbySettings {
     fn default() -> Self {
-        LobbySettings { map_size: 1, resources: 100, start_res: 1500, pop_limit: 300, reveal: false }
+        // the house rules: deathmatch, 3000 pop, high resources, large islands, revealed
+        LobbySettings { map_size: 2, resources: 150, start_res: 10000, pop_limit: 3000, reveal: true }
     }
 }
 
