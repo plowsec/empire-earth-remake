@@ -348,6 +348,7 @@ func _build() -> void:
 
 	_build_menu()
 	_build_end_panel()
+	_build_net_label()
 
 func _build_menu() -> void:
 	menu_panel = PanelContainer.new()
@@ -367,6 +368,43 @@ func _build_menu() -> void:
 		b.custom_minimum_size = Vector2(0, 38)
 		b.pressed.connect(item[1])
 		v.add_child(b)
+
+var net_label: Label
+var net_t := 0.0
+
+func _build_net_label() -> void:
+	net_label = _label("", 20, Color(1, 0.85, 0.5), true)
+	net_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	net_label.position = Vector2(-300, 96)
+	net_label.custom_minimum_size = Vector2(600, 0)
+	net_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	net_label.add_theme_constant_override("outline_size", 6)
+	net_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	net_label.visible = false
+	root.add_child(net_label)
+
+func _update_net(dt: float) -> void:
+	net_t -= dt
+	if net_t > 0.0:
+		return
+	net_t = 0.4
+	if not gv.is_lan():
+		net_label.visible = false
+		return
+	var st: Dictionary = gv.net_status()
+	var lines: Array[String] = []
+	if st.get("host_lost", false):
+		lines.append("Connection to the host lost")
+	var waiting: PackedStringArray = st.get("waiting", PackedStringArray())
+	if waiting.size() > 0:
+		lines.append("Waiting for " + ", ".join(waiting) + "…")
+	if int(st.get("desync_tick", -1)) >= 0:
+		lines.append("DESYNC detected at tick %d: the game states differ" % st["desync_tick"])
+	var dropped: PackedStringArray = st.get("dropped", PackedStringArray())
+	if dropped.size() > 0:
+		lines.append(", ".join(dropped) + " left the game")
+	net_label.text = "\n".join(lines)
+	net_label.visible = lines.size() > 0
 
 func _build_end_panel() -> void:
 	end_panel = PanelContainer.new()
@@ -398,6 +436,7 @@ func _process(dt: float) -> void:
 	minimap_overlay.queue_redraw()
 	gv.set_show_all_bars(Input.is_key_pressed(KEY_ALT))
 	_update_hover()
+	_update_net(dt)
 	if debug_label.visible:
 		debug_label.text = "%d fps | %s" % [Engine.get_frames_per_second(), gv.debug_line()]
 	for e in gv.take_events():
@@ -1007,6 +1046,9 @@ func _quit() -> void:
 	get_tree().quit()
 
 func _restart() -> void:
+	if gv.is_lan():
+		notify("A LAN game can't be restarted", Color(1, 0.6, 0.4))
+		return
 	get_tree().reload_current_scene()
 
 func _to_menu() -> void:

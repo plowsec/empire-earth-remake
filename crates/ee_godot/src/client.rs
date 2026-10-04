@@ -149,6 +149,8 @@ pub struct Client {
     autosave_final: bool,
     /// per-player stats every 30 s of game time (end screen charts)
     pub history: Vec<crate::stats::Sample>,
+    /// networked match: no pausing, no speed changes, no saves
+    pub lan: bool,
 }
 
 /// Autosave interval: 5 minutes of game time.
@@ -331,6 +333,7 @@ impl Client {
             autosave_slot: 0,
             autosave_final: false,
             history: Vec::new(),
+            lan: false,
         };
         c.autosave_next = c.session.world.tick + AUTOSAVE_TICKS;
         c.build_decorations(&deco_models);
@@ -374,6 +377,12 @@ impl Client {
             }
             Err(e) => godot_warn!("replay not written: {e}"),
         }
+    }
+
+    /// Play as `me` (networked games) and refresh what that player can see.
+    pub fn set_me(&mut self, me: u8) {
+        self.me = me;
+        self.update_fog(true);
     }
 
     pub fn world(&self) -> &World {

@@ -9,6 +9,7 @@ var fullscreen := false
 var edge_pan := true
 var shadows_high := true
 var last_skirmish := {}
+var player_name := "Commander"
 
 var _shot_path := ""
 var _shot_frames := 0
@@ -39,6 +40,7 @@ func _ready() -> void:
 		shadows_high = c.get_value("video", "shadows_high", shadows_high)
 		edge_pan = c.get_value("input", "edge_pan", edge_pan)
 		last_skirmish = c.get_value("game", "last_skirmish", {})
+		player_name = c.get_value("game", "player_name", player_name)
 	apply()
 
 func apply() -> void:
@@ -59,6 +61,7 @@ func save() -> void:
 	c.set_value("video", "shadows_high", shadows_high)
 	c.set_value("input", "edge_pan", edge_pan)
 	c.set_value("game", "last_skirmish", last_skirmish)
+	c.set_value("game", "player_name", player_name)
 	c.save(PATH)
 	apply()
 

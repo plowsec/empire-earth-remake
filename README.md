@@ -147,6 +147,22 @@ until combat makes the games differ; the report shows both side by side plus how
 your commands were replayed exactly, adapted or dropped. Replays record the simulation
 build that made them and the tools warn when it differs.
 
+## LAN multiplayer
+
+Main menu → **LAN Game**: host a game (others on the network see it in their list) or
+join one by address. In the lobby the host adds AI seats, picks their difficulty and the
+match settings; everyone chats until the host starts. Every machine runs the full
+deterministic simulation and only command bundles travel (TCP, relayed by the host, port
+47777; games are announced by UDP broadcast on 47778). The game waits for slow players,
+compares state checksums to detect desyncs, and resigns anyone who drops at the same tick
+on every machine so the match continues. LAN games can't be paused or saved.
+
+```sh
+ee_headless lan-selftest 15   # host + client over loopback, AIs on every seat, must stay in sync
+godot --path game -- --scene=menu --lanhost --lantest=30 &   # two-window check
+godot --path game -- --scene=menu --lanjoin=127.0.0.1 --lantest=28
+```
+
 ## Multiplayer readiness
 
 The game is lockstep-ready but has no network transport yet:

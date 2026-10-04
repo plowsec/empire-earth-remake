@@ -4,6 +4,7 @@ use godot::prelude::*;
 
 mod batch;
 mod client;
+mod lan;
 mod models;
 mod save;
 mod stats;

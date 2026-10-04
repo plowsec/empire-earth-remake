@@ -39,6 +39,13 @@ func _ready() -> void:
 			var t = load("res://scripts/featuretest.gd").new()
 			t.name = "FeatureTest"
 			call_deferred("add_child", t)
+		elif a.begins_with("--lantest="):
+			var secs := float(a.substr(10))
+			get_tree().create_timer(secs).timeout.connect(func():
+				var st: Dictionary = game_view.net_status()
+				var ss: Dictionary = game_view.sim_stats()
+				print("LANTEST tick=%d lan=%s desync=%d waiting=%s dropped=%s" % [ss.get("tick", -1), game_view.is_lan(), st.get("desync_tick", -1), st.get("waiting", []), st.get("dropped", [])])
+				get_tree().quit())
 		elif a.begins_with("--endscreen"):
 			var tab := a.substr(12) if a.length() > 12 else ""
 			get_tree().create_timer(2.0).timeout.connect(func():
@@ -75,7 +82,10 @@ func start_match(cfg: Dictionary) -> void:
 	var c := {"seed": 7, "players": 2, "difficulty": 1, "map_size": 1, "resources": 100, "pop_limit": 300}
 	c.merge(cfg, true)
 	var loaded := false
-	if Engine.has_meta("load_save"):
+	if Engine.has_meta("lan_start"):
+		Engine.remove_meta("lan_start")
+		loaded = game_view.start_lan()
+	if not loaded and Engine.has_meta("load_save"):
 		var err: String = game_view.load_game(Engine.get_meta("load_save"))
 		if err == "":
 			loaded = true

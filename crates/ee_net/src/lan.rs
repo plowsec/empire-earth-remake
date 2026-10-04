@@ -215,9 +215,21 @@ impl LanHost {
         }));
         // accept connections until the match starts
         let sh = shared.clone();
+        listener.set_nonblocking(true)?;
         std::thread::spawn(move || {
-            for s in listener.incoming() {
-                let Ok(s) = s else { continue };
+            loop {
+                // stop listening once the match starts or the host is closed
+                if Arc::strong_count(&sh) == 1 || sh.lock().unwrap().started {
+                    return;
+                }
+                let s = match listener.accept() {
+                    Ok((s, _)) => s,
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+                };
+                let _ = s.set_nonblocking(false);
                 let _ = s.set_nodelay(true);
                 let mut g = sh.lock().unwrap();
                 if g.started {

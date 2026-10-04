@@ -176,6 +176,7 @@ func _build_ui() -> void:
 	root.add_child(main_panel)
 	main_panel.add_child(_btn("Skirmish", func(): _show(skirmish_panel)))
 	main_panel.add_child(_btn("Load Game", func(): _refresh_saves(); _show(load_panel)))
+	main_panel.add_child(_btn("LAN Game", func(): _show(lan_panel)))
 	main_panel.add_child(_btn("Settings", func(): _show(settings_panel)))
 	main_panel.add_child(_btn("Credits", func(): _show(credits_panel)))
 	main_panel.add_child(_btn("Quit", func(): get_tree().quit()))
@@ -187,11 +188,22 @@ func _build_ui() -> void:
 
 	_build_skirmish(root)
 	_build_load(root)
+	lan_panel = load("res://scripts/lan_menu.gd").new()
+	lan_panel.position = Vector2(470, 280)
+	lan_panel.visible = false
+	root.add_child(lan_panel)
+	lan_panel.setup(self)
+	if OS.get_cmdline_user_args().has("--lanhost") or Array(OS.get_cmdline_user_args()).any(func(a): return a.begins_with("--lanjoin=")):
+		get_tree().create_timer(1.0).timeout.connect(_lan_autotest)
 	_build_settings(root)
 	_build_credits(root)
 
+func _lan_autotest() -> void:
+	_show(lan_panel)
+	lan_panel.autotest(OS.get_cmdline_user_args())
+
 func _show(p: Control) -> void:
-	for x in [skirmish_panel, load_panel, settings_panel, credits_panel]:
+	for x in [skirmish_panel, load_panel, lan_panel, settings_panel, credits_panel]:
 		x.visible = x == p and not p.visible
 
 func _build_skirmish(root: Control) -> void:
@@ -222,6 +234,7 @@ func _build_skirmish(root: Control) -> void:
 	v.add_child(hb)
 
 var load_panel: Control
+var lan_panel: Control
 var load_list: VBoxContainer
 
 func _build_load(root: Control) -> void:

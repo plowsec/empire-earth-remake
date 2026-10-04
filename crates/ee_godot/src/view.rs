@@ -136,6 +136,9 @@ impl GameView {
     #[func]
     fn save_game(&mut self, name: GString) -> GString {
         let Some(c) = self.client.as_mut() else { return "no game running".into() };
+        if c.lan {
+            return "LAN games can't be saved".into();
+        }
         let safe: String = name.to_string().chars().map(|ch| if ch.is_alphanumeric() || ch == '-' || ch == '_' || ch == ' ' || ch == '(' || ch == ')' { ch } else { '_' }).collect();
         let safe = if safe.trim().is_empty() { "Quicksave".to_string() } else { safe.trim().to_string() };
         if c.autosave_dir.is_none() {
@@ -345,7 +348,9 @@ impl GameView {
     #[func]
     fn set_speed(&mut self, s: f64) {
         if let Some(c) = self.client.as_mut() {
-            c.session.speed = s;
+            if !c.lan {
+                c.session.speed = s;
+            }
         }
     }
 
@@ -374,8 +379,71 @@ impl GameView {
     #[func]
     fn set_paused(&mut self, p: bool) {
         if let Some(c) = self.client.as_mut() {
-            c.session.paused = p;
+            // a networked game can't be paused by one player
+            if !c.lan {
+                c.session.paused = p;
+            }
         }
+    }
+
+    #[func]
+    fn is_lan(&self) -> bool {
+        self.client.as_ref().map_or(false, |c| c.lan)
+    }
+
+    /// Network state: {online, waiting: [names], desync_tick, dropped: [names], host_lost}
+    #[func]
+    fn net_status(&self) -> VarDictionary {
+        let mut d = dict();
+        let Some(c) = &self.client else { return d };
+        let st = c.session.net_status();
+        let w = c.world();
+        let names = |ps: &[u8]| -> PackedStringArray {
+            let mut a = PackedStringArray::new();
+            for &p in ps {
+                a.push(w.players.get(p as usize).map_or("?", |pl| pl.name.as_str()));
+            }
+            a
+        };
+        d.set("online", st.online);
+        d.set("waiting", &names(&st.waiting_for));
+        d.set("desync_tick", st.desync_tick.map_or(-1, |t| t as i64));
+        d.set("dropped", &names(&st.dropped));
+        d.set("host_lost", st.host_lost);
+        d
+    }
+
+    /// Start the networked match parked by the LAN lobby.
+    #[func]
+    fn start_lan(&mut self) -> bool {
+        let Some(m) = crate::lan::PENDING.lock().unwrap().take() else { return false };
+        for mut ch in self.base().get_children().iter_shared() {
+            ch.queue_free();
+        }
+        self.client = None;
+        let reveal = m.config.reveal;
+        let mut session = ee_net::Session::new(m.config.clone(), vec![m.me], Box::new(m.transport));
+        session.input_delay = 3;
+        if m.host {
+            // the computer players run on the host; their orders travel like anyone's
+            for a in &m.ais {
+                session.add_controller(Box::new(ee_ai::Ai::new(a.player, ee_ai::Difficulty::from_index(a.difficulty), a.seed)));
+                session.ai_setup.push(a.clone());
+            }
+        } else {
+            session.ai_setup = m.ais.clone();
+        }
+        let noise: Gd<Texture2D> = noise_texture(11, 0.02, 512, false).upcast();
+        self.noise_tex = Some(noise.clone());
+        let root = self.base().clone().upcast::<Node>();
+        let mut client = Client::from_session(root, session, reveal, Some(noise.clone()));
+        client.lan = true;
+        client.set_me(m.me);
+        client.replay_path = Some(new_replay_path(client.world().config.seed));
+        self.build_world(&client, &noise);
+        self.client = Some(client);
+        self.signals().game_started().emit();
+        true
     }
 
     #[func]
