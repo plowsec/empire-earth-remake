@@ -1,14 +1,3 @@
 # models replaced by Tripo 3D generations (tools/assets/tripo.py + tools/blender/import_tripo.py)
-tank
-house
-battleship
-capitol
-settlement
-barracks
-tank_factory
-granary
-hospital
-apartments
-fortress
-frigate
-submarine
+# Empty on purpose: the generated meshes looked dirty and "melted" next to the procedural
+# set, so the game uses the procedural models. Raw downloads stay in tools/assets/tripo_raw.
