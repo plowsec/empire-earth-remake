@@ -294,7 +294,10 @@ impl LanHost {
             match ev {
                 Event::Msg(id, Msg::Hello { name, data_hash, sim_version }) => {
                     let reject = if data_hash != ee_sim::data().hash || sim_version != ee_sim::SIM_VERSION {
-                        Some("different game version".to_string())
+                        Some(format!(
+                            "different game version (host {} / data {:x}, yours {} / data {:x}): pull the same commit on both machines and run ./tools/build.sh",
+                            ee_sim::SIM_VERSION, ee_sim::data().hash & 0xffffff, sim_version, data_hash & 0xffffff
+                        ))
                     } else if g.lobby.slots.len() >= MAX_PLAYERS && !g.lobby.slots.iter().any(|s| matches!(s.kind, SlotKind::Ai { .. })) {
                         Some("game is full".to_string())
                     } else {

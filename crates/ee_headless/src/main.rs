@@ -70,6 +70,9 @@ fn main() {
             let pop: i32 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(300);
             run_match(seed, players, minutes, diff, pop, args.get(7).cloned());
         }
+        Some("version") => {
+            println!("sim {} data {:x}", ee_sim::SIM_VERSION, ee_sim::data().hash);
+        }
         Some("lan-selftest") => {
             let minutes: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(3);
             lan_selftest(minutes);
@@ -426,7 +429,7 @@ pub(crate) fn sim_version_check(rep: &ee_net::Replay) {
         println!("note: replay predates sim build stamps; if the simulation changed since, playback drifts");
     } else if rep.sim_version != ee_sim::SIM_VERSION {
         println!("WARNING: recorded with sim build {} but this is {}: playback may drift from the real game", rep.sim_version, ee_sim::SIM_VERSION);
-        println!("         exact reproduction: git worktree add /tmp/sim {} && cargo run --release -p ee_headless ...", rep.sim_version.trim_end_matches("+dirty"));
+        println!("         (the stamp is a hash of the simulation sources: check out the commit the game was played on)");
     }
 }
 
