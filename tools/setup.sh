@@ -12,5 +12,8 @@ if ! command -v godot >/dev/null 2>&1; then
 fi
 ./tools/build.sh
 echo "importing assets (first run only, takes a minute)..."
+# tell the importer about the extension up front (it otherwise registers it twice)
+mkdir -p game/.godot
+[ -f game/.godot/extension_list.cfg ] || echo "res://ee.gdextension" > game/.godot/extension_list.cfg
 godot --headless --path game --import >/dev/null 2>&1 || true
 echo "ready: godot --path game"
