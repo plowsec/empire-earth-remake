@@ -54,7 +54,7 @@ impl World {
         if np > 1 {
             for a in 0..np {
                 for b in 0..np {
-                    if a != b && self.players[a].team == self.players[b].team {
+                    if a != b && self.allied(a as u8, b as u8) {
                         let (src, dst) = if a < b {
                             let (l, r) = self.vision.split_at_mut(b);
                             (&r[0], &mut l[a])

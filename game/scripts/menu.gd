@@ -17,7 +17,7 @@ var credits_panel: Control
 var orbit := 0.0
 var _hot_t := 0.0
 var _focus := Vector3.ZERO
-var opts := {"players": 2, "difficulty": 3, "map_size": 2, "resources": 150, "start_res": 10000, "pop_limit": 3000, "seed": 0, "reveal": 1}
+var opts := {"players": 2, "difficulty": 3, "map_size": 2, "resources": 150, "start_res": 10000, "pop_limit": 3000, "seed": 0, "reveal": 1, "teams": 0}
 
 func _ready() -> void:
 	preload("res://scripts/env_setup.gd").apply($WorldEnvironment, $Sun)
@@ -219,6 +219,7 @@ func _build_skirmish(root: Control) -> void:
 	v.add_child(_lbl("Big Islands · Atomic Modern", 18, Color(0.65, 0.64, 0.6)))
 	_option(v, "Opponents", ["1 AI", "2 AI", "3 AI"], "players", [2, 3, 4])
 	_option(v, "Difficulty", ["Easy", "Normal", "Hard", "Hardest"], "difficulty", [0, 1, 2, 3])
+	_option(v, "Teams", ["Free for all", "You + AI 1 vs the rest", "You vs all AIs"], "teams", [0, 1, 2])
 	_option(v, "Map size", ["Small", "Medium", "Large"], "map_size", [0, 1, 2])
 	_option(v, "Resources on map", ["Standard", "High", "Very high"], "resources", [100, 150, 220])
 	_option(v, "Starting resources", ["Low", "Standard", "High", "Deathmatch"], "start_res", [600, 1500, 3000, 10000])

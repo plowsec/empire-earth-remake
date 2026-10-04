@@ -124,6 +124,7 @@ impl Lan {
                 x.set("human", sl.kind == SlotKind::Human);
                 x.set("difficulty", match sl.kind { SlotKind::Ai { difficulty } => difficulty as i64, _ => -1 });
                 x.set("me", me == Some(i as u8));
+                x.set("team", sl.team as i64);
                 slots.push(&x.to_variant());
             }
             d.set("slots", &slots);
@@ -165,6 +166,13 @@ impl Lan {
     fn remove_ai(&mut self, slot: i64) {
         if let Some(h) = self.host.as_mut() {
             h.remove_ai(slot as usize);
+        }
+    }
+
+    #[func]
+    fn set_team(&mut self, slot: i64, team: i64) {
+        if let Some(h) = self.host.as_mut() {
+            h.set_team(slot as usize, team as u8);
         }
     }
 

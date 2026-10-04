@@ -404,6 +404,8 @@ pub fn apply(w: &mut World, c: &Command) {
                 }
             }
         }
+        CommandKind::Diplomacy { target, ally } => w.set_diplomacy(p, *target, *ally),
+        CommandKind::Tribute { to, res } => w.tribute(p, *to, *res),
         CommandKind::Resign => {
             w.resign(p);
         }

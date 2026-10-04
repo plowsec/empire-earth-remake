@@ -173,6 +173,17 @@ func _rebuild_slots(st: Dictionary) -> void:
 		var nm := _lbl(sl["name"] + ("  (you)" if sl["me"] else ""), 22)
 		nm.custom_minimum_size = Vector2(260, 0)
 		row.add_child(nm)
+		# team (same team = allies at the start)
+		if host:
+			var tb := OptionButton.new()
+			for t in 4:
+				tb.add_item("Team %d" % (t + 1), t)
+			tb.select(clampi(int(sl.get("team", i)), 0, 3))
+			var tslot := i
+			tb.item_selected.connect(func(t): lan.set_team(tslot, t))
+			row.add_child(tb)
+		else:
+			row.add_child(_lbl("Team %d" % (int(sl.get("team", i)) + 1), 18, Color(0.8, 0.8, 0.7)))
 		if sl["human"]:
 			row.add_child(_lbl("Human", 18, Color(0.7, 0.85, 1.0)))
 		elif host:

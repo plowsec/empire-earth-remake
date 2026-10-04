@@ -275,3 +275,48 @@ impl Ai {
 
 #[allow(dead_code)]
 fn _unused(_: Layer) {}
+
+impl Ai {
+    /// Rough strength of a player: population plus buildings.
+    fn might(w: &World, p: u8) -> i64 {
+        let b = w.entities.iter().filter(|e| e.alive && e.owner == p && data().def(e.def).is_building()).count() as i64;
+        w.players[p as usize].pop as i64 + b * 2
+    }
+
+    /// Balance of power: accept alliances against the leader, court allies when someone
+    /// pulls far ahead. Never an alliance that would leave nobody to fight.
+    pub(crate) fn diplomacy(&mut self, w: &World, out: &mut Vec<CommandKind>) {
+        let me = self.player;
+        if w.tick % 600 != (self.phase * 17) % 600 {
+            return;
+        }
+        let standing: Vec<u8> = w.players.iter().filter(|p| !p.defeated).map(|p| p.id).collect();
+        if standing.len() < 3 {
+            return;
+        }
+        let leader = *standing.iter().max_by_key(|&&p| (Self::might(w, p), p)).unwrap();
+        let mine = Self::might(w, me);
+        // would allying with `q` still leave someone to fight?
+        let leaves_enemy = |q: u8| standing.iter().any(|&o| o != me && o != q && w.is_enemy(me, o) && w.is_enemy(q, o));
+        // answer offers
+        for &q in &standing {
+            if q == me || !w.is_enemy(me, q) {
+                continue;
+            }
+            let offered = w.players[q as usize].proposals.get(me as usize).copied().unwrap_or(false);
+            if offered && q != leader && leaves_enemy(q) {
+                out.push(CommandKind::Diplomacy { target: q, ally: true });
+            }
+        }
+        // court a partner against a runaway leader
+        if leader != me && w.is_enemy(me, leader) && Self::might(w, leader) * 10 > mine * 14 {
+            let partner = standing.iter().copied()
+                .filter(|&q| q != me && q != leader && w.is_enemy(me, q) && w.is_enemy(q, leader))
+                .filter(|&q| !w.players[me as usize].proposals.get(q as usize).copied().unwrap_or(false))
+                .max_by_key(|&q| (Self::might(w, q), q));
+            if let Some(q) = partner {
+                out.push(CommandKind::Diplomacy { target: q, ally: true });
+            }
+        }
+    }
+}

@@ -134,7 +134,6 @@ struct Invasion {
 struct Known {
     def: DefId,
     pos: FVec,
-    #[allow(dead_code)]
     owner: u8,
     tile: (i32, i32),
 }
@@ -383,6 +382,7 @@ impl Controller for Ai {
         }
         self.produce(w, &v, &mut out);
         self.research(w, &v, &mut out);
+        self.diplomacy(w, &mut out);
         self.rebuild_fields(w, &v, &mut out);
         self.military(w, &v, &mut out);
         self.scout(w, &v, &mut out);
@@ -492,10 +492,11 @@ impl Ai {
         let d = data();
         let p = self.player;
         // forget buildings whose tile is visible but that are gone
+        // forget what's gone, and anything that belongs to an ally now
         let gone: Vec<EntityId> = self
             .known
             .iter()
-            .filter(|(id, k)| w.visible(p, k.tile.0, k.tile.1) && w.get(**id).is_none())
+            .filter(|(id, k)| (w.visible(p, k.tile.0, k.tile.1) && w.get(**id).is_none()) || !w.is_enemy(p, k.owner))
             .map(|(id, _)| *id)
             .collect();
         for g in gone {

@@ -198,6 +198,12 @@ func _build() -> void:
 	hb.add_child(pbox)
 	clock_label = _label("00:00", 21, ACCENT, true)
 	hb.add_child(clock_label)
+	var dip_btn := Button.new()
+	dip_btn.text = "Diplomacy"
+	dip_btn.tooltip_text = "Alliances and tribute"
+	dip_btn.custom_minimum_size = Vector2(96, 32)
+	dip_btn.pressed.connect(_toggle_diplomacy)
+	hb.add_child(dip_btn)
 	var save_btn := Button.new()
 	save_btn.text = "Save"
 	save_btn.tooltip_text = "Save the game (F5 quicksaves)"
@@ -437,6 +443,11 @@ func _process(dt: float) -> void:
 	gv.set_show_all_bars(Input.is_key_pressed(KEY_ALT))
 	_update_hover()
 	_update_net(dt)
+	if dip_panel != null and dip_panel.visible:
+		dip_t -= dt
+		if dip_t <= 0.0:
+			dip_t = 0.5
+			_refresh_diplomacy()
 	if debug_label.visible:
 		debug_label.text = "%d fps | %s" % [Engine.get_frames_per_second(), gv.debug_line()]
 	for e in gv.take_events():
@@ -913,6 +924,10 @@ func _on_event(e: Dictionary) -> void:
 	match e["kind"]:
 		"notice": notify(e["text"], Color(1, 0.8, 0.5))
 		"autosaved": notify("Autosaved (%s)" % e["text"], Color(0.6, 0.85, 1.0))
+		"diplomacy":
+			var col := Color(1, 0.45, 0.4) if int(e["dmg"]) == 2 else Color(0.6, 1.0, 0.7)
+			notify(e["text"], col)
+			if dip_panel != null and dip_panel.visible: _refresh_diplomacy()
 		"complete": notify("%s complete" % e["text"], Color(0.7, 1.0, 0.7))
 		"research": notify("Research complete: %s" % e["text"], Color(0.7, 0.85, 1.0))
 		"under_attack": notify("We are under attack!", Color(1, 0.4, 0.35))
@@ -956,7 +971,97 @@ func _toggle_reveal() -> void:
 func _save_game() -> void:
 	_open_save_dialog()
 
-# ---------------------------------------------------------------- save dialog
+# ---------------------------------------------------------------- diplomacy
+
+var dip_panel: PanelContainer
+var dip_list: VBoxContainer
+var dip_t := 0.0
+const RES_SHORT := ["Food", "Wood", "Stone", "Gold", "Iron"]
+
+func _toggle_diplomacy() -> void:
+	if dip_panel == null:
+		dip_panel = PanelContainer.new()
+		dip_panel.set_anchors_preset(Control.PRESET_CENTER)
+		dip_panel.position = Vector2(-330, -220)
+		dip_panel.custom_minimum_size = Vector2(660, 300)
+		dip_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+		root.add_child(dip_panel)
+		var v := VBoxContainer.new()
+		v.add_theme_constant_override("separation", 10)
+		dip_panel.add_child(v)
+		var top := HBoxContainer.new()
+		var t := _label("DIPLOMACY", 26, ACCENT, true)
+		t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		top.add_child(t)
+		var close := Button.new()
+		close.text = "Close"
+		close.pressed.connect(func(): dip_panel.visible = false)
+		top.add_child(close)
+		v.add_child(top)
+		v.add_child(_label("Allies share vision and never fight each other. When everyone left standing is allied, they win together.", 14, Color(0.7, 0.69, 0.64)))
+		dip_list = VBoxContainer.new()
+		dip_list.add_theme_constant_override("separation", 12)
+		v.add_child(dip_list)
+		dip_panel.visible = false
+	dip_panel.visible = not dip_panel.visible
+	if dip_panel.visible:
+		_refresh_diplomacy()
+
+var _dip_key := ""
+func _refresh_diplomacy() -> void:
+	var ps: Array = gv.players()
+	var key := ""
+	for p in ps:
+		key += "%s%s%s%s%s|" % [p["id"], p["allied"], p["offered_to_me"], p["i_offered"], p["defeated"]]
+	if key == _dip_key and dip_list.get_child_count() > 0:
+		return
+	_dip_key = key
+	for c in dip_list.get_children():
+		c.queue_free()
+	for p in ps:
+		if p["me"]:
+			continue
+		var pid: int = p["id"]
+		var box := VBoxContainer.new()
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		var n := _label(p["name"], 20, p["color"], true)
+		n.custom_minimum_size = Vector2(150, 0)
+		row.add_child(n)
+		var status := "Defeated" if p["defeated"] else ("Ally" if p["allied"] else ("Enemy — offers alliance" if p["offered_to_me"] else ("Enemy — offer sent" if p["i_offered"] else "Enemy")))
+		var sc := Color(0.55, 0.55, 0.52) if p["defeated"] else (Color(0.5, 1.0, 0.6) if p["allied"] else Color(1, 0.55, 0.45))
+		var st := _label(status, 17, sc)
+		st.custom_minimum_size = Vector2(230, 0)
+		row.add_child(st)
+		if not p["defeated"]:
+			var b := Button.new()
+			if p["allied"]:
+				b.text = "Break alliance"
+				b.pressed.connect(func(): gv.diplomacy(pid, false))
+			elif p["offered_to_me"]:
+				b.text = "Accept alliance"
+				b.pressed.connect(func(): gv.diplomacy(pid, true))
+			elif p["i_offered"]:
+				b.text = "Withdraw offer"
+				b.pressed.connect(func(): gv.diplomacy(pid, false))
+			else:
+				b.text = "Offer alliance"
+				b.pressed.connect(func(): gv.diplomacy(pid, true))
+			row.add_child(b)
+		box.add_child(row)
+		if not p["defeated"]:
+			var trow := HBoxContainer.new()
+			trow.add_theme_constant_override("separation", 6)
+			trow.add_child(_label("Send 500:", 15, Color(0.7, 0.69, 0.64)))
+			for r in 5:
+				var tb := Button.new()
+				tb.text = RES_SHORT[r]
+				tb.add_theme_font_size_override("font_size", 14)
+				var res := r
+				tb.pressed.connect(func(): gv.tribute(pid, res, 500))
+				trow.add_child(tb)
+			box.add_child(trow)
+		dip_list.add_child(box)
 
 var save_panel: PanelContainer
 var save_name: LineEdit

@@ -112,6 +112,7 @@ impl GameView {
             reveal: get_i("reveal", 0) != 0,
             start_res: get_i("start_res", 1500) as i32,
             ai_self: get_i("ai_self", 0) != 0,
+            teams: get_i("teams", 0) as i32,
         };
         // clear previous match
         for mut ch in self.base().get_children().iter_shared() {
@@ -489,7 +490,7 @@ impl GameView {
         d.set("seconds", (w.tick / 20) as i64);
         d.set("game_over", w.game_over);
         d.set("defeated", p.defeated);
-        d.set("won", w.game_over && w.winner_team == Some(p.team));
+        d.set("won", w.game_over && !p.defeated);
         d.set("speed", c.session.speed);
         d
     }
@@ -508,7 +509,7 @@ impl GameView {
             x.set("name", pl.name.as_str());
             x.set("color", player_color(pl.color));
             x.set("me", pl.id == c.me);
-            x.set("won", w.game_over && w.winner_team == Some(pl.team));
+            x.set("won", w.game_over && !pl.defeated);
             x.set("defeated", pl.defeated);
             x.set("score", m + e + t);
             x.set("military", m);
@@ -564,6 +565,12 @@ impl GameView {
             d.set("name", p.name.as_str());
             d.set("color", player_color(p.color));
             d.set("defeated", p.defeated);
+            d.set("me", p.id == c.me);
+            d.set("ai", p.is_ai);
+            let w = c.world();
+            d.set("allied", p.id != c.me && w.allied(c.me, p.id));
+            d.set("offered_to_me", p.proposals.get(c.me as usize).copied().unwrap_or(false));
+            d.set("i_offered", w.players[c.me as usize].proposals.get(p.id as usize).copied().unwrap_or(false));
             d.set("kills", p.stats.kills as i64);
             d.set("lost", p.stats.lost as i64);
             d.set("built", p.stats.built as i64);
@@ -574,6 +581,26 @@ impl GameView {
             out.push(&d.to_variant());
         }
         out
+    }
+
+    /// Offer an alliance (`ally`) or break one / declare war.
+    #[func]
+    fn diplomacy(&mut self, target: i64, ally: bool) {
+        if let Some(c) = self.client.as_mut() {
+            c.issue(CommandKind::Diplomacy { target: target as u8, ally });
+        }
+    }
+
+    /// Send `amount` of resource `res` (0 food .. 4 iron) to a player.
+    #[func]
+    fn tribute(&mut self, to: i64, res: i64, amount: i64) {
+        if let Some(c) = self.client.as_mut() {
+            let mut r = [0i32; 5];
+            if (0..5).contains(&res) {
+                r[res as usize] = amount as i32;
+            }
+            c.issue(CommandKind::Tribute { to: to as u8, res: r });
+        }
     }
 
     // ------------------------------------------------------------------ input

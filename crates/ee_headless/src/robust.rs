@@ -175,6 +175,8 @@ impl Translator<'_> {
             K::Scout { units: u } => { let (u, ok) = units(u)?; (K::Scout { units: u }, ok) }
             K::RebuildFarms { building } => (K::RebuildFarms { building: self.entity(*building)? }, true),
             K::Launch { building, at } => (K::Launch { building: self.entity(*building)?, at: *at }, true),
+            K::Diplomacy { target, ally } => (K::Diplomacy { target: *target, ally: *ally }, true),
+            K::Tribute { to, res } => (K::Tribute { to: *to, res: *res }, true),
             K::Resign => (K::Resign, true),
         })
     }
@@ -259,7 +261,7 @@ pub fn run(path: &str, every_min: u32, reveal_at: Option<u32>) {
             println!("        commands: {} replayed exactly, {} adapted, {} dropped (of {})", stats.exact, stats.partial, stats.dropped, stats.commands);
         }
         if s.world.game_over {
-            let won = s.world.winner_team == Some(s.world.players[me as usize].team);
+            let won = !s.world.players[me as usize].defeated;
             println!("GAME OVER vs current AI at {}m{}s: {}", t / 1200, (t / 20) % 60, if won { "you still win" } else { "the current AI wins" });
             break;
         }

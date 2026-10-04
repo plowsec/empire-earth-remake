@@ -105,6 +105,12 @@ pub struct Player {
     pub stats: PlayerStats,
     /// owns a working early warning radar
     pub radar: bool,
+    /// allied with player i (symmetric; seeded from the starting teams)
+    #[serde(default)]
+    pub allies: Vec<bool>,
+    /// alliance offered to player i, waiting for their answer
+    #[serde(default)]
+    pub proposals: Vec<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,6 +131,10 @@ pub enum SimEvent {
     /// command feedback for the issuing player's UI
     Notice { owner: u8, text: &'static str },
     PlayerDefeated { player: u8 },
+    /// diplomacy: kind 0 = alliance offered, 1 = alliance formed, 2 = war declared
+    Diplomacy { from: u8, to: u8, kind: u8 },
+    /// resources sent from one player to another
+    Tribute { from: u8, to: u8, res: [i32; NUM_RES] },
     /// an ICBM left its silo (clients with radar coverage raise the alarm)
     MissileLaunch { id: EntityId, owner: u8, from: FVec, to: FVec },
     GameOver { winner_team: Option<u8> },
@@ -244,6 +254,8 @@ impl World {
                 defeated: false,
                 stats: PlayerStats::default(),
                 radar: false,
+                allies: config.players.iter().map(|o| o.team == pc.team).collect(),
+                proposals: vec![false; config.players.len()],
             })
             .collect::<Vec<_>>();
         let np = players.len();
@@ -328,9 +340,81 @@ impl World {
         if a == GAIA || b == GAIA || a == b {
             return false;
         }
+        !self.allied(a, b)
+    }
+
+    /// Same player, or allied (alliances change during the game; starting teams seed them).
+    pub fn allied(&self, a: u8, b: u8) -> bool {
+        if a == b {
+            return true;
+        }
         match (self.players.get(a as usize), self.players.get(b as usize)) {
-            (Some(pa), Some(pb)) => pa.team != pb.team,
+            (Some(pa), Some(pb)) => pa.allies.get(b as usize).copied().unwrap_or(pa.team == pb.team),
             _ => false,
+        }
+    }
+
+    /// Change diplomacy. `ally = false` breaks an alliance / declares war at once (both
+    /// sides); `ally = true` offers an alliance, formed when both have offered.
+    pub fn set_diplomacy(&mut self, from: u8, to: u8, ally: bool) {
+        let n = self.players.len();
+        if from == to || from as usize >= n || to as usize >= n || self.players[from as usize].defeated || self.players[to as usize].defeated {
+            return;
+        }
+        for p in self.players.iter_mut() {
+            p.allies.resize(n, false);
+            p.proposals.resize(n, false);
+        }
+        let (f, t) = (from as usize, to as usize);
+        if !ally {
+            let was = self.players[f].allies[t] || self.players[f].proposals[t];
+            self.players[f].allies[t] = false;
+            self.players[t].allies[f] = false;
+            self.players[f].proposals[t] = false;
+            self.players[t].proposals[f] = false;
+            if was {
+                self.events.push(SimEvent::Diplomacy { from, to, kind: 2 });
+            }
+        } else if self.players[f].allies[t] {
+            // already allied
+        } else if self.players[t].proposals[f] {
+            self.players[f].allies[t] = true;
+            self.players[t].allies[f] = true;
+            self.players[f].proposals[t] = false;
+            self.players[t].proposals[f] = false;
+            self.events.push(SimEvent::Diplomacy { from, to, kind: 1 });
+            // new allies stand down: drop attacks on each other
+            let ids: Vec<EntityId> = self.entities.iter().filter(|e| e.alive && (e.owner == from || e.owner == to)).filter(|e| match e.order {
+                Order::Attack { target } => self.get(target).map_or(false, |x| (x.owner == from || x.owner == to) && x.owner != e.owner),
+                _ => false,
+            }).map(|e| e.id).collect();
+            for id in ids {
+                crate::orders::set_order(self, id, Order::Idle);
+                if let Some(e) = self.get_mut(id) {
+                    e.target = 0;
+                }
+            }
+        } else if !self.players[f].proposals[t] {
+            self.players[f].proposals[t] = true;
+            self.events.push(SimEvent::Diplomacy { from, to, kind: 0 });
+        }
+    }
+
+    /// Send resources to another player (as much as is available).
+    pub fn tribute(&mut self, from: u8, to: u8, res: [i32; NUM_RES]) {
+        let n = self.players.len();
+        if from == to || from as usize >= n || to as usize >= n || self.players[to as usize].defeated {
+            return;
+        }
+        let mut sent = [0; NUM_RES];
+        for r in 0..NUM_RES {
+            let amt = res[r].max(0).min(self.players[from as usize].res[r]);
+            self.players[from as usize].res[r] -= amt;
+            self.players[to as usize].res[r] += amt;
+            sent[r] = amt;
+        }
+        if sent.iter().any(|&a| a > 0) {
+            self.events.push(SimEvent::Tribute { from, to, res: sent });
         }
     }
     pub fn mods(&self, owner: u8, def: DefId) -> UnitMods {
@@ -671,12 +755,12 @@ impl World {
                 }
             }
         }
-        let mut teams: Vec<u8> = self.players.iter().filter(|p| !p.defeated).map(|p| p.team).collect();
-        teams.sort();
-        teams.dedup();
-        if np > 1 && teams.len() <= 1 {
+        // the game ends when everyone still standing is allied with everyone else
+        let standing: Vec<u8> = self.players.iter().filter(|p| !p.defeated).map(|p| p.id).collect();
+        let one_side = standing.iter().all(|&a| standing.iter().all(|&b| self.allied(a, b)));
+        if np > 1 && one_side {
             self.game_over = true;
-            self.winner_team = teams.first().copied();
+            self.winner_team = standing.first().map(|&p| self.players[p as usize].team);
             self.events.push(SimEvent::GameOver { winner_team: self.winner_team });
         }
     }
@@ -711,6 +795,11 @@ impl World {
             mix(e.progress as u32 as u64 | (e.inside as u64) << 32);
         }
         for p in &self.players {
+            for (i, a) in p.allies.iter().enumerate() {
+                if *a {
+                    mix(0xa11e_0000 | i as u64);
+                }
+            }
             for r in p.res {
                 mix(r as u32 as u64);
             }
@@ -780,10 +869,8 @@ impl World {
         if e.owner == player {
             return true;
         }
-        if let (Some(a), Some(b)) = (self.players.get(player as usize), self.players.get(e.owner as usize)) {
-            if a.team == b.team {
-                return true;
-            }
+        if self.allied(player, e.owner) && (e.owner as usize) < self.players.len() {
+            return true;
         }
         let (x, y) = e.pos.tile();
         self.visible(player, x, y)

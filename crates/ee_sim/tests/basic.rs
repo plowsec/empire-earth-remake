@@ -1013,3 +1013,37 @@ fn surplus_gatherers_spread_to_other_reachable_nodes() {
     assert!(on_mine <= 8, "{on_mine} citizens crowd one mine (cap 8)");
     assert!(ids.iter().all(|&u| matches!(w.get(u).unwrap().order, Order::Gather { .. })), "everyone got work");
 }
+
+#[test]
+fn alliances_form_by_mutual_offer_share_vision_and_end_the_game_together() {
+    let mut cfg = MatchConfig::skirmish(5, 3);
+    cfg.players[2].is_ai = true;
+    let mut w = World::new(cfg);
+    assert!(w.is_enemy(0, 1) && w.is_enemy(1, 2));
+    // offer + accept
+    w.apply_command(&Command { player: 0, kind: CommandKind::Diplomacy { target: 1, ally: true } });
+    assert!(w.is_enemy(0, 1), "an offer alone isn't an alliance");
+    w.apply_command(&Command { player: 1, kind: CommandKind::Diplomacy { target: 0, ally: true } });
+    assert!(!w.is_enemy(0, 1) && !w.is_enemy(1, 0), "mutual offers form the alliance");
+    // shared vision: player 0 sees player 1's capitol
+    run(&mut w, 8, vec![]);
+    let cap1 = units_of(&w, 1, "capitol")[0];
+    assert!(w.can_see(0, w.get(cap1).unwrap()));
+    // tribute
+    let before = w.players[1].res[3];
+    w.apply_command(&Command { player: 0, kind: CommandKind::Tribute { to: 1, res: [0, 0, 0, 500, 0] } });
+    assert_eq!(w.players[1].res[3], before + 500);
+    // betrayal is immediate
+    w.apply_command(&Command { player: 1, kind: CommandKind::Diplomacy { target: 0, ally: false } });
+    assert!(w.is_enemy(0, 1));
+    // allied victory: 0 and 1 ally again, player 2 is wiped out
+    w.apply_command(&Command { player: 0, kind: CommandKind::Diplomacy { target: 1, ally: true } });
+    w.apply_command(&Command { player: 1, kind: CommandKind::Diplomacy { target: 0, ally: true } });
+    let p2: Vec<u32> = w.entities.iter().filter(|e| e.alive && e.owner == 2).map(|e| e.id).collect();
+    for id in p2 {
+        w.kill(id, 0);
+    }
+    run(&mut w, 30, vec![]);
+    assert!(w.game_over, "the surviving allies win together");
+    assert!(!w.players[0].defeated && !w.players[1].defeated && w.players[2].defeated);
+}

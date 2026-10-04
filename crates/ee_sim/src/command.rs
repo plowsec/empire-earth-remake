@@ -31,6 +31,10 @@ pub enum CommandKind {
     Scout { units: Vec<EntityId> },
     /// Granary: lay out farms on every free plot around it and send citizens to work them.
     RebuildFarms { building: EntityId },
+    /// Offer (`ally`) or break / declare war on (`!ally`) another player.
+    Diplomacy { target: u8, ally: bool },
+    /// Send resources to another player.
+    Tribute { to: u8, res: [i32; 5] },
     /// Missile silo: fire one stored ICBM at a point.
     Launch { building: EntityId, at: FVec },
     Resign,

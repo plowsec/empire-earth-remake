@@ -166,6 +166,8 @@ pub struct StartOptions {
     pub start_res: i32,
     /// AI also controls the local player (demo / screenshots)
     pub ai_self: bool,
+    /// 0 free-for-all, 1 you + AI 1 vs the rest, 2 you vs all AIs
+    pub teams: i32,
 }
 
 impl Client {
@@ -177,6 +179,15 @@ impl Client {
         let sr = opt.start_res;
         cfg.start_res = [sr, sr, sr * 6 / 10, sr * 2 / 3, sr * 2 / 3];
         cfg.players[0].name = "You".into();
+        let np = cfg.players.len();
+        for (i, p) in cfg.players.iter_mut().enumerate() {
+            p.team = match opt.teams {
+                1 => if i <= 1 { 0 } else { 1 },
+                2 => if i == 0 { 0 } else { 1 },
+                _ => i as u8,
+            };
+        }
+        let _ = np;
         // part of the match setup (recorded in replays): the sim's visibility depends on it
         cfg.reveal = opt.reveal;
         for (i, p) in cfg.players.iter_mut().enumerate().skip(1) {
@@ -682,8 +693,33 @@ impl Client {
                 let name = self.session.world.players[*player as usize].name.clone();
                 self.events.push(ClientEvent { kind: "defeated", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: name, dmg: *player as i32, mine: *player == me });
             }
-            SimEvent::GameOver { winner_team } => {
-                let won = *winner_team == Some(self.session.world.players[me as usize].team);
+            SimEvent::Diplomacy { from, to, kind } if *from == me || *to == me => {
+                let w = &self.session.world;
+                let other = if *from == me { *to } else { *from };
+                let name = w.players[other as usize].name.clone();
+                let text = match (kind, *from == me) {
+                    (0, true) => format!("Alliance offered to {name}"),
+                    (0, false) => format!("{name} offers an alliance (Diplomacy to accept)"),
+                    (1, _) => format!("Alliance formed with {name}"),
+                    (_, true) => format!("You are now at war with {name}"),
+                    _ => format!("{name} has declared war on you!"),
+                };
+                self.events.push(ClientEvent { kind: "diplomacy", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text, dmg: *kind as i32, mine: *from == me });
+            }
+            SimEvent::Tribute { from, to, res } if *to == me || *from == me => {
+                let w = &self.session.world;
+                const N: [&str; 5] = ["food", "wood", "stone", "gold", "iron"];
+                let parts: Vec<String> = res.iter().enumerate().filter(|(_, a)| **a > 0).map(|(r, a)| format!("{a} {}", N[r])).collect();
+                let text = if *to == me {
+                    format!("{} sent you {}", w.players[*from as usize].name, parts.join(", "))
+                } else {
+                    format!("Sent {} to {}", parts.join(", "), w.players[*to as usize].name)
+                };
+                self.events.push(ClientEvent { kind: "diplomacy", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text, dmg: 3, mine: *from == me });
+            }
+            SimEvent::GameOver { .. } => {
+                // you win if you're still standing when the last enemies fall
+                let won = !self.session.world.players[me as usize].defeated;
                 self.events.push(ClientEvent { kind: "game_over", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: if won { "victory".into() } else { "defeat".into() }, dmg: 0, mine: won });
             }
             _ => {}

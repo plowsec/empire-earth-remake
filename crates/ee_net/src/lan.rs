@@ -31,6 +31,9 @@ pub enum SlotKind {
 pub struct Slot {
     pub name: String,
     pub kind: SlotKind,
+    /// alliance at start: same team = allies
+    #[serde(default)]
+    pub team: u8,
     /// which connection holds this human slot (0 = the host itself)
     pub peer: u32,
 }
@@ -206,8 +209,8 @@ impl LanHost {
             lobby: LobbyState {
                 host_name: name.to_string(),
                 slots: vec![
-                    Slot { name: name.to_string(), kind: SlotKind::Human, peer: 0 },
-                    Slot { name: "AI".into(), kind: SlotKind::Ai { difficulty: 2 }, peer: 0 },
+                    Slot { name: name.to_string(), kind: SlotKind::Human, peer: 0, team: 0 },
+                    Slot { name: "AI".into(), kind: SlotKind::Ai { difficulty: 3 }, peer: 0, team: 1 },
                 ],
                 settings: LobbySettings::default(),
             },
@@ -305,11 +308,12 @@ impl LanHost {
                     }
                     // take a free seat: replace the last AI if the table is full
                     let slot = if g.lobby.slots.len() < MAX_PLAYERS {
-                        g.lobby.slots.push(Slot { name: name.clone(), kind: SlotKind::Human, peer: id });
+                        let team = g.lobby.slots.len() as u8;
+                        g.lobby.slots.push(Slot { name: name.clone(), kind: SlotKind::Human, peer: id, team });
                         g.lobby.slots.len() - 1
                     } else {
                         let k = g.lobby.slots.iter().rposition(|s| matches!(s.kind, SlotKind::Ai { .. })).unwrap();
-                        g.lobby.slots[k] = Slot { name: name.clone(), kind: SlotKind::Human, peer: id };
+                        g.lobby.slots[k] = Slot { name: name.clone(), kind: SlotKind::Human, peer: id, team: k as u8 };
                         k
                     };
                     g.peers[pi].slot = Some(slot as u8);
@@ -353,7 +357,8 @@ impl LanHost {
         let mut g = self.shared.lock().unwrap();
         if g.lobby.slots.len() < MAX_PLAYERS {
             let n = g.lobby.slots.iter().filter(|s| matches!(s.kind, SlotKind::Ai { .. })).count() + 1;
-            g.lobby.slots.push(Slot { name: format!("AI {n}"), kind: SlotKind::Ai { difficulty }, peer: 0 });
+            let team = g.lobby.slots.len() as u8;
+            g.lobby.slots.push(Slot { name: format!("AI {n}"), kind: SlotKind::Ai { difficulty }, peer: 0, team });
             Self::broadcast_lobby(&mut g);
         }
     }
@@ -380,6 +385,14 @@ impl LanHost {
             if let SlotKind::Ai { .. } = s.kind {
                 s.kind = SlotKind::Ai { difficulty };
             }
+        }
+        Self::broadcast_lobby(&mut g);
+    }
+
+    pub fn set_team(&mut self, slot: usize, team: u8) {
+        let mut g = self.shared.lock().unwrap();
+        if let Some(s) = g.lobby.slots.get_mut(slot) {
+            s.team = team;
         }
         Self::broadcast_lobby(&mut g);
     }
@@ -418,7 +431,7 @@ impl LanHost {
                 .slots
                 .iter()
                 .enumerate()
-                .map(|(i, sl)| PlayerConfig { name: sl.name.clone(), team: i as u8, color: i as u8, is_ai: !matches!(sl.kind, SlotKind::Human) })
+                .map(|(i, sl)| PlayerConfig { name: sl.name.clone(), team: sl.team, color: i as u8, is_ai: !matches!(sl.kind, SlotKind::Human) })
                 .collect();
             let ais: Vec<AiSetup> = lobby
                 .slots

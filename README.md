@@ -149,6 +149,15 @@ until combat makes the games differ; the report shows both side by side plus how
 your commands were replayed exactly, adapted or dropped. Replays record the simulation
 build that made them and the tools warn when it differs.
 
+## Alliances
+
+Pick teams before the match (skirmish **Teams** option, or a team per seat in the LAN
+lobby), or change them during play with **Diplomacy** on the top bar: offer an alliance
+(formed when both sides offer), break one at any moment, and send tribute. Allies share
+vision and never fight; when everyone left standing is allied, they win together. AIs
+play the balance of power: they accept alliances against a runaway leader and court
+partners when someone pulls far ahead.
+
 ## LAN multiplayer
 
 Main menu → **LAN Game**: host a game (others on the network see it in their list) or
