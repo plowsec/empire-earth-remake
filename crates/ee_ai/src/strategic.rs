@@ -120,16 +120,35 @@ impl Ai {
             return;
         }
         let capacity = silos.len() * 3;
-        let Some((at, needed)) = self.icbm_target(w, stock, capacity) else { return };
+        let Some((at, needed)) = self.icbm_target(w, stock, capacity) else {
+            self.nuke_debug = format!("stock {stock}, holding fire (no target worth a salvo we can afford)");
+            return;
+        };
+        self.nuke_debug = format!("stock {stock}, salvo of {needed} at {:?}", at.tile());
         let value_before = self.known.values().filter(|o| o.pos.within(at, Fx::from_int(BLAST))).count();
         self.last_strike = Some((at, value_before, w.tick));
-        // salvo: every missile at once so the interceptors can't take them one by one
-        let mut left = needed;
-        for (s, n) in ready.iter_mut() {
-            while *n > 0 && left > 0 {
-                out.push(CommandKind::Launch { building: *s, at });
-                *n -= 1;
-                left -= 1;
+        // salvo: every missile at once so the interceptors can't take them one by one;
+        // with missiles to spare, hit more targets in the same salvo
+        let mut plan = vec![(at, needed)];
+        let mut spare = stock.saturating_sub(needed);
+        while spare >= 3 && plan.len() < 4 {
+            let used: Vec<FVec> = plan.iter().map(|p| p.0).collect();
+            match self.icbm_target_excluding(w, spare, capacity, &used) {
+                Some((a, n)) => {
+                    plan.push((a, n));
+                    spare -= n;
+                }
+                None => break,
+            }
+        }
+        for (at, needed) in plan {
+            let mut left = needed;
+            for (s, n) in ready.iter_mut() {
+                while *n > 0 && left > 0 {
+                    out.push(CommandKind::Launch { building: *s, at });
+                    *n -= 1;
+                    left -= 1;
+                }
             }
         }
         self.last_salvo = w.tick;
@@ -138,6 +157,11 @@ impl Ai {
     /// Best known enemy cluster: (aim point, missiles needed). Waits (None) when a
     /// worthwhile target needs a bigger salvo than we have but could stockpile.
     pub(crate) fn icbm_target(&self, w: &World, stock: usize, capacity: usize) -> Option<(FVec, usize)> {
+        self.icbm_target_excluding(w, stock, capacity, &[])
+    }
+
+    /// Like `icbm_target`, skipping clusters within 15 tiles of `skip` (already targeted).
+    pub(crate) fn icbm_target_excluding(&self, w: &World, stock: usize, capacity: usize, skip: &[FVec]) -> Option<(FVec, usize)> {
         let d = data();
         let abm = d.id("abm_site");
         let radar_known = self.known.values().any(|k| k.def == d.id("radar_station"));
@@ -155,7 +179,7 @@ impl Ai {
                     _ => 2,
                 }
             }).sum();
-            if value < 14 {
+            if value < 14 || skip.iter().any(|p| p.within(k.pos, Fx::from_int(15))) {
                 continue;
             }
             // never nuke our own people

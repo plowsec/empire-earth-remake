@@ -269,3 +269,124 @@ impl Ai {
         }
     }
 }
+
+impl Ai {
+    /// Units sealed into pockets on the home island (walled in by our own buildings or
+    /// grown groves): knock out one cheap wall building, or have trapped citizens chop
+    /// through the trees.
+    pub(crate) fn free_trapped(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
+        use ee_sim::map::PASS_LAND;
+        let m = &w.map;
+        let n = (m.w * m.h) as usize;
+        let open = |i: usize| m.pass[i] & PASS_LAND != 0;
+        // the main ground: flood from the capitol's surroundings
+        let (bx, by) = self.base_tile;
+        let mut start = None;
+        'f: for r in 1..8 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let (x, y) = (bx + dx, by + dy);
+                    if m.in_bounds(x, y) && open(m.idx(x, y)) {
+                        start = Some(m.idx(x, y));
+                        break 'f;
+                    }
+                }
+            }
+        }
+        let Some(start) = start else { return };
+        let mut main = vec![false; n];
+        let mut stack = vec![start];
+        main[start] = true;
+        while let Some(i) = stack.pop() {
+            let (x, y) = ((i as i32) % m.w, (i as i32) / m.w);
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if m.in_bounds(nx, ny) {
+                    let j = m.idx(nx, ny);
+                    if !main[j] && open(j) {
+                        main[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        // a trapped unit of ours on the home island
+        let trapped = v.land_army.iter().chain(v.citizens.iter()).copied().find(|&u| {
+            w.get(u).map_or(false, |e| {
+                let (tx, ty) = e.pos.tile();
+                e.inside == 0 && m.in_bounds(tx, ty) && open(m.idx(tx, ty)) && !main[m.idx(tx, ty)] && self.island_at(w, (tx, ty)) == Some(self.home_island)
+            })
+        });
+        let Some(u) = trapped else { return };
+        let (tx, ty) = w.get(u).unwrap().pos.tile();
+        // its pocket
+        let mut pocket = vec![false; n];
+        let s0 = m.idx(tx, ty);
+        let mut stack = vec![s0];
+        pocket[s0] = true;
+        let mut tiles = vec![s0];
+        while let Some(i) = stack.pop() {
+            if tiles.len() > 600 {
+                return; // not a pocket: a separate region of the island
+            }
+            let (x, y) = ((i as i32) % m.w, (i as i32) / m.w);
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if m.in_bounds(nx, ny) {
+                    let j = m.idx(nx, ny);
+                    if !pocket[j] && open(j) {
+                        pocket[j] = true;
+                        stack.push(j);
+                        tiles.push(j);
+                    }
+                }
+            }
+        }
+        // walls: blocking neighbours of the pocket that also touch the main ground
+        let d = data();
+        let cheap = ["house", "apartments", "guard_tower", "aa_site", "hospital", "granary", "abm_site"];
+        let mut wall_building: Option<(i32, EntityId)> = None;
+        let mut wall_tree: Option<EntityId> = None;
+        for &i in &tiles {
+            let (x, y) = ((i as i32) % m.w, (i as i32) / m.w);
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if !m.in_bounds(nx, ny) {
+                    continue;
+                }
+                let occ = m.occupant[m.idx(nx, ny)];
+                let Some(o) = w.get(occ) else { continue };
+                let od = d.def(o.def);
+                // does this obstacle also border the main ground?
+                let (ox, oy) = o.tile;
+                let (sw, sh) = od.size();
+                let touches_main = (oy - 1..=oy + sh).any(|yy| (ox - 1..=ox + sw).any(|xx| m.in_bounds(xx, yy) && main[m.idx(xx, yy)]));
+                if !touches_main {
+                    continue;
+                }
+                if o.owner == self.player && cheap.contains(&od.data.key.as_str()) {
+                    let cost = od.data.cost.arr().iter().sum::<i32>();
+                    if wall_building.map_or(true, |b| cost < b.0) {
+                        wall_building = Some((cost, occ));
+                    }
+                } else if od.data.resource == Some(ee_sim::defs::Res::Wood) {
+                    wall_tree = Some(occ);
+                }
+            }
+        }
+        if let Some(t) = wall_tree {
+            // citizens in the pocket cut their way out
+            let cutters: Vec<EntityId> = v.citizens.iter().copied().filter(|&c| w.get(c).map_or(false, |e| {
+                let (cx, cy) = e.pos.tile();
+                e.inside == 0 && m.in_bounds(cx, cy) && pocket[m.idx(cx, cy)]
+            })).take(4).collect();
+            if !cutters.is_empty() {
+                out.push(CommandKind::Target { units: cutters, target: t, queue: false });
+                return;
+            }
+        }
+        if let Some((_, b)) = wall_building {
+            out.push(CommandKind::Delete { units: vec![b] });
+        }
+    }
+}

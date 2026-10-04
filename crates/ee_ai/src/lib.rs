@@ -210,6 +210,8 @@ pub struct Ai {
     pub(crate) colony_failed: BTreeMap<usize, u32>,
     #[serde(default)]
     pub(crate) beachhead_holds: bool,
+    #[serde(default)]
+    pub(crate) nuke_debug: String,
 }
 
 impl Ai {
@@ -261,6 +263,7 @@ impl Ai {
             next_route: 0,
             colony_failed: BTreeMap::new(),
             beachhead_holds: false,
+            nuke_debug: String::new(),
         }
     }
 }
@@ -323,7 +326,7 @@ impl Controller for Ai {
             Some(i) => format!("wave {} stage {:?} units {} transports {} from {:?} landings {:?}", self.wave, i.stage, i.units.len(), i.transports.len(), i.staging.tile(), i.landings.iter().map(|l| l.tile()).collect::<Vec<_>>()),
             None => format!("wave {} (no invasion) known {} defending {}", self.wave, self.known.len(), self.defending),
         };
-        format!("{base} | islands {claimed}/{} colony {colony}", self.islands.len())
+        format!("{base} | islands {claimed}/{} colony {colony} | nukes: {}", self.islands.len(), self.nuke_debug)
     }
 
     fn think(&mut self, w: &World) -> Vec<CommandKind> {
@@ -350,6 +353,9 @@ impl Controller for Ai {
         self.colonize(w, &v, &mut out);
         if (w.tick / interval) % 4 == (self.phase % 4) {
             self.strategic(w, &v, &mut out);
+        }
+        if w.tick % 1200 < interval && w.tick > 20 * 60 * 3 {
+            self.free_trapped(w, &v, &mut out);
         }
         self.produce(w, &v, &mut out);
         self.rebuild_fields(w, &v, &mut out);
@@ -577,6 +583,25 @@ impl Ai {
                 if r != f {
                     target[r] += spare * want[r] / rest;
                 }
+            }
+        }
+        // never let one resource swallow the workforce: food keeps an army alive, stone
+        // spikes (silos, ICBMs, ABMs) shouldn't starve it
+        let military = v.count(d.id("barracks")) > 0;
+        if military {
+            let s_ = Res::Stone as usize;
+            let floor = (workers * 26 / 100).min(food_slots);
+            if target[f] < floor {
+                let need = floor - target[f];
+                target[f] = floor;
+                target[s_] = (target[s_] - need).max(0);
+            }
+            let stone_cap = workers * 18 / 100;
+            if target[s_] > stone_cap {
+                let spare = target[s_] - stone_cap;
+                target[s_] = stone_cap;
+                target[Res::Gold as usize] += spare / 2;
+                target[Res::Iron as usize] += spare - spare / 2;
             }
         }
         self.food_wanted = workers * want[f] / total_w.max(1);

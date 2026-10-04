@@ -206,7 +206,10 @@ impl Ai {
                 let (c, s) = ee_sim::mapgen::sincos_deg((start + k) * 45);
                 let (cx, cy) = (bx + c * r / 1024, by + s * r / 1024);
                 let tiles: Vec<(i32, i32)> = (-1..=1).flat_map(|dy| (-1..=1).map(move |dx| (cx + dx, cy + dy))).filter(|&t| self.site_ok(w, sap, t)).collect();
-                if tiles.len() >= 6 {
+                // a grown grove is a 3x3 wall: it must not seal anything in (check it as
+                // a 3x3 building would be)
+                let grove_ok = w.keeps_paths(d.id("granary"), (cx - 1, cy - 1));
+                if tiles.len() >= 6 && grove_ok {
                     let workers: Vec<EntityId> = v.gatherers[ee_sim::defs::Res::Wood as usize].iter().take(2).copied().collect();
                     let workers = if workers.is_empty() { v.citizens.iter().take(2).copied().collect() } else { workers };
                     for (n, t) in tiles.into_iter().enumerate() {
