@@ -84,6 +84,11 @@ impl Ai {
         if cits >= 24 && have(id("settlement")) < 1 + cits / 30 {
             wants.push(id("settlement"));
         }
+        // outgunned at sea: more shipyards (up to 7), rich or not
+        let enemy_fleet = self.seen(2) + self.seen(3);
+        if cits >= 30 && enemy_fleet > v.navy.len() + 6 && have(id("naval_yard")) < (3 + enemy_fleet / 12).min(7) {
+            wants.push(id("naval_yard"));
+        }
         // swimming in resources: more production and defenses
         let rich = pl.res[1] > 2500 && pl.res[2] > 1500;
         if rich {
@@ -630,7 +635,10 @@ impl Ai {
                 // naval yard: transports first when an invasion needs them
                 if bkey == "naval_yard" {
                     let want_tr = self.transports_wanted(v);
-                    if (v.transports.len() as i32) < want_tr && w.can_afford(self.player, &d.def(id("transport")).data.cost) {
+                    // while the enemy outguns us at sea, only one yard builds landing craft
+                    let outgunned = enemy_navy > v.navy.len();
+                    let tr_queued: usize = bs.iter().filter_map(|&y| w.get(y)).map(|e| e.production.iter().filter(|it| matches!(it, ee_sim::entity::ProdItem::Unit(u) if *u == id("transport"))).count()).sum();
+                    if (v.transports.len() as i32) < want_tr && (!outgunned || tr_queued == 0) && w.can_afford(self.player, &d.def(id("transport")).data.cost) {
                         out.push(CommandKind::Train { building: b, def: id("transport"), count: 1 });
                         continue;
                     }
