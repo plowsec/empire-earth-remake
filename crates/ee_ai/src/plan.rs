@@ -83,7 +83,11 @@ impl Ai {
         }
         // enough granaries (8 farms each) for the farmers the economy wants
         let granaries_wanted = 1 + (self.food_wanted as usize).saturating_sub(12) / 8;
-        if cits >= 24 && have(id("granary")) < granaries_wanted.min(1 + cits / 20) && have(id("farm")) + 2 >= 6 * v.count(id("granary")) {
+        // next granary once the rings are mostly full, or no ring has room left
+        let ring_room = v.buildings.get(&id("granary")).map_or(false, |gs| gs.iter().any(|&g| {
+            w.get(g).map_or(false, |e| [(-3, 0), (3, 0), (0, -3), (0, 3), (-3, -3), (3, -3), (-3, 3), (3, 3)].iter().any(|&(dx, dy)| self.site_ok(w, id("farm"), (e.tile.0 + dx, e.tile.1 + dy))))
+        }));
+        if cits >= 24 && have(id("granary")) < granaries_wanted.min(1 + cits / 20) && (have(id("farm")) + 2 >= 6 * v.count(id("granary")) || !ring_room) {
             wants.push(id("granary"));
         }
         if cits >= 24 && have(id("settlement")) < 1 + cits / 30 {
@@ -132,12 +136,17 @@ impl Ai {
         let mut started = if v.builders.len() >= (cits / 4).max(3) { 3 } else { 0 };
         // money set aside for the first big item we can't afford yet
         let mut reserve = [0i32; 5];
+        // hungry with empty field slots: wood goes to fields before new buildings
+        let hungry = pl.res[0] < 1500 && (v.count(id("farm")) as i32) < self.food_wanted.min(8 * v.count(id("granary")) as i32);
         for def in wants {
             if started >= 3 {
                 break;
             }
             let cost = d.def(def).data.cost;
             let critical = def == id("farm") || def == id("house") || def == id("apartments");
+            if hungry && !critical && cost.wood > 0 && pl.res[1] < cost.wood + 500 {
+                continue;
+            }
             let budget_ok = cost.arr().iter().enumerate().all(|(r, c)| pl.res[r] - if critical { 0 } else { reserve[r] } >= *c);
             if !budget_ok {
                 if !critical && reserve.iter().all(|&x| x == 0) {
@@ -980,14 +989,15 @@ impl Ai {
     /// Build a full granary ring once the economy can support eight farmers.
     pub(crate) fn rebuild_fields(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
         let d = data();
-        if v.citizens.len() < 24 || self.last_fields_rebuild.is_some_and(|t| w.tick.wrapping_sub(t) < 600) {
+        if v.citizens.len() < 24 || self.last_fields_rebuild.is_some_and(|t| w.tick.wrapping_sub(t) < 200) {
             return;
         }
         let farm = d.id("farm");
         let farms = v.count(farm) + v.sites.iter().filter(|&&id| w.get(id).is_some_and(|e| e.def == farm)).count();
         let wanted = (self.food_wanted.max(0) as usize).max(v.citizens.len() / 3).min(8 * v.count(d.id("granary")));
         let cost = d.def(farm).data.cost.arr();
-        if farms >= wanted || cost.iter().enumerate().any(|(r, c)| w.players[self.player as usize].res[r] < c * 8 + if r == 1 { 150 } else { 0 }) {
+        // a couple of fields at a time is fine: the ring fills as wood comes in
+        if farms >= wanted || cost.iter().enumerate().any(|(r, c)| w.players[self.player as usize].res[r] < c * 2) {
             return;
         }
         for &building in v.buildings.get(&d.id("granary")).map(Vec::as_slice).unwrap_or(&[]) {
