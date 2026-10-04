@@ -39,6 +39,11 @@ impl Ai {
                 wants.push(id("house"));
             }
         }
+        // a rich start (deathmatch) is spent on town centers first: each trains citizens
+        let rich_start = pl.res[0] >= 3000 && pl.res[1] >= 1500;
+        if rich_start && cits >= 8 && have(id("settlement")) < (1 + cits / 10).min(12) {
+            wants.push(id("settlement"));
+        }
         let hard = self.diff >= Difficulty::Hard;
         if cits >= 10 && have(id("barracks")) == 0 {
             wants.push(id("barracks"));
@@ -95,7 +100,9 @@ impl Ai {
             wants.push(id("naval_yard"));
         }
         // swimming in resources: more production and defenses
-        let rich = pl.res[1] > 2500 && pl.res[2] > 1500;
+        // (only once the economy is running: a rich start must not turn every citizen
+        // into a builder of barracks)
+        let rich = pl.res[1] > 2500 && pl.res[2] > 1500 && cits * 100 >= self.diff.econ_base() * 55;
         if rich {
             // big population limits need more production lines
             let hoard = pl.res[0] + pl.res[1] > 20000;
@@ -109,7 +116,10 @@ impl Ai {
                 vec![("barracks", 3 + extra), ("tank_factory", 3 + extra), ("airport", 2 + extra / 2 + sea_air as usize * 2),
                      ("naval_yard", 3 + sea_air as usize * 3), ("guard_tower", 6), ("aa_site", 4 + sea_air as usize * 8)]
             };
+            // production lines grow with the workforce that pays for them
+            let lines = 1 + cits / 12;
             for (k, cap) in caps {
+                let cap = if matches!(k, "barracks" | "tank_factory" | "airport" | "naval_yard") { cap.min(lines) } else { cap };
                 if have(id(k)) < cap {
                     wants.push(id(k));
                 }
@@ -118,7 +128,8 @@ impl Ai {
         // research happens every think (see Ai::think)
         self.replant(w, v, out);
 
-        let mut started = 0;
+        // most hands gather: at most a quarter of the citizens build at once
+        let mut started = if v.builders.len() >= (cits / 4).max(3) { 3 } else { 0 };
         // money set aside for the first big item we can't afford yet
         let mut reserve = [0i32; 5];
         for def in wants {
