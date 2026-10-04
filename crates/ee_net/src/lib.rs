@@ -11,6 +11,19 @@ use ee_sim::world::{MatchConfig, World};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod lan;
+
+/// What the UI should know about the network.
+#[derive(Clone, Debug, Default)]
+pub struct NetStatus {
+    pub online: bool,
+    /// players we're currently waiting on
+    pub waiting_for: Vec<u8>,
+    pub desync_tick: Option<u32>,
+    pub dropped: Vec<u8>,
+    pub host_lost: bool,
+}
+
 /// Something that produces commands for one player by looking at the world: the AI.
 pub trait Controller: Send {
     fn player(&self) -> u8;
@@ -44,6 +57,10 @@ pub trait Transport: Send {
     fn remote_players(&self) -> Vec<u8>;
     /// Exchange a checksum for desync detection (no-op locally).
     fn report_checksum(&mut self, _tick: u32, _hash: u64) {}
+    /// Network state for the UI (offline for local games).
+    fn status(&self) -> NetStatus {
+        NetStatus::default()
+    }
 }
 
 pub struct LocalTransport;
@@ -108,6 +125,9 @@ pub struct Session {
     /// events from every executed tick since the client last drained them
     pub event_log: Vec<ee_sim::world::SimEvent>,
     pub collect_events: bool,
+    /// tick whose local inputs were already gathered and sent (inputs are prepared
+    /// once per tick even if the tick has to wait for remote players)
+    prepared: Option<u32>,
     /// computer players (recorded in replays)
     pub ai_setup: Vec<AiSetup>,
     /// match setup at tick 0 (a loaded save keeps the original)
@@ -135,6 +155,7 @@ impl Session {
             checksums: Vec::new(),
             event_log: Vec::new(),
             collect_events: false,
+            prepared: None,
         }
     }
 
@@ -168,6 +189,10 @@ impl Session {
     }
 
     fn ready(&self, tick: u32) -> bool {
+        // nobody can have commands for the first ticks (inputs land input_delay later)
+        if tick < self.input_delay {
+            return true;
+        }
         let remote = self.transport.remote_players();
         if remote.is_empty() {
             return true;
@@ -183,24 +208,27 @@ impl Session {
             self.arrived.entry(tc.tick).or_default().push(player);
         }
         let tick = self.world.tick;
-        // controllers think on the state they can see now; their commands land later
-        let mut ctrl = std::mem::take(&mut self.controllers);
-        for c in ctrl.iter_mut() {
-            for kind in c.think(&self.world) {
-                let p = c.player();
-                self.issue(p, kind);
+        if self.prepared != Some(tick) {
+            self.prepared = Some(tick);
+            // controllers think on the state they can see now; their commands land later
+            let mut ctrl = std::mem::take(&mut self.controllers);
+            for c in ctrl.iter_mut() {
+                for kind in c.think(&self.world) {
+                    let p = c.player();
+                    self.issue(p, kind);
+                }
             }
-        }
-        self.controllers = ctrl;
-        // ship our bundle for the tick that just got its last local input
-        let send_tick = tick + self.input_delay;
-        for &p in &self.local_players.clone() {
-            let cmds: Vec<Command> = self
-                .scheduled
-                .get(&send_tick)
-                .map(|v| v.iter().filter(|c| c.player == p).cloned().collect())
-                .unwrap_or_default();
-            self.transport.send(p, &TickCommands { tick: send_tick, commands: cmds });
+            self.controllers = ctrl;
+            // ship our bundle for the tick that just got its last local input
+            let send_tick = tick + self.input_delay;
+            for &p in &self.local_players.clone() {
+                let cmds: Vec<Command> = self
+                    .scheduled
+                    .get(&send_tick)
+                    .map(|v| v.iter().filter(|c| c.player == p).cloned().collect())
+                    .unwrap_or_default();
+                self.transport.send(p, &TickCommands { tick: send_tick, commands: cmds });
+            }
         }
         if !self.ready(tick) {
             return false;
@@ -248,6 +276,17 @@ impl Session {
     pub fn alpha(&self) -> f32 {
         let step = 1.0 / TICKS_PER_SEC as f64;
         (self.accumulator / step).clamp(0.0, 1.0) as f32
+    }
+
+    /// Network state for the UI.
+    pub fn net_status(&self) -> NetStatus {
+        let mut st = self.transport.status();
+        if st.online {
+            let tick = self.world.tick;
+            let got = self.arrived.get(&tick);
+            st.waiting_for = self.transport.remote_players().into_iter().filter(|p| !got.map_or(false, |g| g.contains(p))).collect();
+        }
+        st
     }
 
     pub fn controller_debug(&self) -> Vec<String> {

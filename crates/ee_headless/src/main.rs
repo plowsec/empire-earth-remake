@@ -70,6 +70,10 @@ fn main() {
             let pop: i32 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(300);
             run_match(seed, players, minutes, diff, pop, args.get(7).cloned());
         }
+        Some("lan-selftest") => {
+            let minutes: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(3);
+            lan_selftest(minutes);
+        }
         Some("robust") => {
             let path = args.get(2).cloned().unwrap_or_default();
             let every: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(5);
@@ -424,4 +428,77 @@ pub(crate) fn sim_version_check(rep: &ee_net::Replay) {
         println!("WARNING: recorded with sim build {} but this is {}: playback may drift from the real game", rep.sim_version, ee_sim::SIM_VERSION);
         println!("         exact reproduction: git worktree add /tmp/sim {} && cargo run --release -p ee_headless ...", rep.sim_version.trim_end_matches("+dirty"));
     }
+}
+
+/// Host + client in one process over loopback TCP; each human seat is played by an AI.
+/// Verifies both machines stay bit-identical, then drops the client and checks the host
+/// carries on with that player resigned.
+fn lan_selftest(minutes: u32) {
+    use ee_ai::{Ai, Difficulty};
+    use ee_net::lan::{LanClient, LanHost};
+    use ee_net::Session;
+    let mut host = LanHost::open("Host", 0).expect("host");
+    let port = host.port();
+    let mut client = LanClient::connect(&format!("127.0.0.1:{port}"), "Client").expect("connect");
+    let t0 = std::time::Instant::now();
+    while client.slot.is_none() {
+        host.pump();
+        client.pump();
+        assert!(t0.elapsed().as_secs() < 5, "no welcome");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    host.add_ai(2);
+    for _ in 0..20 {
+        host.pump();
+        client.pump();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    println!("lobby: {:?}", host.lobby().slots.iter().map(|s| s.name.clone()).collect::<Vec<_>>());
+    let (cfg, ais, me_h, th) = host.launch(42);
+    while !client.pump() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let (ccfg, _cais, me_c, tc) = client.take_match().expect("match");
+    assert_eq!(cfg.seed, ccfg.seed);
+    let mut hs = Session::new(cfg.clone(), vec![me_h], Box::new(th));
+    hs.input_delay = 3;
+    hs.add_controller(Box::new(Ai::new(me_h, Difficulty::Hard, 1)));
+    for a in &ais {
+        hs.add_controller(Box::new(Ai::new(a.player, Difficulty::from_index(a.difficulty), a.seed)));
+    }
+    let mut cs = Session::new(ccfg, vec![me_c], Box::new(tc));
+    cs.input_delay = 3;
+    cs.add_controller(Box::new(Ai::new(me_c, Difficulty::Hard, 2)));
+    let target = minutes * 1200;
+    let start = std::time::Instant::now();
+    let mut stalls = 0u64;
+    while hs.world.tick < target || cs.world.tick < target {
+        let a = hs.world.tick < target && hs.step_once();
+        let b = cs.world.tick < target && cs.step_once();
+        if !a && !b {
+            stalls += 1;
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        assert!(start.elapsed().as_secs() < 600, "stuck at host {} client {}", hs.world.tick, cs.world.tick);
+    }
+    let (h1, h2) = (hs.world.checksum(), cs.world.checksum());
+    println!("{} ticks in {:?} ({} idle waits): host {h1:016x} client {h2:016x} -> {}", target, start.elapsed(), stalls, if h1 == h2 { "IN SYNC" } else { "DESYNC" });
+    let st = hs.net_status();
+    println!("host status: desync {:?} dropped {:?}", st.desync_tick, st.dropped);
+    assert_eq!(h1, h2, "LAN peers diverged");
+    // the client leaves: the host must keep going and resign it
+    drop(cs);
+    let until = hs.world.tick + 400;
+    let t1 = std::time::Instant::now();
+    while hs.world.tick < until {
+        if !hs.step_once() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(t1.elapsed().as_secs() < 30, "host stuck after the client left (tick {})", hs.world.tick);
+    }
+    let st = hs.net_status();
+    println!("after drop: dropped {:?}, P{me_c} defeated: {}", st.dropped, hs.world.players[me_c as usize].defeated);
+    assert!(st.dropped.contains(&me_c));
+    assert!(hs.world.players[me_c as usize].defeated, "dropped player should be resigned");
+    println!("LAN SELFTEST OK");
 }
