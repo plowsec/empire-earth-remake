@@ -303,15 +303,27 @@ impl Ai {
             // next to a mine cluster away from the capitol
             return self.settlement_site(w, def);
         }
-        // around the capitol first; when the core is full, spill out wider and then
-        // around our town centers on the home island
-        let mut centers = vec![((bx, by), rmin, rmax), ((bx, by), rmax, rmax + 18)];
+        // spread out: build around whichever of our towns on the home island (capitol
+        // included) is least crowded, so the whole island fills up, not just the centre
         let sett = data().id("settlement");
+        let mut anchors: Vec<((i32, i32), i32, i32)> = vec![((bx, by), rmin, rmax)];
         for e in &w.entities {
             if e.alive && e.owner == p && e.def == sett && e.complete && self.island_at(w, e.tile) == Some(self.home_island) {
-                centers.push(((e.tile.0 + 1, e.tile.1 + 1), 4, 14));
+                anchors.push(((e.tile.0 + 1, e.tile.1 + 1), 4, 16));
             }
         }
+        let crowd = |c: (i32, i32)| -> usize {
+            let cp = FVec::tile_center(c.0, c.1);
+            w.entities.iter().filter(|e| e.alive && e.owner == p && data().def(e.def).is_building() && e.pos.within(cp, Fx::from_int(14))).count()
+        };
+        let mut scored: Vec<(usize, ((i32, i32), i32, i32))> = anchors.into_iter().map(|a| (crowd(a.0), a)).collect();
+        // houses and production may go anywhere; defensive/strategic stuff keeps to the core
+        let spread = matches!(dd.data.key.as_str(), "house" | "apartments" | "barracks" | "tank_factory" | "airport" | "hospital");
+        if spread {
+            scored.sort_by_key(|x| x.0);
+        }
+        let mut centers: Vec<((i32, i32), i32, i32)> = scored.into_iter().map(|x| x.1).collect();
+        centers.push(((bx, by), rmax, rmax + 18));
         for ((cx, cy), r0, r1) in centers {
             for r in r0..r1 {
                 let n = (r * 6).max(8);
@@ -994,7 +1006,7 @@ impl Ai {
         best.map(|b| b.1)
     }
 
-    fn enemy_target_player(&self, w: &World) -> Option<u8> {
+    pub(crate) fn enemy_target_player(&self, w: &World) -> Option<u8> {
         let mut best: Option<(i64, u8)> = None;
         for (i, pl) in w.players.iter().enumerate() {
             if pl.defeated || !w.is_enemy(self.player, i as u8) {

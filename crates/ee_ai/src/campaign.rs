@@ -4,7 +4,7 @@
 use crate::{Ai, View};
 use ee_sim::command::CommandKind;
 use ee_sim::entity::{EntityId, Order};
-use ee_sim::fixed::FVec;
+use ee_sim::fixed::{FVec, Fx};
 use ee_sim::map::{PASS_DEEP, PASS_WATER};
 use ee_sim::world::{data, World};
 
@@ -186,10 +186,28 @@ impl Ai {
     }
 
     fn sea_routes(&mut self, w: &World) -> Vec<Vec<(i32, i32)>> {
-        if !self.sea_routes.is_empty() {
+        if !self.sea_routes.is_empty() && w.tick.wrapping_sub(self.sea_routes_tick) < 20 * 300 {
             return self.sea_routes.clone();
         }
+        self.sea_routes_tick = w.tick;
         let mut routes = Vec::new();
+        // guard every colony we hold, and bombard every island the enemy has settled
+        let enemy_isles: Vec<usize> = {
+            let mut v: Vec<usize> = self.known.values().filter_map(|k| self.island_at(w, k.tile).or_else(|| self.island_at(w, (k.tile.0 - 1, k.tile.1)))).collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        for (i, isl) in self.islands.iter().enumerate() {
+            let ours = isl.claimed && i != self.home_island;
+            let theirs = enemy_isles.contains(&i) && w.starts.iter().all(|s| self.island_at(w, *s) != Some(i));
+            if (ours || theirs) && routes.len() < 6 {
+                let r = self.ring_route(w, isl.center, 3);
+                if r.len() >= 3 {
+                    routes.push(r);
+                }
+            }
+        }
         // 1) blockade every enemy home island
         for (i, &s) in w.starts.iter().enumerate() {
             if w.is_enemy(self.player, i as u8) {
@@ -388,5 +406,149 @@ impl Ai {
         if let Some((_, b)) = wall_building {
             out.push(CommandKind::Delete { units: vec![b] });
         }
+    }
+}
+
+/// A small amphibious raid: one landing craft, ~10 troops, a random enemy beach.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Raid {
+    pub transport: EntityId,
+    pub units: Vec<EntityId>,
+    pub beach: (i32, i32),
+    pub stage: u8,
+    pub tick: u32,
+}
+
+impl Ai {
+    /// Guard posts spread along an island's coast (cached).
+    fn coast_posts(&mut self, w: &World, isl: usize) -> Vec<(i32, i32)> {
+        if let Some(p) = self.coast_posts.get(&isl) {
+            return p.clone();
+        }
+        let spacing = if isl == self.home_island { 22 } else { 14 };
+        let mut posts: Vec<(i32, i32)> = Vec::new();
+        for (i, &c) in self.island_of.iter().enumerate() {
+            if c as usize != isl {
+                continue;
+            }
+            let (x, y) = (i as i32 % w.map.w, i as i32 / w.map.w);
+            if (x + y) % 3 != 0 {
+                continue;
+            }
+            let coastal = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dy)| w.map.is_water(x + dx * 2, y + dy * 2));
+            if coastal && posts.iter().all(|p| manhattan(*p, (x, y)) >= spacing) {
+                posts.push((x, y));
+            }
+        }
+        self.coast_posts.insert(isl, posts.clone());
+        posts
+    }
+
+    /// Every island we hold gets a guard tower (and a SAM site when enemy aircraft are
+    /// about) at each coastal post. One building per call.
+    pub(crate) fn fortify_coasts(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) -> bool {
+        if v.citizens.len() < 50 || w.tick < self.diff.first_attack() {
+            return false;
+        }
+        let d = data();
+        let tower = d.id("guard_tower");
+        let sam = d.id("aa_site");
+        // static defense only from surplus, and in proportion to the economy
+        let pl = &w.players[self.player as usize];
+        let statics = v.count(tower) + v.count(sam);
+        if pl.res[2] < 900 || pl.res[0] < 400 || statics >= 8 + v.citizens.len() / 25 {
+            return false;
+        }
+        let air = self.seen(0) + self.seen(1) >= 3;
+        let held: Vec<usize> = (0..self.islands.len()).filter(|&i| self.islands[i].claimed).collect();
+        let mine: Vec<(ee_sim::defs::DefId, FVec)> = w.entities.iter().filter(|e| e.alive && e.owner == self.player && (e.def == tower || e.def == sam)).map(|e| (e.def, e.pos)).collect();
+        for isl in held {
+            let posts = self.coast_posts(w, isl);
+            for (k, post) in posts.into_iter().enumerate() {
+                let pp = FVec::tile_center(post.0, post.1);
+                for (def, key, want) in [(tower, "guard_tower", true), (sam, "aa_site", air && k % 2 == 0)] {
+                    if !want || mine.iter().any(|(dd, p)| *dd == def && p.within(pp, Fx::from_int(10))) {
+                        continue;
+                    }
+                    if self.pending.iter().any(|(pd, _)| *pd == def) || !w.can_afford(self.player, &d.def(def).data.cost) {
+                        return false;
+                    }
+                    let Some(t) = self.defense_plot(w, pp, key) else { continue };
+                    let who = self.nearest_citizens(w, v, pp, 2, Some(isl));
+                    if who.is_empty() {
+                        continue;
+                    }
+                    out.push(CommandKind::Build { units: who, def, tile: t, queue: false });
+                    self.pending.push((def, w.tick));
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Hit-and-run landings on random enemy beaches between the big waves.
+    pub(crate) fn raid_tick(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
+        let tick = w.tick;
+        if let Some(mut r) = self.raid.take() {
+            r.units.retain(|&u| w.get(u).is_some());
+            let Some(ship) = w.get(r.transport) else { self.last_raid = tick; return };
+            let elapsed = tick.wrapping_sub(r.tick);
+            match r.stage {
+                0 => {
+                    let aboard = r.units.iter().filter(|&&u| w.get(u).map_or(false, |e| e.inside == r.transport)).count();
+                    if aboard > 0 && (aboard == r.units.len() || elapsed > 20 * 60) {
+                        r.units.retain(|&u| w.get(u).map_or(false, |e| e.inside == r.transport));
+                        out.push(CommandKind::Unload { units: vec![r.transport], at: FVec::tile_center(r.beach.0, r.beach.1) });
+                        r.stage = 1;
+                        r.tick = tick;
+                    } else if elapsed > 20 * 90 {
+                        self.last_raid = tick;
+                        return; // nobody got aboard
+                    }
+                }
+                _ => {
+                    if ship.cargo.is_empty() || elapsed > 20 * 150 {
+                        let ashore: Vec<EntityId> = r.units.iter().copied().filter(|&u| w.get(u).map_or(false, |e| e.inside == 0)).collect();
+                        let bp = FVec::tile_center(r.beach.0, r.beach.1);
+                        let to = self.known.values().min_by_key(|k| k.pos.dist2_raw(bp)).map(|k| k.pos).unwrap_or(bp);
+                        if !ashore.is_empty() {
+                            out.push(CommandKind::Move { units: ashore, to, attack_move: true, queue: false });
+                        }
+                        out.push(CommandKind::Move { units: vec![r.transport], to: self.base, attack_move: false, queue: false });
+                        self.last_raid = tick;
+                        return;
+                    }
+                }
+            }
+            self.raid = Some(r);
+            return;
+        }
+        if tick < self.diff.first_attack() || tick.wrapping_sub(self.last_raid) < 20 * 100 || v.land_army.len() < 60 {
+            return;
+        }
+        let Some(enemy) = self.enemy_target_player(w) else { return };
+        let beaches = self.beaches(w, enemy);
+        if beaches.is_empty() {
+            return;
+        }
+        // a free landing craft (not the invasion's, not the colonists')
+        let busy: Vec<EntityId> = self.invasion.as_ref().map(|i| i.transports.clone()).unwrap_or_default();
+        let colony_ship = self.colony.as_ref().map(|c| c.transport);
+        let Some(&ship) = v.transports.iter().find(|&&t| !busy.contains(&t) && Some(t) != colony_ship && w.get(t).map_or(false, |e| e.cargo.is_empty() && matches!(e.order, Order::Idle))) else { return };
+        let sp = w.get(ship).unwrap().pos;
+        let invading: Vec<EntityId> = self.invasion.as_ref().map(|i| i.units.clone()).unwrap_or_default();
+        let mut pool: Vec<(i64, EntityId)> = v.land_army.iter().copied()
+            .filter(|u| !invading.contains(u))
+            .filter_map(|u| w.get(u).filter(|e| e.inside == 0 && e.order == Order::Idle && self.island_at(w, e.pos.tile()) == Some(self.home_island)).map(|e| (e.pos.dist2_raw(sp), u)))
+            .collect();
+        pool.sort();
+        let units: Vec<EntityId> = pool.into_iter().take(10).map(|x| x.1).collect();
+        if units.len() < 6 {
+            return;
+        }
+        let beach = beaches[self.rng.below(beaches.len() as u32) as usize].0;
+        out.push(CommandKind::Target { units: units.clone(), target: ship, queue: false });
+        self.raid = Some(Raid { transport: ship, units, beach, stage: 0, tick });
     }
 }

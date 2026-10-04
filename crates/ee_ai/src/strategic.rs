@@ -175,7 +175,7 @@ impl Ai {
                     "radar_station" => 20,
                     "capitol" => 12,
                     "airport" | "tank_factory" | "naval_yard" | "barracks" | "settlement" => 6,
-                    "abm_site" | "radar_station" => 5,
+                    "abm_site" => 5,
                     _ => 2,
                 }
             }).sum();

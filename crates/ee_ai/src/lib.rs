@@ -212,6 +212,14 @@ pub struct Ai {
     pub(crate) beachhead_holds: bool,
     #[serde(default)]
     pub(crate) nuke_debug: String,
+    #[serde(default)]
+    pub(crate) coast_posts: BTreeMap<usize, Vec<(i32, i32)>>,
+    #[serde(default)]
+    pub(crate) raid: Option<campaign::Raid>,
+    #[serde(default)]
+    pub(crate) last_raid: u32,
+    #[serde(default)]
+    pub(crate) sea_routes_tick: u32,
 }
 
 impl Ai {
@@ -264,6 +272,10 @@ impl Ai {
             colony_failed: BTreeMap::new(),
             beachhead_holds: false,
             nuke_debug: String::new(),
+            coast_posts: BTreeMap::new(),
+            raid: None,
+            last_raid: 0,
+            sea_routes_tick: 0,
         }
     }
 }
@@ -289,11 +301,6 @@ impl Ai {
     /// Distinct enemy units of a sighting kind seen in the last 3 minutes.
     pub(crate) fn seen(&self, kind: u8) -> usize {
         self.sightings.values().filter(|(k, _)| *k == kind).count()
-    }
-    /// Rough count of enemy units of a kind seen recently (sighting counters settle at
-    /// ~64 per unit in view).
-    pub(crate) fn est(c: i32) -> usize {
-        (c / 64).max(0) as usize
     }
 }
 
@@ -349,6 +356,11 @@ impl Controller for Ai {
             self.build(w, &v, &mut out);
         } else if (w.tick / interval) % 3 == ((self.phase + 1) % 3) {
             self.claim_fields(w, &v, &mut out);
+        } else {
+            self.fortify_coasts(w, &v, &mut out);
+        }
+        if self.diff >= Difficulty::Hard {
+            self.raid_tick(w, &v, &mut out);
         }
         self.colonize(w, &v, &mut out);
         if (w.tick / interval) % 4 == (self.phase % 4) {
@@ -604,7 +616,8 @@ impl Ai {
                 target[Res::Iron as usize] += spare - spare / 2;
             }
         }
-        self.food_wanted = workers * want[f] / total_w.max(1);
+        // farms and granaries follow the food target after the floor
+        self.food_wanted = (workers * want[f] / total_w.max(1)).max(target[f]).max(workers * 26 / 100);
         let mut deficit: [i32; NUM_RES] = [0; NUM_RES];
         for r in 0..NUM_RES {
             deficit[r] = target[r] - v.gatherers[r].len() as i32;
