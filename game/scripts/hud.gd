@@ -363,9 +363,8 @@ func _build_menu() -> void:
 
 func _build_end_panel() -> void:
 	end_panel = PanelContainer.new()
-	end_panel.set_anchors_preset(Control.PRESET_CENTER)
-	end_panel.position = Vector2(-300, -220)
-	end_panel.custom_minimum_size = Vector2(600, 440)
+	end_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	end_panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
 	end_panel.visible = false
 	end_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(end_panel)
@@ -870,35 +869,15 @@ func _on_event(e: Dictionary) -> void:
 func _show_end(won: bool) -> void:
 	end_panel.visible = true
 	for c in end_panel.get_children(): c.queue_free()
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 12)
-	end_panel.add_child(v)
-	var title := _label("VICTORY" if won else "DEFEAT", 54, ACCENT if won else Color(0.9, 0.35, 0.3), true)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	v.add_child(title)
-	var grid := GridContainer.new()
-	grid.columns = 6
-	grid.add_theme_constant_override("h_separation", 18)
-	for h in ["Player", "Units trained", "Kills", "Losses", "Buildings", "Gathered"]:
-		grid.add_child(_label(h, 15, Color(0.7, 0.68, 0.6)))
-	for p in gv.players():
-		grid.add_child(_label(p["name"], 17, p["color"], true))
-		grid.add_child(_label(str(p["trained"]), 17))
-		grid.add_child(_label(str(p["kills"]), 17))
-		grid.add_child(_label(str(p["lost"]), 17))
-		grid.add_child(_label(str(p["built"]), 17))
-		grid.add_child(_label(str(p["gathered"]), 17))
-	v.add_child(grid)
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_CENTER
-	hb.add_theme_constant_override("separation", 16)
-	for item in [["Play Again", _restart], ["Main Menu", _to_menu], ["Keep Watching", func(): end_panel.visible = false]]:
-		var b := Button.new()
-		b.text = item[0]
-		b.custom_minimum_size = Vector2(150, 42)
-		b.pressed.connect(item[1])
-		hb.add_child(b)
-	v.add_child(hb)
+	var screen = load("res://scripts/end_screen.gd").new()
+	screen.on_play_again = _restart
+	screen.on_menu = _to_menu
+	screen.on_watch = func(): end_panel.visible = false
+	var cinzel := _load_font("res://assets/fonts/Cinzel-Variable.ttf")
+	screen.setup(gv.end_stats(), won, [cinzel if cinzel else font_title, font_title, font_body])
+	end_panel.add_child(screen)
+	if main and main.has_node("Audio"):
+		main.get_node("Audio").ui("victory" if won else "defeat", 0.0)
 
 # ---------------------------------------------------------------- menu actions
 

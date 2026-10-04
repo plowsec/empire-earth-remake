@@ -20,6 +20,8 @@ pub struct SaveGame {
     pub ais: Vec<String>,
     pub replay: Replay,
     pub reveal: bool,
+    #[serde(default)]
+    pub history: Vec<crate::stats::Sample>,
 }
 
 /// Same layout as `SaveGame`, borrowing the live world instead of copying it.
@@ -31,9 +33,10 @@ struct SaveOut<'a> {
     ais: Vec<String>,
     replay: Replay,
     reveal: bool,
+    history: &'a [crate::stats::Sample],
 }
 
-pub fn save(session: &Session, reveal: bool) -> Result<String, String> {
+pub fn save(session: &Session, reveal: bool, history: &[crate::stats::Sample]) -> Result<String, String> {
     let ais: Vec<String> = session.controller_states().into_iter().map(|s| s.unwrap_or_default()).collect();
     let g = SaveOut {
         version: SAVE_VERSION,
@@ -42,12 +45,13 @@ pub fn save(session: &Session, reveal: bool) -> Result<String, String> {
         ais,
         replay: session.make_replay(),
         reveal,
+        history,
     };
     ron::to_string(&g).map_err(|e| e.to_string())
 }
 
-/// Rebuild a session from a save file. Returns (session, reveal).
-pub fn load(text: &str) -> Result<(Session, bool), String> {
+/// Rebuild a session from a save file. Returns (session, reveal, stats history).
+pub fn load(text: &str) -> Result<(Session, bool, Vec<crate::stats::Sample>), String> {
     let g: SaveGame = ron::from_str(text).map_err(|e| format!("not a save file: {e}"))?;
     if g.version != SAVE_VERSION {
         return Err(format!("save version {} is not supported", g.version));
@@ -67,7 +71,7 @@ pub fn load(text: &str) -> Result<(Session, bool), String> {
         let ai = Ai::from_state(state).ok_or("corrupt AI state")?;
         session.add_controller(Box::new(ai));
     }
-    Ok((session, g.reveal))
+    Ok((session, g.reveal, g.history))
 }
 
 pub fn replay_text(session: &Session) -> Result<String, String> {

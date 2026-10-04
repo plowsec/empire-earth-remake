@@ -190,7 +190,7 @@ impl GameView {
             Ok(t) => t,
             Err(e) => return GString::from(&format!("could not read save: {e}")),
         };
-        let (session, reveal) = match crate::save::load(&text) {
+        let (session, reveal, history) = match crate::save::load(&text) {
             Ok(x) => x,
             Err(e) => return GString::from(&e),
         };
@@ -204,6 +204,7 @@ impl GameView {
         let mut client = Client::from_session(root, session, reveal, Some(noise.clone()));
         client.replay_path = Some(new_replay_path(client.world().config.seed));
         client.autosave_dir = Some(user_dir("saves"));
+        client.history = history;
         self.build_world(&client, &noise);
         self.client = Some(client);
         self.signals().game_started().emit();
@@ -354,6 +355,10 @@ impl GameView {
         if let Some(c) = self.client.as_mut() {
             for _ in 0..ticks {
                 c.session.step_once();
+                let t = c.session.world.tick;
+                if c.history.last().map_or(true, |s| t >= s.tick + 600) {
+                    c.history.push(crate::stats::sample(&c.session.world));
+                }
             }
             c.session.event_log.clear();
         }
@@ -418,6 +423,66 @@ impl GameView {
         d.set("defeated", p.defeated);
         d.set("won", w.game_over && w.winner_team == Some(p.team));
         d.set("speed", c.session.speed);
+        d
+    }
+
+    /// Everything the end screen shows: per-player totals + the sampled history.
+    #[func]
+    fn end_stats(&self) -> VarDictionary {
+        let mut d = dict();
+        let Some(c) = &self.client else { return d };
+        let w = c.world();
+        let mut players = VarArray::new();
+        for pl in &w.players {
+            let (m, e, t) = crate::stats::score_parts(w, pl.id);
+            let mut x = dict();
+            x.set("id", pl.id as i64);
+            x.set("name", pl.name.as_str());
+            x.set("color", player_color(pl.color));
+            x.set("me", pl.id == c.me);
+            x.set("won", w.game_over && w.winner_team == Some(pl.team));
+            x.set("defeated", pl.defeated);
+            x.set("score", m + e + t);
+            x.set("military", m);
+            x.set("economy", e);
+            x.set("technology", t);
+            x.set("kills", pl.stats.kills as i64);
+            x.set("lost", pl.stats.lost as i64);
+            x.set("trained", pl.stats.trained as i64);
+            x.set("built", pl.stats.built as i64);
+            x.set("razed", pl.stats.razed as i64);
+            let mut g = VarArray::new();
+            for r in 0..NUM_RES {
+                g.push(&pl.stats.gathered[r].to_variant());
+            }
+            x.set("gathered", &g);
+            x.set("techs", pl.techs.iter().filter(|t| **t).count() as i64);
+            // peaks from the history
+            let peak = |k: usize| c.history.iter().filter_map(|s| s.values.get(pl.id as usize)).map(|v| v[k] as i64).max().unwrap_or(0);
+            x.set("peak_pop", peak(1));
+            x.set("peak_army", peak(2));
+            players.push(&x.to_variant());
+        }
+        d.set("players", &players);
+        d.set("seconds", (w.tick / 20) as i64);
+        let mut times = VarArray::new();
+        for s in &c.history {
+            times.push(&((s.tick / 20) as i64).to_variant());
+        }
+        d.set("times", &times);
+        let mut series = dict();
+        for (k, name) in crate::stats::METRICS.iter().enumerate() {
+            let mut per = VarArray::new();
+            for p in 0..w.players.len() {
+                let mut vals = PackedFloat32Array::new();
+                for s in &c.history {
+                    vals.push(s.values.get(p).map_or(0.0, |v| v[k]));
+                }
+                per.push(&vals.to_variant());
+            }
+            series.set(*name, &per);
+        }
+        d.set("series", &series);
         d
     }
 

@@ -39,6 +39,13 @@ func _ready() -> void:
 			var t = load("res://scripts/featuretest.gd").new()
 			t.name = "FeatureTest"
 			call_deferred("add_child", t)
+		elif a.begins_with("--endscreen"):
+			var tab := a.substr(12) if a.length() > 12 else ""
+			get_tree().create_timer(2.0).timeout.connect(func():
+				$HUD._show_end(true)
+				if tab != "":
+					var scr = $HUD.end_panel.get_child($HUD.end_panel.get_child_count() - 1)
+					scr._show_tab(tab))
 		elif a == "--savetest":
 			var t = load("res://scripts/savetest.gd").new()
 			t.name = "SaveTest"

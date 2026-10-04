@@ -147,6 +147,8 @@ pub struct Client {
     autosave_next: u32,
     autosave_slot: u32,
     autosave_final: bool,
+    /// per-player stats every 30 s of game time (end screen charts)
+    pub history: Vec<crate::stats::Sample>,
 }
 
 /// Autosave interval: 5 minutes of game time.
@@ -328,6 +330,7 @@ impl Client {
             autosave_next: 0,
             autosave_slot: 0,
             autosave_final: false,
+            history: Vec::new(),
         };
         c.autosave_next = c.session.world.tick + AUTOSAVE_TICKS;
         c.build_decorations(&deco_models);
@@ -340,7 +343,7 @@ impl Client {
     /// background thread (`background`) so autosaves don't stall the frame.
     pub fn save_to(&mut self, name: &str, background: bool) -> Result<String, String> {
         let dir = self.autosave_dir.clone().ok_or("saving is off")?;
-        let text = crate::save::save(&self.session, self.reveal)?;
+        let text = crate::save::save(&self.session, self.reveal, &self.history)?;
         let path = format!("{dir}/{name}.eesave");
         let tmp = format!("{path}.tmp");
         let write = {
@@ -410,8 +413,12 @@ impl Client {
                 self.static_dirty = true;
             }
         }
-        // rotating autosaves every 5 minutes of game time, and one when the match ends
+        // stats history for the end screen
         let tick = self.session.world.tick;
+        if self.history.last().map_or(true, |s| tick >= s.tick + 600) || (self.session.world.game_over && self.history.last().map_or(false, |s| s.tick != tick)) {
+            self.history.push(crate::stats::sample(&self.session.world));
+        }
+        // rotating autosaves every 5 minutes of game time, and one when the match ends
         let over = self.session.world.game_over;
         if self.autosave_dir.is_some() && (tick >= self.autosave_next || (over && !self.autosave_final)) {
             self.autosave_next = tick + AUTOSAVE_TICKS;

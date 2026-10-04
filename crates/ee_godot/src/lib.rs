@@ -6,6 +6,7 @@ mod batch;
 mod client;
 mod models;
 mod save;
+mod stats;
 mod terrain;
 mod view;
 
