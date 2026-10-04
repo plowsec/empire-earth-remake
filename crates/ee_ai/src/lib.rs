@@ -3,6 +3,7 @@
 //! run on every peer in lockstep, or on the host only.
 use serde::{Deserialize, Serialize};
 mod campaign;
+mod doctrine;
 mod expand;
 mod plan;
 mod strategic;
@@ -223,6 +224,12 @@ pub struct Ai {
     pub(crate) last_raid: u32,
     #[serde(default)]
     pub(crate) sea_routes_tick: u32,
+    /// islands next to our zone where the enemy has a foothold (invade these first)
+    #[serde(default)]
+    pub(crate) contested: Vec<usize>,
+    /// landing beaches per island
+    #[serde(default)]
+    pub(crate) isl_beaches: BTreeMap<usize, Vec<((i32, i32), (i32, i32))>>,
 }
 
 impl Ai {
@@ -279,6 +286,8 @@ impl Ai {
             raid: None,
             last_raid: 0,
             sea_routes_tick: 0,
+            contested: Vec::new(),
+            isl_beaches: BTreeMap::new(),
         }
     }
 }
@@ -606,7 +615,8 @@ impl Ai {
         let military = v.count(d.id("barracks")) > 0;
         if military {
             let s_ = Res::Stone as usize;
-            let floor = (workers * 26 / 100).min(food_slots);
+            // the floor guards against starvation, not against a full granary
+            let floor = if pl.res[f] < 3000 { (workers * 26 / 100).min(food_slots) } else { 0 };
             if target[f] < floor {
                 let need = floor - target[f];
                 target[f] = floor;

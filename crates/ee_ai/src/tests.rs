@@ -140,3 +140,30 @@ fn ai_stockpiles_when_the_target_is_too_well_defended() {
     ai.strategic(&w, &ai.view(&w), &mut cmds);
     assert!(!cmds.iter().any(|c| matches!(c, CommandKind::Launch { .. })), "{cmds:?}");
 }
+
+#[test]
+fn intruders_anywhere_on_our_island_get_an_immediate_response() {
+    let mut w = world();
+    let mut ai = Ai::new(1, Difficulty::Hard, 9);
+    ai.init(&w);
+    // our troops near the capitol, enemy landing party far from it but on our island
+    let rifle = data().id("rifleman");
+    let ours: Vec<EntityId> = (0..6).map(|k| w.spawn(rifle, 1, ai.base + FVec::new(Fx::from_int(k), Fx::from_int(3)))).collect();
+    let (bx, by) = ai.base_tile;
+    let far = (0i32..360).step_by(15).find_map(|a| {
+        let (c, s) = ee_sim::mapgen::sincos_deg(a);
+        (18..40).rev().map(|r| (bx + c * r / 1024, by + s * r / 1024)).find(|&t| w.map.passable(t.0, t.1, ee_sim::defs::Layer::Land) && ai.island_at(&w, t) == Some(ai.home_island))
+    }).expect("land far from the capitol");
+    for k in 0..4 {
+        w.spawn(rifle, 0, FVec::tile_center(far.0 + k % 2, far.1 + k / 2));
+    }
+    w.tick = 400;
+    let mut cmds = vec![];
+    ai.hold_zone(&w, &ai.view(&w), &mut cmds);
+    let responders = cmds.iter().find_map(|c| match c {
+        CommandKind::Move { units, to, attack_move: true, .. } if units.iter().any(|u| ours.contains(u)) => Some(*to),
+        _ => None,
+    });
+    let to = responders.expect("our troops should move against the intruders");
+    assert!(to.within(FVec::tile_center(far.0, far.1), Fx::from_int(6)), "response aimed at the intruders");
+}

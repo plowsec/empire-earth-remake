@@ -645,8 +645,10 @@ impl Ai {
                     best = Some((deficit, def));
                 }
             }
-            // never pad the army with a kind that's already over its share: save instead
-            best.filter(|b| b.0 > 0).map(|b| b.1)
+            // never pad the army with a kind that's already over its share (save instead),
+            // unless food and wood are piling up: then cheap units are better than nothing
+            let flush = pl.res[0] + pl.res[1] > 6000;
+            best.filter(|b| b.0 > 0 || flush).map(|b| b.1)
         };
 
         let cit_target = self.diff.econ_base();
@@ -666,7 +668,7 @@ impl Ai {
                     continue;
                 }
                 let trainable = &d.def(be.def).trains;
-                if sea_air_war && (bkey == "barracks" || bkey == "tank_factory") && v.land_army.len() >= 60 && v.navy.len() < enemy_navy * 3 / 2 {
+                if sea_air_war && (bkey == "barracks" || bkey == "tank_factory") && v.land_army.len() >= 60 && v.navy.len() < enemy_navy * 3 / 2 && pl.res[0] + pl.res[1] < 6000 {
                     continue; // money goes to ships and planes first
                 }
                 // naval yard: transports first when an invasion needs them
@@ -761,56 +763,17 @@ impl Ai {
     // ------------------------------------------------------------------ military
 
     pub(crate) fn military(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
-        let p = self.player;
         let d = data();
-        // ---- defense: enemies near our buildings
-        let mut threat: Option<(FVec, i32)> = None;
-        let mut threat_count = 0;
-        for e in &w.entities {
-            if !e.alive || !e.on_map() || !w.is_enemy(p, e.owner) || !w.can_see(p, e) {
-                continue;
-            }
-            let ed = d.def(e.def);
-            if !ed.is_unit() || ed.layer == Layer::Water {
-                continue;
-            }
-            // near any of our buildings?
-            let near = e.pos.within(self.base, Fx::from_int(30)) || v.buildings.values().flatten().take(40).any(|&b| {
-                w.get(b).map_or(false, |be| be.pos.within(e.pos, Fx::from_int(14)))
-            });
-            if near {
-                threat_count += 1;
-                let dist = e.pos.dist(self.base).0;
-                if threat.map_or(true, |(_, bd)| dist < bd) {
-                    threat = Some((e.pos, dist));
-                }
-            }
-        }
-        self.defending = threat_count >= 3;
+        // ---- the zone of control: answer every intrusion, contest nearby islands
+        self.hold_zone(w, v, out);
+        let threat: Option<(FVec, i32)> = if self.defending { Some((self.base, 0)) } else { None };
         let invading: Vec<EntityId> = self.invasion.as_ref().map(|i| i.units.clone()).unwrap_or_default();
-        if let Some((tpos, _)) = threat {
-            let defenders: Vec<EntityId> = v
-                .land_army
-                .iter()
-                .copied()
-                .filter(|u| !invading.contains(u))
-                .filter(|&u| w.get(u).map_or(false, |e| e.inside == 0 && matches!(e.order, Order::Idle | Order::Move { .. })))
-                .collect();
-            if !defenders.is_empty() && w.tick % 40 < self.diff.think_interval() {
-                out.push(CommandKind::Move { units: defenders, to: tpos, attack_move: true, queue: false });
-            }
-            // air support at home
-            let air_idle: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).map_or(false, |e| e.order == Order::Idle && e.def != d.id("nuke_bomber"))).collect();
-            if !air_idle.is_empty() && threat_count >= 3 {
-                out.push(CommandKind::Move { units: air_idle, to: tpos, attack_move: true, queue: false });
-            }
+        if self.defending {
             // citizens under direct attack flee to the capitol
-            if threat_count >= 4 {
-                for &c in &v.citizens {
-                    if let Some(ce) = w.get(c) {
-                        if w.tick.wrapping_sub(ce.last_hit_tick) < 20 && !ce.pos.within(self.base, Fx::from_int(5)) {
-                            out.push(CommandKind::Move { units: vec![c], to: self.base, attack_move: false, queue: false });
-                        }
+            for &c in &v.citizens {
+                if let Some(ce) = w.get(c) {
+                    if w.tick.wrapping_sub(ce.last_hit_tick) < 20 && !ce.pos.within(self.base, Fx::from_int(5)) && w.tick % 40 < self.diff.think_interval() {
+                        out.push(CommandKind::Move { units: vec![c], to: self.base, attack_move: false, queue: false });
                     }
                 }
             }
@@ -1144,13 +1107,20 @@ impl Ai {
             if !ready || available.len() < self.diff.wave_size().min(8 + self.wave as usize * 4) || v.transports.is_empty() {
                 return;
             }
-            let Some(enemy) = self.enemy_target_player(w) else { return };
-            let Some(es) = self.enemy_start(w) else { return };
+            // the next island in the conquest order (contested, enemy colonies, enemy home)
+            let Some((target_isl, es)) = self.invasion_target(w) else { return };
+            let home_assault = w.starts.iter().any(|s| self.island_at(w, *s) == Some(target_isl));
             // launch from whichever island holds most of the idle army (colonies too)
             let Some((src_isl, group)) = self.launch_island(w, &available) else { return };
             // waves grow with the army: at least 40% of it (late game: up to 90 units)
             let army_total = v.land_army.len();
-            let need = self.diff.wave_size().min(8 + self.wave as usize * 4).max((army_total * 2 / 5).min(90));
+            let need = if home_assault {
+                self.diff.wave_size().min(8 + self.wave as usize * 4).max((army_total * 2 / 5).min(90))
+            } else {
+                // footholds and colonies: overwhelming but quick, sized to what's there
+                let strength = self.island_strength(w, target_isl) as usize;
+                (strength * 3 / 2).max(14).min(90)
+            };
             if group.len() < need {
                 return;
             }
@@ -1166,7 +1136,7 @@ impl Ai {
             }
             let src_tile = w.get(group[0]).map(|e| e.pos.tile()).unwrap_or(self.base_tile);
             let prongs = if ships.len() >= 2 && group.len() >= 16 { 2 } else { 1 };
-            let beaches = self.pick_landings(w, enemy, src_tile, prongs);
+            let beaches = self.pick_landings_isl(w, target_isl, src_tile, prongs);
             if beaches.is_empty() {
                 return;
             }
@@ -1184,6 +1154,12 @@ impl Ai {
             out.push(CommandKind::Move { units: units.clone(), to: staging, attack_move: false, queue: false });
             let staging_water = FVec::tile_center(stage_w.0, stage_w.1);
             out.push(CommandKind::Move { units: ships.clone(), to: staging_water, attack_move: false, queue: false });
+            // prep fire: bombers hit the target area while the wave gathers
+            let nuke = d.id("nuke_bomber");
+            let bombers: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).map_or(false, |e| e.def != nuke && (e.inside != 0 || e.order == Order::Idle) && d.def(e.def).weapons.iter().any(|wp| wp.vs_ground))).collect();
+            if !bombers.is_empty() {
+                out.push(CommandKind::Move { units: bombers, to: es, attack_move: true, queue: false });
+            }
             // warships guard the landing craft while they wait and load
             let mut guards: Vec<(i64, EntityId)> = v.navy.iter().filter_map(|&s| w.get(s).map(|e| (e.pos.dist2_raw(staging_water), s))).collect();
             guards.sort();

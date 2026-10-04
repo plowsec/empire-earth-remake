@@ -300,6 +300,10 @@ impl Ai {
             let isl = self.island_at(w, sp.tile());
             for (def, list, key, wanted) in [(tower, &towers, "guard_tower", true), (sam, &sams, "aa_site", want_sam)] {
                 let per = if def == sam { sams_per_town } else { 1 };
+                // in proportion to the economy, not per town without limit
+                if def == sam && sams.len() >= 6 + v.citizens.len() / 25 {
+                    continue;
+                }
                 if !wanted || pending_def(def) || list.iter().filter(|p| p.within(sp, Fx::from_int(9))).count() >= per {
                     continue;
                 }

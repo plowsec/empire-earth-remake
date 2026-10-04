@@ -17,11 +17,19 @@ fn manhattan(a: (i32, i32), b: (i32, i32)) -> i32 {
 impl Ai {
     /// Landing beaches spread around an enemy's home island (cached per enemy).
     fn beaches(&mut self, w: &World, enemy: u8) -> Vec<Beach> {
-        if let Some(b) = self.beaches.get(&enemy) {
-            return b.clone();
-        }
         let Some(&start) = w.starts.get(enemy as usize) else { return vec![] };
         let Some(isl) = self.island_at(w, start) else { return vec![] };
+        self.beaches_isl(w, isl)
+    }
+
+    /// Landing beaches spread around any island (cached per island). Beaches right under
+    /// a capitol are skipped.
+    pub(crate) fn beaches_isl(&mut self, w: &World, isl: usize) -> Vec<Beach> {
+        if let Some(b) = self.isl_beaches.get(&isl) {
+            return b.clone();
+        }
+        let start = w.starts.iter().copied().find(|s| self.island_at(w, *s) == Some(isl)).unwrap_or((-1000, -1000));
+        let small = self.islands.get(isl).map_or(false, |i| i.tiles < 600);
         let mut all: Vec<Beach> = Vec::new();
         for (i, &c) in self.island_of.iter().enumerate() {
             if c as usize != isl {
@@ -40,22 +48,23 @@ impl Ai {
                 }
             }
         }
-        // greedy spread: beaches at least 18 tiles apart
+        // greedy spread: beaches at least 18 tiles apart (8 on small islands)
+        let spacing = if small { 8 } else { 18 };
         let mut picked: Vec<Beach> = Vec::new();
         for b in all {
-            if picked.iter().all(|p| manhattan(p.0, b.0) >= 18) {
+            if picked.iter().all(|p| manhattan(p.0, b.0) >= spacing) {
                 picked.push(b);
             }
         }
-        self.beaches.insert(enemy, picked.clone());
+        self.isl_beaches.insert(isl, picked.clone());
         picked
     }
 
     /// Pick 1 or 2 landing beaches for this wave: short sail, few known defenses, not
     /// where earlier waves died, and not the beach used last time.
-    pub(crate) fn pick_landings(&mut self, w: &World, enemy: u8, from: (i32, i32), prongs: usize) -> Vec<Beach> {
+    pub(crate) fn pick_landings_isl(&mut self, w: &World, isl: usize, from: (i32, i32), prongs: usize) -> Vec<Beach> {
         let d = data();
-        let beaches = self.beaches(w, enemy);
+        let beaches = self.beaches_isl(w, isl);
         let defensive = ["guard_tower", "fortress", "aa_site", "capitol"];
         let mut scored: Vec<(i64, Beach)> = beaches
             .into_iter()
