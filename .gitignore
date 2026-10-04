@@ -11,3 +11,4 @@ game/assets/textures/src/
 *.import
 !game/assets/textures/terrain_*_array.png.import
 !game/assets/textures/surface_*_array.png.import
+tools/assets/tripo_raw/
