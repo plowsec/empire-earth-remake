@@ -1275,6 +1275,31 @@ impl GameView {
                 c.selection = vec![home];
                 at
             }
+            sc if sc.starts_with("show_") => {
+                // a few of one model near the capitol (ships on the nearest water)
+                let key = &sc[5..];
+                let def = data().id(key);
+                let d = data().def(def);
+                let at = if d.layer == Layer::Water {
+                    ee_sim::orders::shore_water_near(w, base, 60).unwrap_or(base)
+                } else {
+                    base + FVec::new(Fx::from_int(0), Fx::from_int(9))
+                };
+                if d.is_building() {
+                    let (x, y) = at.tile();
+                    for k in 0..3 {
+                        let t = (x - 6 + k * 5, y);
+                        if w.can_place(0, def, t).is_ok() {
+                            w.spawn_static(def, (k % 2) as u8, t, true);
+                        }
+                    }
+                } else {
+                    for k in 0..3 {
+                        w.spawn(def, (k % 2) as u8, at + FVec::new(Fx::from_int(k * 4 - 4), Fx::ZERO));
+                    }
+                }
+                at
+            }
             "icbm" | "icbm_abm" => {
                 // a silo with a missile in flight toward a target 40 tiles away
                 let def = data().id("missile_silo");

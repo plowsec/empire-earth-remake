@@ -43,6 +43,11 @@ def main():
             i += 2
         else:
             i += 1
+    # models replaced by Tripo generations keep their imported version
+    tripo_list = os.path.join(ROOT, "tools", "assets", "tripo_models.txt")
+    tripo = set()
+    if os.path.exists(tripo_list):
+        tripo = {l.strip() for l in open(tripo_list) if l.strip() and not l.startswith("#")}
     for mn in MODULES:
         if not os.path.exists(os.path.join(os.path.dirname(__file__), mn + ".py")):
             continue
@@ -50,6 +55,9 @@ def main():
         keys = getattr(mod, "KEYS", None) or getattr(mod, "INFANTRY", [])
         for k in keys:
             if only and k not in only:
+                continue
+            if k in tripo and not os.environ.get("EE_ICON_MODE"):
+                print(f"skip {k} (Tripo model)")
                 continue
             t0 = time.time()
             mod.build(k, OUT, prev)

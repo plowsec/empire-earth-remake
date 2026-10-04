@@ -1,0 +1,4 @@
+# models replaced by Tripo 3D generations (tools/assets/tripo.py + tools/blender/import_tripo.py)
+tank
+house
+battleship
