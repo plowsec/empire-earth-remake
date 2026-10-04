@@ -39,6 +39,10 @@ func _ready() -> void:
 			var t = load("res://scripts/featuretest.gd").new()
 			t.name = "FeatureTest"
 			call_deferred("add_child", t)
+		elif a == "--diplomacy":
+			get_tree().create_timer(2.0).timeout.connect(func(): $HUD._toggle_diplomacy())
+		elif a.begins_with("--players="):
+			start_cfg["players"] = int(a.substr(10))
 		elif a.begins_with("--lantest="):
 			var secs := float(a.substr(10))
 			get_tree().create_timer(secs).timeout.connect(func():
