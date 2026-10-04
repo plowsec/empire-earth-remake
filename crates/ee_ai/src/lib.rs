@@ -23,12 +23,15 @@ pub enum Personality {
     #[default]
     Standard,
     NavalNuke,
+    /// mass bombers behind SAM cover (a human's winning plan)
+    AirStrike,
 }
 
 impl Personality {
     pub fn from_name(s: &str) -> Personality {
         match s {
             "navalnuke" | "naval_nuke" | "naval" => Personality::NavalNuke,
+            "airstrike" | "air" | "bombers" => Personality::AirStrike,
             _ => Personality::Standard,
         }
     }

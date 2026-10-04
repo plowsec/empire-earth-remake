@@ -27,7 +27,7 @@ impl Ai {
             }
         }
         let threatened = enemy_silos > 0 || (self.missile_alert > 0 && w.tick.wrapping_sub(self.missile_alert) < 20 * 60 * 10);
-        let naval = self.personality == crate::Personality::NavalNuke;
+        let naval = self.personality != crate::Personality::Standard;
         let hard = self.diff >= Difficulty::Hard || naval;
         let mature = v.citizens.len() >= 50 && w.tick >= self.diff.first_attack() * 3 / 2;
 

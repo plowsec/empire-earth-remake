@@ -84,6 +84,11 @@ impl Ai {
         if cits >= 24 && have(id("settlement")) < 1 + cits / 30 {
             wants.push(id("settlement"));
         }
+        // outnumbered in the air: more airfields (up to 8), rich or not
+        let enemy_planes = self.seen(0) + self.seen(1);
+        if cits >= 30 && enemy_planes > v.air.len() + 8 && have(id("airport")) < (2 + enemy_planes / 15).min(8) {
+            wants.push(id("airport"));
+        }
         // outgunned at sea: more shipyards (up to 7), rich or not
         let enemy_fleet = self.seen(2) + self.seen(3);
         if cits >= 30 && enemy_fleet > v.navy.len() + 6 && have(id("naval_yard")) < (3 + enemy_fleet / 12).min(7) {
@@ -96,7 +101,9 @@ impl Ai {
             let hoard = pl.res[0] + pl.res[1] > 20000;
             let extra = (w.config.pop_limit / 500) as usize + if hoard { 3 } else { 0 };
             let sea_air = self.seen(0) + self.seen(1) + self.seen(2) + self.seen(3) >= 10;
-            let caps: Vec<(&str, usize)> = if self.personality == crate::Personality::NavalNuke {
+            let caps: Vec<(&str, usize)> = if self.personality == crate::Personality::AirStrike {
+                vec![("airport", 10), ("naval_yard", 3), ("aa_site", (10 + extra * 4).min(33)), ("guard_tower", 12), ("barracks", 2), ("tank_factory", 2)]
+            } else if self.personality == crate::Personality::NavalNuke {
                 vec![("naval_yard", 3 + extra / 2), ("airport", 4 + extra), ("aa_site", (10 + extra * 4).min(33)), ("guard_tower", 10), ("barracks", 2), ("tank_factory", 2)]
             } else {
                 vec![("barracks", 3 + extra), ("tank_factory", 3 + extra), ("airport", 2 + extra / 2 + sea_air as usize * 2),
@@ -560,29 +567,32 @@ impl Ai {
             ("rifleman", 22),
             ("machine_gunner", 10),
             ("bazooka", if armor_threat { 22 } else { 12 }),
-            ("stinger", if enemy_bombers >= 2 { 22 } else if air_threat { 16 } else { 4 }),
+            ("stinger", if enemy_bombers >= 10 { 28 } else if enemy_bombers >= 2 { 22 } else if air_threat { 16 } else { 4 }),
             ("mortar", 5),
             ("medic", 4),
             ("sniper", 3),
             ("tank", 26),
             ("at_gun", if armor_threat { 8 } else { 3 }),
-            ("aa_vehicle", if enemy_bombers >= 2 { 20 } else if air_threat { 12 } else { 3 }),
+            ("aa_vehicle", if enemy_bombers >= 10 { 32 } else if enemy_bombers >= 2 { 20 } else if air_threat { 12 } else { 3 }),
             ("howitzer", 6),
             ("recon", 2),
         ];
         if self.diff == Difficulty::Easy {
             land.retain(|(k, _)| matches!(*k, "rifleman" | "machine_gunner" | "bazooka" | "tank" | "mortar"));
         }
-        let naval_style = self.personality == crate::Personality::NavalNuke;
+        let air_style = self.personality == crate::Personality::AirStrike;
+        let naval_style = self.personality == crate::Personality::NavalNuke || air_style;
         if naval_style {
             // a defensive garrison: anti-tank, anti-air, medics
             land = vec![("bazooka", 35), ("stinger", 30), ("medic", 15), ("aa_vehicle", 15), ("tank", 5)];
         }
-        let air: Vec<(&str, i32)> = if naval_style {
+        let air: Vec<(&str, i32)> = if air_style {
+            vec![("bomber", 70), ("fighter", 20), ("strike_fighter", 10)]
+        } else if naval_style {
             vec![("bomber", 35), ("fighter", 25), ("strike_fighter", 25), ("helicopter", 5)]
         } else {
             vec![
-                ("fighter", if enemy_bombers >= 2 { 60 } else if air_threat { 45 } else { 25 }),
+                ("fighter", if enemy_bombers >= 8 { 80 } else if enemy_bombers >= 2 { 60 } else if air_threat { 45 } else { 25 }),
                 ("bomber", 25),
                 ("strike_fighter", if armor_threat { 25 } else { 12 }),
                 ("helicopter", 18),
@@ -687,7 +697,8 @@ impl Ai {
                     nuclear_queued = true;
                     continue;
                 }
-                let air_cap = if naval_style { 40 } else { 8 + self.wave as usize * 3 };
+                // match the enemy air force (and then some) once it shows up
+                let air_cap = if air_style { 130 } else if naval_style { 40 } else { (8 + self.wave as usize * 3).max((enemy_air * 3 / 2 + 10).min(120)) };
                 if bkey == "airport" && v.air.len() >= air_cap {
                     continue;
                 }
@@ -862,7 +873,7 @@ impl Ai {
             }
         }
         // ---- air strikes
-        let strike_every = if self.personality == crate::Personality::NavalNuke { 20 * 60 } else { 20 * 60 * 2 };
+        let strike_every = if self.personality != crate::Personality::Standard { 20 * 60 } else { 20 * 60 * 2 };
         if attack_time && w.tick.wrapping_sub(self.last_air_strike) > strike_every {
             let ready: Vec<EntityId> = v
                 .air
@@ -1115,7 +1126,7 @@ impl Ai {
     }
 
     fn invasion_tick(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>, attack_time: bool) {
-        if self.personality == crate::Personality::NavalNuke && self.invasion.is_none() {
+        if self.personality != crate::Personality::Standard && self.invasion.is_none() {
             return;
         }
         let d = data();

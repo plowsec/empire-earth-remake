@@ -185,16 +185,25 @@ func _show_tab(t: String) -> void:
 		"Economy": body.add_child(_economy())
 		"Graphs": body.add_child(_graphs())
 
+## Players ranked: winners first, then by score (a sorted copy: charts and legends
+## index the original per-player order).
 func _players() -> Array:
-	var ps: Array = stats.get("players", [])
-	ps.sort_custom(func(a, b): return a["score"] > b["score"])
+	var ps: Array = stats.get("players", []).duplicate()
+	ps.sort_custom(func(a, b):
+		if a["won"] != b["won"]:
+			return a["won"]
+		if a["defeated"] != b["defeated"]:
+			return not a["defeated"]
+		return a["score"] > b["score"])
 	return ps
 
 func _summary() -> Control:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 18)
 	var ps := _players()
-	var top: float = max(1.0, float(ps[0]["score"])) if ps.size() > 0 else 1.0
+	var top := 1.0
+	for p in ps:
+		top = max(top, float(p["score"]))
 	for i in ps.size():
 		var p: Dictionary = ps[i]
 		var row := HBoxContainer.new()
