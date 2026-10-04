@@ -56,7 +56,7 @@ def main():
         for k in keys:
             if only and k not in only:
                 continue
-            if k in tripo and not os.environ.get("EE_ICON_MODE"):
+            if k in tripo:
                 print(f"skip {k} (Tripo model)")
                 continue
             t0 = time.time()

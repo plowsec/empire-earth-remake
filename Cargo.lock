@@ -54,6 +54,7 @@ name = "ee_net"
 version = "0.1.0"
 dependencies = [
  "ee_sim",
+ "ron",
  "serde",
 ]
 

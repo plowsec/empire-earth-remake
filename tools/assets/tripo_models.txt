@@ -2,3 +2,13 @@
 tank
 house
 battleship
+capitol
+settlement
+barracks
+tank_factory
+granary
+hospital
+apartments
+fortress
+frigate
+submarine
