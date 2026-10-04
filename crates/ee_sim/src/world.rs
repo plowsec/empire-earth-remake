@@ -83,7 +83,11 @@ pub struct PlayerStats {
     pub lost: u32,
     pub kills: u32,
     pub built: u32,
+    /// enemy buildings destroyed
     pub razed: u32,
+    /// own buildings destroyed
+    #[serde(default)]
+    pub buildings_lost: u32,
     pub gathered: [i64; NUM_RES],
 }
 
@@ -573,14 +577,19 @@ impl World {
         if owner != GAIA {
             if let Some(p) = self.players.get_mut(owner as usize) {
                 if d.is_building() {
-                    p.stats.razed += 1;
+                    p.stats.buildings_lost += 1;
                 } else {
                     p.stats.lost += 1;
                 }
             }
+            // credit the destroyer: units count as kills, buildings as razed
             if killer_owner != GAIA && killer_owner != owner {
                 if let Some(p) = self.players.get_mut(killer_owner as usize) {
-                    p.stats.kills += 1;
+                    if d.is_building() {
+                        p.stats.razed += 1;
+                    } else {
+                        p.stats.kills += 1;
+                    }
                 }
             }
         }

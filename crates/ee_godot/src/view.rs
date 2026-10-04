@@ -524,6 +524,7 @@ impl GameView {
             x.set("trained", pl.stats.trained as i64);
             x.set("built", pl.stats.built as i64);
             x.set("razed", pl.stats.razed as i64);
+            x.set("buildings_lost", pl.stats.buildings_lost as i64);
             let mut g = VarArray::new();
             for r in 0..NUM_RES {
                 g.push(&pl.stats.gathered[r].to_variant());

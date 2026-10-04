@@ -705,7 +705,7 @@ impl Ai {
                         continue;
                     }
                     let rifle = id("rifleman");
-                    if v.land_army.len() < 120 && be.production.is_empty() && d.def(be.def).trains.contains(&rifle) && w.can_afford(self.player, &d.def(rifle).data.cost) {
+                    if v.land_army.len() < 60 && be.production.is_empty() && d.def(be.def).trains.contains(&rifle) && w.can_afford(self.player, &d.def(rifle).data.cost) {
                         out.push(CommandKind::Train { building: b, def: rifle, count: 1 });
                     }
                     continue;
@@ -876,7 +876,9 @@ impl Ai {
         }
         // ---- air strikes
         let strike_every = if self.personality != crate::Personality::Standard { 20 * 60 } else { 20 * 60 * 2 };
-        if attack_time && w.tick.wrapping_sub(self.last_air_strike) > strike_every {
+        // no strikes into a sky the enemy owns: fighters stay home as cover until we win it
+        let (_, air_won) = self.control(w, v);
+        if attack_time && air_won && w.tick.wrapping_sub(self.last_air_strike) > strike_every {
             let ready: Vec<EntityId> = v
                 .air
                 .iter()

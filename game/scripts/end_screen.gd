@@ -181,7 +181,7 @@ func _show_tab(t: String) -> void:
 		c.queue_free()
 	match t:
 		"Summary": body.add_child(_summary())
-		"Military": body.add_child(_table([["Units trained", "trained"], ["Kills", "kills"], ["Units lost", "lost"], ["Buildings razed", "razed"], ["Peak army", "peak_army"], ["Military score", "military"]]))
+		"Military": body.add_child(_table([["Units trained", "trained"], ["Kills", "kills"], ["Units lost", "lost"], ["Buildings razed", "razed"], ["Buildings lost", "buildings_lost"], ["Peak army", "peak_army"], ["Military score", "military"]]))
 		"Economy": body.add_child(_economy())
 		"Graphs": body.add_child(_graphs())
 

@@ -352,6 +352,31 @@ fn run_replay_file(path: &str, every_min: u32, exact: bool) {
             *activity.entry((tc.tick / 1200, c.player)).or_default().entry(kind).or_default() += 1;
         }
     }
+    // --spend: where each player's resources went (orders placed, by item)
+    if std::env::args().any(|a| a == "--spend") {
+        let d = ee_sim::world::data();
+        let mut spend: std::collections::BTreeMap<(u8, String), [i64; 5]> = Default::default();
+        for tc in &rep.ticks {
+            for c in &tc.commands {
+                let (key, cost, n) = match &c.kind {
+                    ee_sim::command::CommandKind::Train { def, count, .. } => (d.def(*def).data.key.clone(), d.def(*def).data.cost.arr(), *count as i64),
+                    ee_sim::command::CommandKind::Build { def, .. } => (d.def(*def).data.key.clone(), d.def(*def).data.cost.arr(), 1),
+                    ee_sim::command::CommandKind::Research { tech, .. } => match d.techs.get(*tech as usize) { Some(t) => (format!("tech:{}", t.data.key), t.data.cost.arr(), 1), None => continue },
+                    _ => continue,
+                };
+                let e = spend.entry((c.player, key)).or_default();
+                for r in 0..5 { e[r] += cost[r] as i64 * n; }
+            }
+        }
+        for p in 0..cfg.players.len() as u8 {
+            for (ri, rn) in [(3usize, "gold"), (4, "iron")] {
+                let mut v: Vec<(&String, i64)> = spend.iter().filter(|((pp, _), _)| *pp == p).map(|((_, k), c)| (k, c[ri])).filter(|x| x.1 > 0).collect();
+                v.sort_by_key(|x| -x.1);
+                let total: i64 = v.iter().map(|x| x.1).sum();
+                println!("P{p} {rn} ordered {total}: {:?}", v.iter().take(12).collect::<Vec<_>>());
+            }
+        }
+    }
     println!("commands per minute (player: kind counts):");
     for ((m, p), kinds) in &activity {
         println!("  {m:>3}m P{p}: {kinds:?}");
