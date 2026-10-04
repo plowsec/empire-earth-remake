@@ -98,11 +98,21 @@ fn run_match(seed: u64, players: usize, minutes: u32, diff: i32, pop_limit: i32,
     }
     let mut s = Session::new(cfg, vec![], Box::new(ee_net::LocalTransport));
     for p in 0..players {
-        s.add_controller(Box::new(Ai::new(p as u8, Difficulty::from_index(diff), seed)));
+        let mut ai = Ai::new(p as u8, Difficulty::from_index(diff), seed);
+        // EE_P0_STYLE=navalnuke: player 0 plays like the human who beat the AI
+        if p == 0 {
+            if let Ok(style) = std::env::var("EE_P0_STYLE") {
+                ai.personality = ee_ai::Personality::from_name(&style);
+            }
+        }
+        s.add_controller(Box::new(ai));
         s.ai_setup.push(ee_net::AiSetup { player: p as u8, difficulty: diff, seed });
     }
     s.collect_events = true;
     let mut launches = vec![0u32; players];
+    // cumulative kills by killer kind (sampled from per-entity kill counters)
+    let mut last_kills: std::collections::HashMap<u32, u16> = Default::default();
+    let mut kills_by: Vec<std::collections::BTreeMap<String, u32>> = vec![Default::default(); players];
     let t0 = std::time::Instant::now();
     let total = minutes * 60 * 20;
     let mut max_step = std::time::Duration::ZERO;
@@ -116,8 +126,21 @@ fn run_match(seed: u64, players: usize, minutes: u32, diff: i32, pop_limit: i32,
                 println!("      ** P{owner} ICBM launch at {}m{}s {:?} -> {:?}", t / 1200, (t / 20) % 60, from.tile(), to.tile());
             }
         }
+        if t % 10 == 0 {
+            for e in &s.world.entities {
+                if e.alive && e.kills > 0 && (e.owner as usize) < players {
+                    let prev = last_kills.insert(e.id, e.kills).unwrap_or(0);
+                    if e.kills > prev {
+                        *kills_by[e.owner as usize].entry(ee_sim::world::data().def(e.def).data.key.clone()).or_default() += (e.kills - prev) as u32;
+                    }
+                }
+            }
+        }
         if t % (20 * 60 * 2) == 0 || s.world.game_over {
             report(&s, t);
+            for (p, k) in kills_by.iter().enumerate() {
+                println!("      P{p} kills by killer type (cumulative): {k:?}");
+            }
         }
         if s.world.game_over {
             println!("GAME OVER at {}m{}s winner team {:?}", t / 1200, (t / 20) % 60, s.world.winner_team);

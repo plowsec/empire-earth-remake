@@ -90,7 +90,14 @@ impl Ai {
             // big population limits need more production lines
             let hoard = pl.res[0] + pl.res[1] > 20000;
             let extra = (w.config.pop_limit / 500) as usize + if hoard { 3 } else { 0 };
-            for (k, cap) in [("barracks", 3 + extra), ("tank_factory", 3 + extra), ("airport", 2 + extra / 2), ("naval_yard", 3), ("guard_tower", 6), ("aa_site", 4)] {
+            let sea_air = self.seen(0) + self.seen(1) + self.seen(2) + self.seen(3) >= 10;
+            let caps: Vec<(&str, usize)> = if self.personality == crate::Personality::NavalNuke {
+                vec![("naval_yard", 3 + extra / 2), ("airport", 4 + extra), ("aa_site", (10 + extra * 4).min(33)), ("guard_tower", 10), ("barracks", 2), ("tank_factory", 2)]
+            } else {
+                vec![("barracks", 3 + extra), ("tank_factory", 3 + extra), ("airport", 2 + extra / 2 + sea_air as usize * 2),
+                     ("naval_yard", 3 + sea_air as usize * 3), ("guard_tower", 6), ("aa_site", 4 + sea_air as usize * 8)]
+            };
+            for (k, cap) in caps {
                 if have(id(k)) < cap {
                     wants.push(id(k));
                 }
@@ -503,39 +510,59 @@ impl Ai {
                 return;
             }
         }
-        let air_threat = self.seen_air > 10;
+        let enemy_air = self.seen(0) + self.seen(1);
+        let air_threat = enemy_air >= 3;
+        let enemy_navy = self.seen(2) + self.seen(3);
+        let enemy_subs = self.seen(3);
+        let enemy_bombers = self.seen(1);
+        // the enemy fights at sea and in the air: answer in kind, not with more infantry
+        let sea_air_war = enemy_navy + enemy_air > (self.seen(4) + self.seen(5)) * 2 && enemy_navy + enemy_air >= 8;
         let armor_threat = self.seen_heavy > 10;
-        let navy_threat = self.seen_navy > 8;
+        let navy_threat = enemy_navy >= 4;
 
         // land mix: (key, weight)
         let mut land: Vec<(&str, i32)> = vec![
             ("rifleman", 22),
             ("machine_gunner", 10),
             ("bazooka", if armor_threat { 22 } else { 12 }),
-            ("stinger", if air_threat { 16 } else { 4 }),
+            ("stinger", if enemy_bombers >= 2 { 22 } else if air_threat { 16 } else { 4 }),
             ("mortar", 5),
             ("medic", 4),
             ("sniper", 3),
             ("tank", 26),
             ("at_gun", if armor_threat { 8 } else { 3 }),
-            ("aa_vehicle", if air_threat { 12 } else { 3 }),
+            ("aa_vehicle", if enemy_bombers >= 2 { 20 } else if air_threat { 12 } else { 3 }),
             ("howitzer", 6),
             ("recon", 2),
         ];
         if self.diff == Difficulty::Easy {
             land.retain(|(k, _)| matches!(*k, "rifleman" | "machine_gunner" | "bazooka" | "tank" | "mortar"));
         }
-        let air: Vec<(&str, i32)> = vec![
-            ("fighter", if air_threat { 45 } else { 25 }),
-            ("bomber", 25),
-            ("strike_fighter", if armor_threat { 25 } else { 12 }),
-            ("helicopter", 18),
-        ];
-        let navy: Vec<(&str, i32)> = vec![
-            ("frigate", if air_threat { 35 } else { 20 }),
-            ("battleship", 30),
-            ("submarine", if navy_threat { 35 } else { 15 }),
-        ];
+        let naval_style = self.personality == crate::Personality::NavalNuke;
+        if naval_style {
+            // a defensive garrison: anti-tank, anti-air, medics
+            land = vec![("bazooka", 35), ("stinger", 30), ("medic", 15), ("aa_vehicle", 15), ("tank", 5)];
+        }
+        let air: Vec<(&str, i32)> = if naval_style {
+            vec![("bomber", 35), ("fighter", 25), ("strike_fighter", 25), ("helicopter", 5)]
+        } else {
+            vec![
+                ("fighter", if enemy_bombers >= 2 { 60 } else if air_threat { 45 } else { 25 }),
+                ("bomber", 25),
+                ("strike_fighter", if armor_threat { 25 } else { 12 }),
+                ("helicopter", 18),
+            ]
+        };
+        let navy: Vec<(&str, i32)> = if naval_style {
+            vec![("frigate", 40), ("submarine", 35), ("battleship", 25)]
+        } else {
+            vec![
+                // frigates carry the only torpedoes that can find submarines
+                ("frigate", if enemy_subs >= 2 { 50 } else if air_threat { 35 } else { 20 }),
+                ("battleship", 30),
+                ("submarine", if navy_threat { 35 } else { 15 }),
+            ]
+        };
 
         let me = self.player;
         let count_of = |key: &str| -> i32 {
@@ -573,7 +600,8 @@ impl Ai {
                     best = Some((deficit, def));
                 }
             }
-            best.map(|b| b.1)
+            // never pad the army with a kind that's already over its share: save instead
+            best.filter(|b| b.0 > 0).map(|b| b.1)
         };
 
         let cit_target = self.diff.econ_base();
@@ -593,6 +621,9 @@ impl Ai {
                     continue;
                 }
                 let trainable = &d.def(be.def).trains;
+                if sea_air_war && (bkey == "barracks" || bkey == "tank_factory") && v.land_army.len() >= 60 && v.navy.len() < enemy_navy * 3 / 2 {
+                    continue; // money goes to ships and planes first
+                }
                 // naval yard: transports first when an invasion needs them
                 if bkey == "naval_yard" {
                     let want_tr = self.transports_wanted(v);
@@ -600,7 +631,7 @@ impl Ai {
                         out.push(CommandKind::Train { building: b, def: id("transport"), count: 1 });
                         continue;
                     }
-                    let fleet_cap = (8 + self.wave as usize * 3).min(12 + w.config.pop_limit as usize / 100).max((self.seen_navy as usize / 4 + 6).min(60));
+                    let fleet_cap = if naval_style { 90 } else { (8 + self.wave as usize * 3).min(12 + w.config.pop_limit as usize / 100).max((enemy_navy * 3 / 2 + 6).min(80)) };
                     if v.navy.len() >= fleet_cap {
                         continue;
                     }
@@ -618,7 +649,8 @@ impl Ai {
                     nuclear_queued = true;
                     continue;
                 }
-                if bkey == "airport" && v.air.len() >= 8 + self.wave as usize * 3 {
+                let air_cap = if naval_style { 40 } else { 8 + self.wave as usize * 3 };
+                if bkey == "airport" && v.air.len() >= air_cap {
                     continue;
                 }
                 // ideal pick ignoring cost; if unaffordable, save for it
@@ -792,7 +824,7 @@ impl Ai {
             }
         }
         // ---- air strikes
-        let strike_every = 20 * 60 * 2;
+        let strike_every = if self.personality == crate::Personality::NavalNuke { 20 * 60 } else { 20 * 60 * 2 };
         if attack_time && w.tick.wrapping_sub(self.last_air_strike) > strike_every {
             let ready: Vec<EntityId> = v
                 .air
@@ -822,6 +854,21 @@ impl Ai {
                         }
                     }
                 }
+            }
+        }
+
+        // ---- air cover: when enemy bombers show up, airfields send fighters to circle
+        // over the army's rally point (they engage anything in reach)
+        if (self.seen(1) >= 1 || self.invasion.is_some()) && w.tick % 400 == (self.phase * 11) % 400 {
+            // over the beachhead while a landing is on, else over the army at home
+            let cover = match &self.invasion {
+                Some(inv) if inv.stage == Stage::Sail || inv.stage == Stage::Fight => inv.landings.first().copied().unwrap_or(inv.landing),
+                _ => self.rally_point(w),
+            };
+            let fields: Vec<EntityId> = v.buildings.get(&d.id("airport")).cloned().unwrap_or_default();
+            let stale: Vec<EntityId> = fields.into_iter().filter(|&f| w.get(f).map_or(false, |e| e.rally.map_or(true, |r| !r.within(cover, Fx::from_int(6))))).collect();
+            if !stale.is_empty() {
+                out.push(CommandKind::SetRally { buildings: stale, to: cover, target: 0 });
             }
         }
 
@@ -865,6 +912,13 @@ impl Ai {
 
     /// Score only visible targets: dense enemy bases justify the expensive payload.
     fn nuclear_target(&self, w: &World) -> Option<EntityId> {
+        // bombers can't be intercepted by ABMs: send them at the missile silos first
+        let silo = data().id("missile_silo");
+        if let Some((id, _)) = self.known.iter().filter(|(_, k)| k.def == silo).min_by_key(|(_, k)| k.pos.dist2_raw(self.base)) {
+            if w.get(*id).is_some() {
+                return Some(*id);
+            }
+        }
         let radius = data().def(data().id("nuke_bomber")).weapons[0].splash;
         w.entities.iter().filter(|e| e.on_map() && w.is_enemy(self.player, e.owner)
             && data().def(e.def).is_building() && w.can_see(self.player, e))
@@ -949,6 +1003,9 @@ impl Ai {
         let d = data();
         let prio = |def: DefId| -> i32 {
             match d.def(def).data.key.as_str() {
+                // counterforce: their nuclear arsenal and the radar its interceptors need
+                "missile_silo" => -3,
+                "radar_station" => -2,
                 "airport" => 0,
                 "tank_factory" => 1,
                 "naval_yard" => 2,
@@ -1020,6 +1077,9 @@ impl Ai {
     }
 
     fn invasion_tick(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>, attack_time: bool) {
+        if self.personality == crate::Personality::NavalNuke && self.invasion.is_none() {
+            return;
+        }
         let d = data();
         let tick = w.tick;
         if self.invasion.is_none() {
@@ -1064,8 +1124,13 @@ impl Ai {
             let land = beaches[0].0;
             let Some((stage, stage_w)) = self.coast_toward(w, src_isl, FVec::tile_center(land.0, land.1)) else { return };
             let cap: usize = ships.len() * 12;
-            let mut units = group;
-            units.truncate(cap.min(96));
+            let size = group.len().min(cap.min(96));
+            // a balanced wave: about a fifth anti-air so bombers can't feast on the beachhead
+            let is_aa = |u: &EntityId| w.get(*u).map_or(false, |e| matches!(d.def(e.def).data.key.as_str(), "stinger" | "aa_vehicle"));
+            let (aa, rest): (Vec<EntityId>, Vec<EntityId>) = group.into_iter().partition(|u| is_aa(u));
+            let n_aa = aa.len().min(size / 5 + 1);
+            let mut units: Vec<EntityId> = aa.into_iter().take(n_aa).collect();
+            units.extend(rest.into_iter().take(size - units.len()));
             let staging = FVec::tile_center(stage.0, stage.1);
             out.push(CommandKind::Move { units: units.clone(), to: staging, attack_move: false, queue: false });
             let staging_water = FVec::tile_center(stage_w.0, stage_w.1);
@@ -1210,12 +1275,19 @@ impl Ai {
                         if group.is_empty() {
                             continue;
                         }
-                        let to = self
+                        // strategic targets within reach of this beachhead first
+                        let strategic = self
+                            .known
+                            .values()
+                            .filter(|k| matches!(d.def(k.def).data.key.as_str(), "missile_silo" | "radar_station" | "abm_site") && k.pos.within(h, Fx::from_int(40)))
+                            .min_by_key(|k| k.pos.dist2_raw(h))
+                            .map(|k| k.pos);
+                        let to = strategic.or_else(|| self
                             .known
                             .values()
                             .filter(|k| d.def(k.def).is_building())
                             .min_by_key(|k| k.pos.dist2_raw(h))
-                            .map(|k| k.pos)
+                            .map(|k| k.pos))
                             .unwrap_or(inv.target);
                         out.push(CommandKind::Move { units: group, to, attack_move: true, queue: false });
                     }

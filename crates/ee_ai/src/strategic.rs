@@ -27,7 +27,8 @@ impl Ai {
             }
         }
         let threatened = enemy_silos > 0 || (self.missile_alert > 0 && w.tick.wrapping_sub(self.missile_alert) < 20 * 60 * 10);
-        let hard = self.diff >= Difficulty::Hard;
+        let naval = self.personality == crate::Personality::NavalNuke;
+        let hard = self.diff >= Difficulty::Hard || naval;
         let mature = v.citizens.len() >= 50 && w.tick >= self.diff.first_attack() * 3 / 2;
 
         // ---- defense: radar first, then interceptors over the capitol and big towns
@@ -38,13 +39,17 @@ impl Ai {
             // already shot at us; at most 12
             let towns = v.count(d.id("settlement"));
             let recent_attack = self.missile_alert > 0 && w.tick.wrapping_sub(self.missile_alert) < 20 * 60 * 10;
-            let want_abm = if threatened { (2 + enemy_silos * 2 + if recent_attack { towns / 2 } else { 0 }).min(12) } else { 1 };
+            let want_abm = if naval { 9 } else if threatened { (2 + enemy_silos * 2 + if recent_attack { towns / 2 + 2 } else { 0 }).min(16) } else { 1 };
             if self.count_with_sites(w, v, radar) == 0 {
                 self.build_near(w, v, out, radar, self.base);
             } else if self.count_with_sites(w, v, abm) < want_abm {
                 // cover the most valuable spot that no interceptor protects yet
                 let abms: Vec<FVec> = w.entities.iter().filter(|e| e.alive && e.owner == p && e.def == abm).map(|e| e.pos).collect();
+                // the capitol, the invasion staging coast (troops bunch up there), the towns
                 let mut spots = vec![self.base];
+                if let Some(inv) = &self.invasion {
+                    spots.push(inv.staging);
+                }
                 for &s in v.buildings.get(&d.id("settlement")).map(|x| x.as_slice()).unwrap_or(&[]) {
                     if let Some(e) = w.get(s) {
                         spots.push(e.pos);
@@ -62,7 +67,9 @@ impl Ai {
             return;
         }
         let silos: Vec<EntityId> = v.buildings.get(&silo).cloned().unwrap_or_default();
-        let max_silos = if self.diff == Difficulty::Hardest { 2 } else { 1 };
+        // a big enemy ABM umbrella takes more silos to saturate
+        let enemy_abms = self.known.values().filter(|k| k.def == d.id("abm_site")).count();
+        let max_silos = if naval { 6 } else if self.diff == Difficulty::Hardest { 2 + (enemy_abms >= 4) as usize + (enemy_abms >= 8) as usize } else { 1 };
         let icbm = d.id("icbm");
         let cost = d.def(icbm).data.cost;
         // save up for the next piece of the program (the army spends only above this),
@@ -70,7 +77,7 @@ impl Ai {
         let army = v.land_army.len() + v.navy.len() + v.air.len();
         let silo_cost = d.def(silo).data.cost.arr();
         let have_silos = self.count_with_sites(w, v, silo);
-        if army < 30 {
+        if army < if naval { 20 } else { 30 } {
             // build up forces first
         } else if have_silos < max_silos {
             self.nuke_reserve = silo_cost;
@@ -140,7 +147,9 @@ impl Ai {
         for k in self.known.values() {
             let value: i32 = self.known.values().filter(|o| o.pos.within(k.pos, blast)).map(|o| {
                 match d.def(o.def).data.key.as_str() {
-                    "capitol" | "missile_silo" => 12,
+                    "missile_silo" => 30,
+                    "radar_station" => 20,
+                    "capitol" => 12,
                     "airport" | "tank_factory" | "naval_yard" | "barracks" | "settlement" => 6,
                     "abm_site" | "radar_station" => 5,
                     _ => 2,

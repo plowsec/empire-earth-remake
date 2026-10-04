@@ -239,7 +239,9 @@ impl Ai {
         if pl.res[2] < 250 {
             return;
         }
-        let want_sam = self.seen_air > 6 || self.diff >= crate::Difficulty::Hard;
+        let want_sam = self.seen(0) + self.seen(1) > 0 || self.diff >= crate::Difficulty::Hard;
+        // bombers about: two SAM sites per town
+        let sams_per_town = if self.seen(1) >= 2 { 2 } else { 1 };
         let towers: Vec<FVec> = w.entities.iter().filter(|e| e.alive && e.owner == self.player && (e.def == tower)).map(|e| e.pos).collect();
         let sams: Vec<FVec> = w.entities.iter().filter(|e| e.alive && e.owner == self.player && (e.def == sam)).map(|e| e.pos).collect();
         let pending_def = |k| self.pending.iter().any(|(p, _)| *p == k) || v.sites.iter().any(|&s| w.get(s).map_or(false, |e| e.def == k));
@@ -248,7 +250,8 @@ impl Ai {
             let sp = se.pos;
             let isl = self.island_at(w, sp.tile());
             for (def, list, key, wanted) in [(tower, &towers, "guard_tower", true), (sam, &sams, "aa_site", want_sam)] {
-                if !wanted || pending_def(def) || list.iter().any(|p| p.within(sp, Fx::from_int(9))) {
+                let per = if def == sam { sams_per_town } else { 1 };
+                if !wanted || pending_def(def) || list.iter().filter(|p| p.within(sp, Fx::from_int(9))).count() >= per {
                     continue;
                 }
                 if !w.can_afford(self.player, &d.def(def).data.cost) {

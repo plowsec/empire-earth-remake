@@ -16,6 +16,24 @@ use ee_sim::world::{data, World};
 use ee_net::Controller;
 use std::collections::BTreeMap;
 
+/// Play style. `NavalNuke` mimics a human who won by sea and air power and nuclear
+/// weapons behind a dense SAM/ABM umbrella, with only a defensive land army.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Personality {
+    #[default]
+    Standard,
+    NavalNuke,
+}
+
+impl Personality {
+    pub fn from_name(s: &str) -> Personality {
+        match s {
+            "navalnuke" | "naval_nuke" | "naval" => Personality::NavalNuke,
+            _ => Personality::Standard,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Difficulty {
     Easy,
@@ -121,6 +139,8 @@ struct Known {
 pub struct Ai {
     pub player: u8,
     pub diff: Difficulty,
+    #[serde(default)]
+    pub personality: Personality,
     rng: SimRng,
     phase: u32,
     base: FVec,
@@ -133,6 +153,14 @@ pub struct Ai {
     seen_heavy: i32,
     seen_inf: i32,
     seen_navy: i32,
+    #[serde(default)]
+    seen_subs: i32,
+    #[serde(default)]
+    seen_bombers: i32,
+    /// distinct enemy units seen recently: id -> (kind, tick); kinds: 0 air, 1 bomber,
+    /// 2 warship, 3 submarine, 4 infantry, 5 armor
+    #[serde(default)]
+    sightings: BTreeMap<EntityId, (u8, u32)>,
     invasion: Option<Invasion>,
     last_wave: u32,
     wave: u32,
@@ -189,6 +217,7 @@ impl Ai {
         Ai {
             player,
             diff,
+            personality: Personality::Standard,
             rng: SimRng::new(seed ^ 0xa1a1, player as u64 + 7),
             phase: player as u32 * 3,
             base: FVec::ZERO,
@@ -199,6 +228,9 @@ impl Ai {
             seen_heavy: 0,
             seen_inf: 0,
             seen_navy: 0,
+            seen_subs: 0,
+            seen_bombers: 0,
+            sightings: BTreeMap::new(),
             invasion: None,
             last_wave: 0,
             wave: 0,
@@ -248,6 +280,18 @@ pub(crate) struct View {
     pub transports: Vec<EntityId>,
     pub boats: Vec<EntityId>,
     pub idle_boats: Vec<EntityId>,
+}
+
+impl Ai {
+    /// Distinct enemy units of a sighting kind seen in the last 3 minutes.
+    pub(crate) fn seen(&self, kind: u8) -> usize {
+        self.sightings.values().filter(|(k, _)| *k == kind).count()
+    }
+    /// Rough count of enemy units of a kind seen recently (sighting counters settle at
+    /// ~64 per unit in view).
+    pub(crate) fn est(c: i32) -> usize {
+        (c / 64).max(0) as usize
+    }
 }
 
 impl View {
@@ -426,10 +470,15 @@ impl Ai {
         for g in gone {
             self.known.remove(&g);
         }
+        // forget sightings older than 3 minutes (or units now dead)
+        let now = w.tick;
+        self.sightings.retain(|id, (_, t)| now.wrapping_sub(*t) < 20 * 180 && w.get(*id).is_some());
         self.seen_air = self.seen_air * 15 / 16;
         self.seen_heavy = self.seen_heavy * 15 / 16;
         self.seen_inf = self.seen_inf * 15 / 16;
         self.seen_navy = self.seen_navy * 15 / 16;
+        self.seen_subs = self.seen_subs * 15 / 16;
+        self.seen_bombers = self.seen_bombers * 15 / 16;
         for e in &w.entities {
             if !e.alive || !w.is_enemy(p, e.owner) || !w.can_see(p, e) {
                 continue;
@@ -439,10 +488,34 @@ impl Ai {
                 Class::Building => {
                     self.known.insert(e.id, Known { def: e.def, pos: e.pos, owner: e.owner, tile: e.pos.tile() });
                 }
-                Class::Aircraft => self.seen_air += 4,
-                Class::Ship => self.seen_navy += 4,
-                Class::Vehicle if dd.data.armor_class == ee_sim::defs::ArmorClass::Heavy => self.seen_heavy += 4,
-                Class::Infantry => self.seen_inf += 4,
+                Class::Aircraft => {
+                    self.seen_air += 4;
+                    let bomber = dd.weapons.iter().any(|wp| wp.dmg_type == ee_sim::defs::DamageType::Bomb || wp.dmg_type == ee_sim::defs::DamageType::Nuclear);
+                    if bomber {
+                        self.seen_bombers += 4;
+                    }
+                    if !dd.data.icbm {
+                        self.sightings.insert(e.id, (if bomber { 1 } else { 0 }, w.tick));
+                    }
+                }
+                Class::Ship => {
+                    if dd.data.cargo == 0 && dd.gather_rate[0] == 0 {
+                        self.seen_navy += 4;
+                        let sub = dd.data.armor_class == ee_sim::defs::ArmorClass::Sub;
+                        self.sightings.insert(e.id, (if sub { 3 } else { 2 }, w.tick));
+                    }
+                    if dd.data.armor_class == ee_sim::defs::ArmorClass::Sub {
+                        self.seen_subs += 4;
+                    }
+                }
+                Class::Vehicle if dd.data.armor_class == ee_sim::defs::ArmorClass::Heavy => {
+                    self.seen_heavy += 4;
+                    self.sightings.insert(e.id, (5, w.tick));
+                }
+                Class::Infantry => {
+                    self.seen_inf += 4;
+                    self.sightings.insert(e.id, (4, w.tick));
+                }
                 _ => {}
             }
         }
