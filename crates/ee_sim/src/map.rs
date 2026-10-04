@@ -41,6 +41,9 @@ pub struct Map {
     pub occupant: Vec<u32>,
     /// bumps whenever `pass` changes, invalidates cached flow fields
     pub version: u32,
+    /// natural land-mass id per tile (u16::MAX = water); derived, not saved
+    #[serde(skip, default)]
+    pub land_id: Vec<u16>,
 }
 
 impl Map {
@@ -55,6 +58,7 @@ impl Map {
             pass: vec![0; n],
             occupant: vec![0; n],
             version: 0,
+            land_id: Vec::new(),
         }
     }
     #[inline]
@@ -250,5 +254,45 @@ impl Map {
             h = h.wrapping_mul(0x100000001b3);
         }
         h
+    }
+}
+
+impl Map {
+    /// Label every natural land mass (terrain only; buildings and trees don't split them).
+    pub fn compute_land_ids(&mut self) {
+        let n = (self.w * self.h) as usize;
+        let mut ids = vec![u16::MAX; n];
+        let mut next: u16 = 0;
+        let mut stack = Vec::new();
+        for s in 0..n {
+            if ids[s] != u16::MAX || self.base_pass[s] & PASS_LAND == 0 {
+                continue;
+            }
+            ids[s] = next;
+            stack.push(s);
+            while let Some(i) = stack.pop() {
+                let (x, y) = ((i as i32) % self.w, (i as i32) / self.w);
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if self.in_bounds(nx, ny) {
+                        let j = self.idx(nx, ny);
+                        if ids[j] == u16::MAX && self.base_pass[j] & PASS_LAND != 0 {
+                            ids[j] = next;
+                            stack.push(j);
+                        }
+                    }
+                }
+            }
+            next = next.saturating_add(1);
+        }
+        self.land_id = ids;
+    }
+
+    /// Land mass of a tile, if it is land.
+    pub fn land_at(&self, x: i32, y: i32) -> Option<u16> {
+        if !self.in_bounds(x, y) {
+            return None;
+        }
+        self.land_id.get(self.idx(x, y)).copied().filter(|&v| v != u16::MAX)
     }
 }

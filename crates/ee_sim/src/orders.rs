@@ -539,33 +539,59 @@ fn smart_target(w: &mut World, p: u8, units: &[EntityId], target: EntityId, queu
         };
         plan.push((id, order));
     }
-    // many gatherers on one land node: spread them over neighbouring nodes of the
-    // same kind (each tree/mine up to its worker cap), nearest workers first
+    // gatherers on one land node: the node fills up to its worker cap, the rest spread
+    // to the nearest free nodes (same kind first, then any node of that resource) that
+    // they can actually walk to; citizens on another island use a node on theirs
     if !queue && tdef.is_resource() && !w.fish.contains(&target) && (!tdef.is_building() || tdef.data.walkable) {
         let gath: Vec<EntityId> = plan.iter().filter(|(_, o)| matches!(o, Some(Order::Gather { .. }))).map(|x| x.0).collect();
         let cap = crate::world::gather_cap(tdef);
-        if gath.len() as i32 > cap {
-            let mut nodes = w.nodes_like(target, 9);
-            // the clicked node fills first
-            if let Some(k) = nodes.iter().position(|n| n.0 == target) {
-                let t = nodes.remove(k);
-                nodes.insert(0, (t.0, cap));
-            }
-            let mut order: Vec<EntityId> = gath.clone();
-            order.sort_by_key(|&u| (w.get(u).map_or(0, |e| e.pos.dist2_raw(tpos)), u));
-            let mut it = order.into_iter();
-            let mut assign: Vec<(EntityId, EntityId)> = Vec::new();
-            'n: for (node, free) in nodes {
-                for _ in 0..free {
-                    match it.next() {
-                        Some(u) => assign.push((u, node)),
-                        None => break 'n,
+        let unreachable = gath.iter().any(|&u| w.get(u).map_or(false, |e| !w.reachable(e.pos, w.get(target).unwrap())));
+        if gath.len() as i32 > cap || unreachable {
+            let res = tdef.data.resource.unwrap();
+            let tdef_id = w.get(target).unwrap().def;
+            // candidate nodes within 24 tiles: (priority, distance, id, free slots)
+            let (cx, cy) = tpos.tile();
+            let mut cands: Vec<(u8, i64, EntityId, i32)> = Vec::new();
+            for y in cy - 24..=cy + 24 {
+                for x in cx - 24..=cx + 24 {
+                    if !w.map.in_bounds(x, y) {
+                        continue;
                     }
+                    let occ = w.map.occupant[w.map.idx(x, y)];
+                    if occ == 0 || cands.iter().any(|c| c.2 == occ) {
+                        continue;
+                    }
+                    let Some(e) = w.get(occ) else { continue };
+                    let ed = w.def_of(e);
+                    if ed.data.resource != Some(res) || (e.amount <= 0 && !ed.is_building()) {
+                        continue;
+                    }
+                    if ed.is_building() && (e.owner != p || !e.complete || e.def != tdef_id) {
+                        continue;
+                    }
+                    let free = (crate::world::gather_cap(ed) - e.gatherers as i32).max(0);
+                    let pri = if occ == target { 0 } else if e.def == tdef_id { 1 } else { 2 };
+                    cands.push((pri, e.pos.dist2_raw(tpos), occ, if occ == target { cap } else { free }));
                 }
             }
-            // whoever is left shares the clicked node (they'll overflow to neighbours later)
-            for u in it {
-                assign.push((u, target));
+            cands.sort();
+            let mut order: Vec<EntityId> = gath.clone();
+            order.sort_by_key(|&u| (w.get(u).map_or(0, |e| e.pos.dist2_raw(tpos)), u));
+            let mut assign: Vec<(EntityId, EntityId)> = Vec::new();
+            for u in order {
+                let upos = w.get(u).unwrap().pos;
+                let pick = cands.iter_mut().find(|c| c.3 > 0 && w.get(c.2).map_or(false, |n| w.reachable(upos, n)));
+                match pick {
+                    Some(c) => {
+                        c.3 -= 1;
+                        assign.push((u, c.2));
+                    }
+                    None => {
+                        // everything near is full: the nearest reachable node of the resource
+                        let alt = w.nearest_resource(res as u8, upos, 30, false).filter(|&n| w.get(n).map_or(false, |x| w.reachable(upos, x)));
+                        assign.push((u, alt.unwrap_or(target)));
+                    }
+                }
             }
             for (u, node) in assign {
                 if let Some(slot) = plan.iter_mut().find(|x| x.0 == u) {
@@ -818,6 +844,16 @@ fn staff_granary(w: &mut World, p: u8, citizens: &[EntityId], granary: EntityId,
 }
 
 pub fn rebuild_farms(w: &mut World, p: u8, building: EntityId) {
+    rebuild_farms_with(w, p, building, &[]);
+}
+
+/// Lay out the fields of a newly finished granary: its builders and idle citizens close
+/// by take them (no one is pulled from across the map).
+pub fn first_fields(w: &mut World, p: u8, building: EntityId, builders: &[EntityId]) {
+    rebuild_farms_with(w, p, building, builders);
+}
+
+fn rebuild_farms_with(w: &mut World, p: u8, building: EntityId, local: &[EntityId]) {
     let d = data();
     let farm = d.id("farm");
     let Some(g) = w.get(building) else { return };
@@ -847,11 +883,14 @@ pub fn rebuild_farms(w: &mut World, p: u8, building: EntityId) {
         return;
     }
     // one citizen per field: idle ones first, then food gatherers, then the nearest
+    // (for a new granary: its builders, then idle citizens within 14 tiles)
     let cit = d.id("citizen");
+    let auto = !local.is_empty();
     let mut pool: Vec<(i64, EntityId)> = w
         .entities
         .iter()
-        .filter(|e| e.alive && e.owner == p && e.def == cit && e.inside == 0 && !matches!(e.order, Order::Build { .. }))
+        .filter(|e| e.alive && e.owner == p && e.def == cit && e.inside == 0)
+        .filter(|e| if auto { local.contains(&e.id) || (e.order == Order::Idle && e.pos.within(gpos, Fx::from_int(14))) } else { !matches!(e.order, Order::Build { .. }) })
         .map(|e| {
             let pri: i64 = match e.order {
                 Order::Idle => 0,

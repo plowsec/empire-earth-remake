@@ -817,6 +817,11 @@ impl World {
                 self.players[owner as usize].stats.built += 1;
                 self.events.push(SimEvent::BuildingComplete { id: site, def, owner });
                 self.recount_pop();
+                if sd.data.key == "granary" {
+                    // a new granary lays out its fields straight away, worked by its builders
+                    let builders: Vec<EntityId> = self.entities.iter().filter(|b| b.alive && b.owner == owner && matches!(b.order, Order::Build { site: s } if s == site)).map(|b| b.id).collect();
+                    crate::orders::first_fields(self, owner, site, &builders);
+                }
                 if sd.data.airport || sd.data.coastal || !sd.trains.is_empty() {
                     // rally defaults to the front door
                 }

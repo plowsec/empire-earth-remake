@@ -976,3 +976,40 @@ fn citizens_find_work_instead_of_idling() {
     run(&mut w, 400, vec![]);
     assert!(!matches!(w.get(wc).unwrap().order, Order::Idle), "woodcutter idle after its tree fell");
 }
+
+#[test]
+fn a_new_granary_lays_out_its_fields_with_its_builders() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    w.players[0].res = [5000; 5];
+    let s = w.starts[0];
+    let gran = data().id("granary");
+    let farm = data().id("farm");
+    let tile = (8i32..30).find_map(|r| (-r..=r).find_map(|dx| {
+        let t = (s.0 + dx, s.1 + r);
+        let ok = (t.1 - 3..t.1 + 6).all(|y| (t.0 - 3..t.0 + 6).all(|x| w.map.passable(x, y, ee_sim::defs::Layer::Land) && !w.map.is_water(x, y)));
+        if ok && w.can_place(0, gran, t).is_ok() { Some(t) } else { None }
+    })).expect("granary plot");
+    let cit = data().id("citizen");
+    let gp = FVec::tile_center(tile.0 + 1, tile.1 + 5);
+    let ids: Vec<u32> = (0..4).map(|k| w.spawn(cit, 0, gp + FVec::new(ee_sim::fixed::Fx::from_int(k), ee_sim::fixed::Fx::ZERO))).collect();
+    w.apply_command(&Command { player: 0, kind: CommandKind::Build { units: ids.clone(), def: gran, tile, queue: false } });
+    run(&mut w, 20 * 60, vec![]);
+    let fields = w.entities.iter().filter(|e| e.alive && e.owner == 0 && e.def == farm).count();
+    assert!(fields >= 4, "granary laid out {fields} fields");
+    let farming = ids.iter().filter(|&&u| matches!(w.get(u).unwrap().order, Order::Gather { node } if w.get(node).map_or(false, |n| n.def == farm)) || matches!(w.get(u).unwrap().order, Order::Build { .. })).count();
+    assert_eq!(farming, 4, "the builders work the new fields");
+}
+
+#[test]
+fn surplus_gatherers_spread_to_other_reachable_nodes() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let mine = nearest_of(&w, FVec::tile_center(s.0, s.1), "gold_mine");
+    let mp = w.get(mine).unwrap().pos;
+    let cit = data().id("citizen");
+    let ids: Vec<u32> = (0..14).map(|k| w.spawn(cit, 0, mp + FVec::new(ee_sim::fixed::Fx::from_int(k % 5 - 2), ee_sim::fixed::Fx::from_int(3)))).collect();
+    w.apply_command(&Command { player: 0, kind: CommandKind::Target { units: ids.clone(), target: mine, queue: false } });
+    let on_mine = ids.iter().filter(|&&u| w.get(u).unwrap().order == Order::Gather { node: mine }).count();
+    assert!(on_mine <= 8, "{on_mine} citizens crowd one mine (cap 8)");
+    assert!(ids.iter().all(|&u| matches!(w.get(u).unwrap().order, Order::Gather { .. })), "everyone got work");
+}

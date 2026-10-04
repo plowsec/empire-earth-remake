@@ -636,6 +636,26 @@ impl GameView {
         Vector3::new(x, 0.0, z)
     }
 
+    /// Select the next idle citizen and the `n - 1` idle citizens nearest to it.
+    #[func]
+    fn select_idle_citizens(&mut self, n: i64) -> Vector3 {
+        let focus = self.select_idle_citizen();
+        let Some(c) = self.client.as_mut() else { return focus };
+        let Some(&first) = c.selection.first() else { return focus };
+        let w = c.world();
+        let Some(fp) = w.get(first).map(|e| e.pos) else { return focus };
+        let mut idle: Vec<(i64, EntityId)> = w
+            .entities
+            .iter()
+            .filter(|e| e.alive && e.owner == c.me && e.inside == 0 && e.id != first && data().def(e.def).class() == Class::Citizen && e.order == Order::Idle)
+            .map(|e| (e.pos.dist2_raw(fp), e.id))
+            .collect();
+        idle.sort();
+        let more: Vec<EntityId> = idle.into_iter().take((n.max(1) - 1) as usize).map(|x| x.1).collect();
+        c.selection.extend(more);
+        focus
+    }
+
     /// Right click at a screen point.
     #[func]
     fn right_click(&mut self, p: Vector2, queue: bool) {
@@ -818,14 +838,6 @@ impl GameView {
         const HOTKEYS: [&str; 15] = ["Q", "W", "E", "R", "T", "F", "G", "Z", "X", "C", "V", "B", "N", "J", "K"];
         if !units.is_empty() {
             let has_citizen = units.iter().any(|&id| w.class_of(id) == Some(Class::Citizen));
-            if has_citizen {
-                let cit = data().def(data().id("citizen"));
-                for (i, &b) in cit.builds.iter().enumerate() {
-                    let d = data().def(b);
-                    let afford = w.can_afford(c.me, &d.data.cost);
-                    button("build", &d.data.key, &d.data.name, HOTKEYS.get(i).copied().unwrap_or(""), Some(&d.data.cost), afford, &d.data.role);
-                }
-            }
             let any_transport = units.iter().any(|&id| w.get(id).map_or(false, |e| data().def(e.def).data.cargo > 0 && !e.cargo.is_empty()));
             let any_air = units.iter().any(|&id| w.get(id).map_or(false, |e| data().def(e.def).data.needs_airport));
             let any_combat = units.iter().any(|&id| w.get(id).map_or(false, |e| data().def(e.def).can_attack()));
@@ -842,7 +854,16 @@ impl GameView {
             if any_air {
                 button("rtb", "", "Return to Base", "Y", None, true, "Fly back to the nearest airfield to refuel and rearm. Right-click a point to set a patrol: aircraft circle it, engage anything in reach and return after refuelling.");
             }
-            button("delete", "", "Disband", "Delete", None, true, "Destroy the selected units.");
+            button("delete", "", "Disband", "Delete", None, true, "Disband the selected units (frees population; useful for stuck or surplus units).");
+            // construction options after the unit commands, so those are always visible
+            if has_citizen {
+                let cit = data().def(data().id("citizen"));
+                for (i, &b) in cit.builds.iter().enumerate() {
+                    let d = data().def(b);
+                    let afford = w.can_afford(c.me, &d.data.cost);
+                    button("build", &d.data.key, &d.data.name, HOTKEYS.get(i).copied().unwrap_or(""), Some(&d.data.cost), afford, &d.data.role);
+                }
+            }
         } else if let Some(&bid) = buildings.first() {
             let b = w.get(bid).unwrap();
             let d = data().def(b.def);

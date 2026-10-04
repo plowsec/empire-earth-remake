@@ -34,7 +34,7 @@ Requirements: Rust (stable), Godot 4.7, and Blender 5 (only to regenerate models
 | Building hotkeys (citizens) / training hotkeys (buildings) | `Q W E R T F G Z X C V B` (shown on buttons) |
 | Stop / Unload transport / Return to airfield / Delete | `H` / `U` / `Y` / `Delete` |
 | Control groups | `Ctrl+1..9` set, `1..9` recall (double tap to center) |
-| Next idle citizen / all idle citizens | `;` or idle button / Shift-click idle button |
+| Next idle citizen / 8 idle citizens / all idle citizens | `;` or idle button / `×8` or Ctrl-click / Shift-click |
 | Scout island | `S` |
 | Mass training | Shift-click / Shift+training hotkey: 10 per selected building |
 | Center on selection | `Space` |
@@ -71,7 +71,11 @@ interceptors they know about (holding fire to stockpile when a target is too wel
 defended). Normal opponents build defenses once they spot an enemy silo or launch.
 
 Citizens right-clicked onto a granary take one field each; extra citizens lay and farm
-new fields on the free plots.
+new fields on the free plots. A new granary lays out its fields as soon as it's built.
+Sending more citizens to a resource than it can take spreads the rest over the nearest
+free nodes they can actually walk to; double-click selects every unit or building of
+that kind on screen. When the match ends, the end screen ranks every player with score
+breakdowns, honours, military/economy tables and history charts.
 
 Computer opponents use island scouting and granary field rebuilding. Hard and
 Hardest opponents can invest in a nuclear bomber after their economy matures,

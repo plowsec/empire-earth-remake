@@ -207,6 +207,7 @@ impl World {
 
     /// After deserializing: recreate the non-saved caches.
     pub fn rebuild_caches(&mut self) {
+        self.map.compute_land_ids();
         self.spatial = SpatialHash::new(self.map.w, self.map.h);
         self.spatial.rebuild(&self.entities, data());
     }
@@ -286,6 +287,7 @@ impl World {
                 }
             }
         }
+        world.map.compute_land_ids();
         world.recount_pop();
         world.update_vision();
         world.events.clear();
@@ -971,6 +973,23 @@ impl World {
             }
         }
         best.map(|b| b.1)
+    }
+
+    /// Can a land unit at `from` walk up to entity `e` (same natural land mass as one of
+    /// the tiles around its footprint)?
+    pub fn reachable(&self, from: FVec, e: &Entity) -> bool {
+        let (fx, fy) = from.tile();
+        let Some(home) = self.map.land_at(fx, fy) else { return true };
+        let (sw, sh) = self.def_of(e).size();
+        let (x0, y0) = e.tile;
+        for y in y0 - 1..=y0 + sh {
+            for x in x0 - 1..=x0 + sw {
+                if self.map.land_at(x, y) == Some(home) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Land resource nodes of the same def as `like` within `radius` tiles of `from`,

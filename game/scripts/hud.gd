@@ -234,9 +234,16 @@ func _build() -> void:
 	idle_btn.add_theme_font_size_override("font_size", 20)
 	idle_btn.icon = _icon("citizen")
 	idle_btn.expand_icon = true
-	idle_btn.tooltip_text = "Idle citizens (;). Shift-click: select all idle citizens."
+	idle_btn.tooltip_text = "Idle citizens (;). Ctrl-click: 8 nearest idle citizens. Shift-click: all idle citizens."
 	idle_btn.pressed.connect(_on_idle_pressed)
 	strip.add_child(idle_btn)
+	var idle8 := Button.new()
+	idle8.text = "×8"
+	idle8.custom_minimum_size = Vector2(46, 46)
+	idle8.add_theme_font_size_override("font_size", 18)
+	idle8.tooltip_text = "Select 8 idle citizens (the next one and the 7 nearest to it)"
+	idle8.pressed.connect(func(): _select_idle(8))
+	strip.add_child(idle8)
 	group_bar = HBoxContainer.new()
 	group_bar.add_theme_constant_override("separation", 4)
 	strip.add_child(group_bar)
@@ -246,10 +253,10 @@ func _build() -> void:
 	card_frame.add_theme_stylebox_override("panel", _inset_style())
 	row.add_child(card_frame)
 	card_grid = GridContainer.new()
-	card_grid.columns = 10
+	card_grid.columns = 11
 	card_grid.add_theme_constant_override("h_separation", 4)
 	card_grid.add_theme_constant_override("v_separation", 4)
-	card_grid.custom_minimum_size = Vector2(10 * 54 + 9 * 4, 2 * 42 + 4)
+	card_grid.custom_minimum_size = Vector2(11 * 54 + 10 * 4, 2 * 42 + 4)
 	card_frame.add_child(card_grid)
 
 	# Raised left side: minimap. The center of the battlefield stays unobstructed.
@@ -672,7 +679,16 @@ func _refresh_selection() -> void:
 		b.pressed.connect(func(): gv.select_ids(PackedInt64Array([id])))
 		grid.add_child(b)
 
+func _select_idle(n: int) -> void:
+	var c: Vector3 = gv.select_idle_citizens(n)
+	if c.y > -0.5:
+		rig.focus(c)
+	sel_cache = ""; card_cache = ""
+
 func _on_idle_pressed() -> void:
+	if Input.is_key_pressed(KEY_CTRL) or Input.is_key_pressed(KEY_META):
+		_select_idle(8)
+		return
 	if Input.is_key_pressed(KEY_SHIFT):
 		gv.select_all_idle_citizens()
 	else:

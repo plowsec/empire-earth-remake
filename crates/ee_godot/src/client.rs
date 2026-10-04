@@ -1721,11 +1721,13 @@ impl Client {
         if same_type && e.owner == self.me {
             let def = e.def;
             // all of this type on screen
+            // only what's actually on screen
+            let vp = cam.get_viewport().map(|v| v.get_visible_rect()).unwrap_or(Rect2::new(Vector2::ZERO, Vector2::new(1e6, 1e6)));
             let vp_ids: Vec<EntityId> = w
                 .entities
                 .iter()
                 .filter(|o| o.alive && o.owner == self.me && o.def == def && o.inside == 0)
-                .filter_map(|o| self.entity_screen(cam, o).map(|_| o.id))
+                .filter_map(|o| self.entity_screen(cam, o).filter(|(s, _)| vp.contains_point(*s)).map(|_| o.id))
                 .collect();
             for v in vp_ids {
                 if !self.selection.contains(&v) {

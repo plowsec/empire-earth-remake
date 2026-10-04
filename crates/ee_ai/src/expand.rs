@@ -136,6 +136,52 @@ impl Ai {
         None
     }
 
+    /// The densest forest / berry patch on one of our islands, near our territory, with
+    /// no drop-off within 10 tiles: (distance², tile, island).
+    fn field_to_claim(&self, w: &World, held: &[usize]) -> Option<(i64, (i32, i32), usize)> {
+        let d = data();
+        let (tree, berries) = (d.id("tree"), d.id("berries"));
+        const CELL: i32 = 8;
+        let mut cells: std::collections::BTreeMap<(i32, i32), (i32, i64, i64, i32)> = Default::default();
+        for e in &w.entities {
+            if !e.alive || (e.def != tree && e.def != berries) {
+                continue;
+            }
+            let k = (e.tile.0 / CELL, e.tile.1 / CELL);
+            let c = cells.entry(k).or_insert((0, 0, 0, 0));
+            c.0 += if e.def == berries { 4 } else { 1 };
+            c.1 += e.tile.0 as i64;
+            c.2 += e.tile.1 as i64;
+            c.3 += 1;
+        }
+        let drops: Vec<FVec> = w.entities.iter().filter(|e| e.alive && e.owner == self.player && !d.def(e.def).data.dropsite.is_empty()).map(|e| e.pos).collect();
+        let mut best: Option<(i64, (i32, i32), usize)> = None;
+        for (_, (score, sx, sy, n)) in cells {
+            if score < 16 || n == 0 {
+                continue;
+            }
+            let c = ((sx / n as i64) as i32, (sy / n as i64) as i32);
+            let Some(isl) = self.island_at(w, c).or_else(|| self.island_at(w, (c.0 + 1, c.1))) else { continue };
+            if !held.contains(&isl) {
+                continue;
+            }
+            let cp = FVec::tile_center(c.0, c.1);
+            if drops.iter().any(|p| p.within(cp, Fx::from_int(10))) {
+                continue;
+            }
+            // our side of the island: within reach of something we own
+            let territory = drops.iter().any(|p| p.within(cp, Fx::from_int(40)));
+            if !territory {
+                continue;
+            }
+            let dd = ((c.0 - self.base_tile.0) as i64).pow(2) + ((c.1 - self.base_tile.1) as i64).pow(2) - score as i64 * 40;
+            if best.map_or(true, |b| dd < b.0) {
+                best = Some((dd, c, isl));
+            }
+        }
+        best
+    }
+
     /// Plot for a defensive building next to a point.
     pub(crate) fn defense_plot(&self, w: &World, near: FVec, key: &str) -> Option<(i32, i32)> {
         let def = data().id(key);
@@ -195,6 +241,9 @@ impl Ai {
                     }
                 }
             }
+            // no mine left unclaimed: dense forests and berry patches get a town center too,
+            // so woodcutters and foragers don't walk half the island
+            let best = best.or_else(|| self.field_to_claim(w, &held));
             if let Some((_, m, isl)) = best {
                 if let Some(t) = self.settlement_plot(w, m) {
                     let at = FVec::tile_center(t.0 + 1, t.1 + 1);
