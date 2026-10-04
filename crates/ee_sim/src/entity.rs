@@ -115,6 +115,14 @@ pub struct Entity {
     pub prod_progress: i32,
     pub rally: Option<FVec>,
     pub rally_target: EntityId,
+    /// extra rally points: new units take turns between `rally` and these
+    #[serde(default)]
+    pub rallies: Vec<FVec>,
+    #[serde(default)]
+    pub rally_next: u8,
+    /// synchronized move: slow down to arrive at this tick (0 = full speed)
+    #[serde(default)]
+    pub arrive_tick: u32,
 
     // transport / aircraft
     pub cargo: Vec<EntityId>,
@@ -186,6 +194,9 @@ impl Entity {
             patrol: Vec::new(),
             help_tick: 0,
             miners: 0,
+            rallies: Vec::new(),
+            rally_next: 0,
+            arrive_tick: 0,
         }
     }
     /// Units inside a transport or landed at an airport are not on the map.

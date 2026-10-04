@@ -250,10 +250,18 @@ func _build() -> void:
 	idle8.tooltip_text = "Select 8 idle citizens (the next one and the 7 nearest to it)"
 	idle8.pressed.connect(func(): _select_idle(8))
 	strip.add_child(idle8)
+	var save_grp := Button.new()
+	save_grp.text = "+ Group"
+	save_grp.custom_minimum_size = Vector2(84, 46)
+	save_grp.tooltip_text = "Save the selection as a group (units or buildings).\nCtrl/Alt+0-9: save to that number · Shift+0-9: add to it · 0-9: select · twice: center on it"
+	save_grp.pressed.connect(_save_group)
+	strip.add_child(save_grp)
 	group_bar = HBoxContainer.new()
 	group_bar.add_theme_constant_override("separation", 4)
 	strip.add_child(group_bar)
-	utility.add_child(_label("SELECT  Left click / drag     COMMAND  Right click     ATTACK  A", 13, Color(0.60, 0.61, 0.57)))
+	_build_formation_bar(utility)
+	hint_label = _label("SELECT  Left click / drag     COMMAND  Right click     ATTACK  A     RALLY  Shift+Right click adds points", 13, Color(0.60, 0.61, 0.57))
+	utility.add_child(hint_label)
 
 	var card_frame := PanelContainer.new()
 	card_frame.add_theme_stylebox_override("panel", _inset_style())
@@ -748,6 +756,12 @@ func _on_idle_pressed() -> void:
 	sel_cache = ""; card_cache = ""
 
 func _refresh_strip() -> void:
+	if form_bar != null:
+		var show: bool = gv.units_selected()
+		if show != form_bar.visible:
+			form_bar.visible = show
+			if hint_label: hint_label.visible = not show
+			if show: _sync_formation_bar()
 	var n: int = gv.idle_citizen_count()
 	idle_btn.text = "Idle %d" % n
 	if n > 0:
@@ -777,6 +791,66 @@ func _refresh_strip() -> void:
 		b.add_child(lbl)
 		b.pressed.connect(func(): _select_group(gi))
 		group_bar.add_child(b)
+
+func _save_group() -> void:
+	var g: int = gv.save_selection_group()
+	if g < 0:
+		notify("Select units or buildings first (or all 10 groups are in use)", Color(1, 0.6, 0.5))
+	else:
+		notify("Saved as group %d — press %d to select it" % [g, g], Color(0.6, 1.0, 0.7))
+	group_cache = ""
+
+# ---------------------------------------------------------------- formations
+
+const FormationIcon = preload("res://scripts/formation_icon.gd")
+const SHAPES := [["Block", "Compact block (default)"], ["Line", "Line abreast: a broad front"], ["Wedge", "Wedge: punch through at the point"], ["Column", "Column: narrow, for straits and corridors"], ["Wide", "Wide spread: a thin front several times wider, to hit a whole coast at once and swamp its defenses"]]
+const TIMINGS := [["Free", "Each unit at full speed (they string out by speed and distance)"], ["Together", "Synchronized: everyone slows to the slowest so the whole group arrives at the same moment"], ["Next wave", "Follow-up: arrive together, 10 seconds after the previous synchronized wave"]]
+var form_bar: HBoxContainer
+var hint_label: Label
+var form_btns := []
+var timing_btns := []
+
+func _build_formation_bar(parent: Control) -> void:
+	form_bar = HBoxContainer.new()
+	form_bar.add_theme_constant_override("separation", 3)
+	form_bar.add_child(_label("FORMATION", 12, Color(0.65, 0.64, 0.6)))
+	for i in SHAPES.size():
+		form_btns.append(_form_button(form_bar, "shape", i, SHAPES[i]))
+	var sep := VSeparator.new()
+	form_bar.add_child(sep)
+	form_bar.add_child(_label("ARRIVAL", 12, Color(0.65, 0.64, 0.6)))
+	for i in TIMINGS.size():
+		timing_btns.append(_form_button(form_bar, "timing", i, TIMINGS[i]))
+	form_bar.visible = false
+	parent.add_child(form_bar)
+
+func _form_button(bar: HBoxContainer, kind: String, i: int, info: Array) -> Button:
+	var b := Button.new()
+	b.toggle_mode = true
+	b.custom_minimum_size = Vector2(36, 32)
+	b.tooltip_text = "%s — %s" % [info[0], info[1]]
+	var ic := FormationIcon.new()
+	ic.kind = kind
+	ic.index = i
+	ic.set_anchors_preset(Control.PRESET_FULL_RECT)
+	b.add_child(ic)
+	b.pressed.connect(func(): _pick_formation(kind, i))
+	bar.add_child(b)
+	return b
+
+func _pick_formation(kind: String, i: int) -> void:
+	var f: Vector2i = gv.formation()
+	if kind == "shape": f.x = i
+	else: f.y = i
+	gv.set_formation(f.x, f.y)
+	_sync_formation_bar()
+
+func _sync_formation_bar() -> void:
+	var f: Vector2i = gv.formation()
+	for i in form_btns.size():
+		form_btns[i].set_pressed_no_signal(i == f.x)
+	for i in timing_btns.size():
+		timing_btns[i].set_pressed_no_signal(i == f.y)
 
 func _select_group(g: int) -> void:
 	if gv.recall_group(g):
@@ -931,6 +1005,7 @@ func _on_event(e: Dictionary) -> void:
 		"complete": notify("%s complete" % e["text"], Color(0.7, 1.0, 0.7))
 		"research": notify("Research complete: %s" % e["text"], Color(0.7, 0.85, 1.0))
 		"under_attack": notify("We are under attack!", Color(1, 0.4, 0.35))
+		"air_raid": notify(e["text"], Color(1, 0.35, 0.3))
 		"defeated":
 			notify("%s has been defeated" % e["text"], Color(1, 0.6, 0.4))
 	if main and main.has_node("VFX"):
@@ -1240,8 +1315,14 @@ func _on_key(k: InputEventKey) -> void:
 		return
 	if code >= KEY_0 and code <= KEY_9:
 		var g := code - KEY_0
-		if k.ctrl_pressed or k.meta_pressed:
+		if k.ctrl_pressed or k.meta_pressed or k.alt_pressed:
 			gv.set_group(g)
+			notify("Saved as group %d" % g, Color(0.6, 1.0, 0.7))
+			group_cache = ""
+		elif k.shift_pressed:
+			gv.add_selection_to_group(g)
+			notify("Added to group %d" % g, Color(0.6, 1.0, 0.7))
+			group_cache = ""
 		else:
 			if gv.recall_group(g):
 				var now := Time.get_ticks_msec() / 1000.0

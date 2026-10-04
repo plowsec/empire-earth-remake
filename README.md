@@ -149,6 +149,18 @@ until combat makes the games differ; the report shows both side by side plus how
 your commands were replayed exactly, adapted or dropped. Replays record the simulation
 build that made them and the tools warn when it differs.
 
+## Commanding
+
+- **Groups:** select units or buildings, then **+ Group** (or Ctrl/Alt+0-9). Shift+0-9 adds
+  to a group, 0-9 selects it, pressing twice centers the camera on it.
+- **Rally points:** right-click sets a building's rally point; **Shift+right-click adds
+  more**, and new units take turns between them.
+- **Formations:** with units selected, the FORMATION row picks the shape (block, line,
+  wedge, column, wide spread) and the ARRIVAL timing: *Free* (full speed), *Together*
+  (everyone throttles to arrive at the same moment) or *Next wave* (arrive together, 10 s
+  after the previous synchronized wave). Example: a wide-spread air wave set to *Together*
+  hits a whole coast at once; a second group sent with *Next wave* follows it in.
+
 ## Alliances
 
 Pick teams before the match (skirmish **Teams** option, or a team per seat in the LAN

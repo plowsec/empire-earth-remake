@@ -646,5 +646,100 @@ def main():
     print("wrote", len(os.listdir(OUT)), "sounds to", os.path.abspath(OUT))
 
 
+def bomb_fall(v):
+    """A bomb falling: a piercing whistle dropping in pitch (Doppler as it closes in),
+    rising in loudness, cut off by the impact."""
+    sec = 1.7 + 0.15 * v
+    tt = t(sec)
+    k = tt / sec
+    f = (2300 - 300 * v) * (1 - 0.62 * k ** 1.3)
+    ph = np.cumsum(f * (1 + 0.004 * np.sin(2 * np.pi * 11 * tt))) / SR
+    tone = np.sin(2 * np.pi * ph) + 0.25 * np.sin(4 * np.pi * ph)
+    air = bp(pink(sec), 900, 5000) * (0.15 + 0.35 * k)
+    env = np.clip(tt / 0.25, 0, 1) * (0.25 + 0.75 * k ** 1.6)
+    x = mix(tone * 0.6, air) * env
+    return fade_out(reverb(x, 0.8, 0.12, 6000), 0.02)
+
+
+def air_raid_wail(v):
+    """WWII air raid siren: a rotor spinning up to a howling wail that rises and falls."""
+    sec = 11.0
+    tt = t(sec)
+    # spin up, two long wails, wind down
+    spin = np.clip(tt / 2.5, 0, 1) ** 0.6
+    wail = 1 - 0.28 * (0.5 - 0.5 * np.cos(2 * np.pi * np.clip(tt - 2.5, 0, None) / 3.6))
+    down = np.clip((sec - tt) / 2.0, 0, 1) ** 0.8
+    f = 140 + 430 * spin * wail * (0.55 + 0.45 * down)
+    ph = np.cumsum(f) / SR
+    # two chopper rotors: a fundamental and a fifth above, slightly detuned, hollow and brassy
+    tone = np.zeros(len(tt))
+    for mult, g in ((1.0, 1.0), (1.5, 0.55), (2.0, 0.35), (3.0, 0.15)):
+        tone += g * np.sign(np.sin(2 * np.pi * ph * mult * (1.0 + 0.0015 * mult)))
+    tone = bp(tone, 120, 3200)
+    tone *= 1 + 0.06 * np.sin(2 * np.pi * 23 * tt)
+    env = np.clip(tt / 0.4, 0, 1) * down
+    x = tone * env * 0.5
+    return reverb(x, 3.5, 0.45, 2200)
+
+
+def shell_whizz(v):
+    """An incoming shell: rushing, tearing air like a passing freight train - noise whose
+    band slides down as it closes in, a low rumble under it, no clean tone."""
+    sec = 1.1 + 0.25 * v
+    n = int(sec * SR)
+    tt = t(sec)
+    k = tt / sec
+    x = pink(sec)
+    out = np.zeros(n)
+    block = 1024
+    for i in range(0, n, block):
+        kk = min(i / n, 1.0)
+        c = 1100 - 750 * kk          # band center slides down: Doppler of the approach
+        seg = bp(x[max(0, i - 2048): i + block], c * 0.55, c * 1.9)[-min(block, n - i):]
+        out[i:i + len(seg)] = seg
+    rush = out * (1 + 0.35 * bp(white(sec), 18, 60))   # air turbulence flutter
+    rumble = lp(brown(sec), 160) * 0.6
+    env = k ** 2.6
+    x = mix(rush, rumble * 0.5) * env
+    return fade_out(reverb(x, 0.6, 0.1, 5000), 0.01)
+
+
+def battle_bed(v):
+    """Distant battle, looping: rumbling artillery, crackling rifles and machine guns."""
+    sec = 20.0
+    n = int(sec * SR)
+    out = lp(brown(sec), 90) * 0.35
+    r = np.random.default_rng(77 + v)
+    for _ in range(26):
+        boom = lp(explosion(int(r.integers(0, 3)), 0.6 + r.random() * 0.6), 500 + r.random() * 500)
+        add_at(out, boom * (0.25 + r.random() * 0.35), int(r.random() * (n - len(boom))))
+    for _ in range(70):
+        shot = lp(rifle(int(r.integers(0, 4))), 2500) * (0.08 + r.random() * 0.12)
+        add_at(out, shot, int(r.random() * (n - len(shot))))
+    for _ in range(12):
+        burst = lp(mg_burst(int(r.integers(0, 3)), shots=int(r.integers(4, 12))), 2200) * (0.08 + r.random() * 0.1)
+        add_at(out, burst, int(r.random() * (n - len(burst))))
+    out = reverb(out[:n], 3.0, 0.4, 1500)[:n]
+    # seamless loop: crossfade the tail into the head
+    xf = int(1.5 * SR)
+    head = out[:xf].copy()
+    out[:xf] = head * np.linspace(0, 1, xf) + out[-xf:] * np.linspace(1, 0, xf)
+    return out[: n - xf]
+
+
+def extra():
+    """New sounds only (keeps the existing ones byte-identical)."""
+    for v in range(2):
+        save(f"bomb_fall_{v}", bomb_fall(v), 0.9)
+        save(f"shell_whizz_{v}", shell_whizz(v), 0.7)
+    save("air_raid_wail", air_raid_wail(0), 0.85)
+    save("battle_bed", battle_bed(0), 0.8)
+    print("wrote new sounds to", os.path.abspath(OUT))
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--new" in sys.argv:
+        extra()
+    else:
+        main()

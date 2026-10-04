@@ -39,6 +39,17 @@ func _ready() -> void:
 			var t = load("res://scripts/featuretest.gd").new()
 			t.name = "FeatureTest"
 			call_deferred("add_child", t)
+		elif a == "--sfxtest":
+			# fire each combat sound path once (catches script errors without a battle)
+			get_tree().create_timer(2.0).timeout.connect(func():
+				var c: Vector3 = $GameView.home_position()
+				for k in ["air_raid", "bomb_whistle"]:
+					$HUD._on_event({"kind": k, "pos": c, "to": c, "size": 3.0, "text": "Air raid! test", "dmg": 0, "mine": false})
+				$VFX.on_event({"kind": "shot", "pos": c, "to": c + Vector3(30, 0, 0), "size": 200.0, "text": "battleship", "dmg": 1, "mine": true})
+				print("SFXTEST fired"))
+			get_tree().create_timer(5.0).timeout.connect(func(): print("SFXTEST ok, battle bed ", $VFX.audio.battle.volume_db if $VFX.audio else -99.0))
+		elif a == "--selectidle":
+			get_tree().create_timer(2.0).timeout.connect(func(): $GameView.select_idle_citizens(8))
 		elif a == "--diplomacy":
 			get_tree().create_timer(2.0).timeout.connect(func(): $HUD._toggle_diplomacy())
 		elif a.begins_with("--players="):

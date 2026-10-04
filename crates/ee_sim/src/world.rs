@@ -105,6 +105,9 @@ pub struct Player {
     pub stats: PlayerStats,
     /// owns a working early warning radar
     pub radar: bool,
+    /// when the last synchronized wave is due (follow-up waves arrive just after)
+    #[serde(default)]
+    pub last_arrival: u32,
     /// allied with player i (symmetric; seeded from the starting teams)
     #[serde(default)]
     pub allies: Vec<bool>,
@@ -254,6 +257,7 @@ impl World {
                 defeated: false,
                 stats: PlayerStats::default(),
                 radar: false,
+                last_arrival: 0,
                 allies: config.players.iter().map(|o| o.team == pc.team).collect(),
                 proposals: vec![false; config.players.len()],
             })

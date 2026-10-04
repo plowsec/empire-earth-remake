@@ -108,6 +108,9 @@ pub struct Client {
     minimap_timer: f32,
     pub selection: Vec<EntityId>,
     pub groups: Vec<Vec<EntityId>>,
+    /// formation for move orders: shape (0 block, 1 line, 2 wedge, 3 column, 4 wide) and
+    /// timing (0 free, 1 arrive together, 2 arrive just after the previous wave)
+    pub formation: (u8, u8),
     pub hover: EntityId,
     remembered: BTreeMap<EntityId, Remembered>,
     corpses: Vec<Corpse>,
@@ -121,6 +124,10 @@ pub struct Client {
     proj_start: HashMap<u32, f32>,
     /// next time (s) each vehicle may play its engine sound
     engine_next: HashMap<EntityId, f64>,
+    /// bombers that already whistled on this run (until the time given)
+    whistle_next: HashMap<EntityId, f64>,
+    raid_check: f64,
+    last_raid: f64,
     pub events: Vec<ClientEvent>,
     pub time: f64,
     last_attack_notice: f64,
@@ -309,6 +316,7 @@ impl Client {
             minimap_timer: 0.0,
             selection: Vec::new(),
             groups: vec![Vec::new(); 10],
+            formation: (0, 0),
             hover: 0,
             remembered: BTreeMap::new(),
             corpses: Vec::new(),
@@ -318,6 +326,9 @@ impl Client {
             air_pos: HashMap::new(),
             proj_start: HashMap::new(),
             engine_next: HashMap::new(),
+            whistle_next: HashMap::new(),
+            raid_check: 0.0,
+            last_raid: -1000.0,
             events: Vec::new(),
             time: 0.0,
             last_attack_notice: -100.0,
@@ -423,6 +434,7 @@ impl Client {
             self.update_fog(false);
         }
         self.selection.retain(|&id| self.session.world.get(id).map_or(false, |e| e.inside == 0 || data().def(e.def).is_building()));
+        self.air_raid_check();
         self.render(dt as f32, cam);
         // saplings visibly grow: refresh static scenery every couple of seconds
         self.sapling_timer -= dt as f32;
@@ -1044,6 +1056,21 @@ impl Client {
                     basis = Basis::from_axis_angle(axis.normalized(), ang * 0.8) * basis;
                 }
             }
+            // falling bombs whistle: start as the bomber closes on its target, at the target
+            if d.class() == Class::Aircraft && target != 0 && d.weapons.first().map_or(false, |wp| matches!(wp.dmg_type, DamageType::Bomb | DamageType::Nuclear)) {
+                let e = &w.entities[i];
+                if e.ammo > 0 {
+                    if let Some(te) = w.get(target) {
+                        let close = Fx::from_int(1).0 as i64 + w.unit_speed(e).0 as i64 * 30;
+                        if te.pos.dist2_raw(pos) < close * close && self.time >= self.whistle_next.get(&id).copied().unwrap_or(0.0) {
+                            self.whistle_next.insert(id, self.time + 6.0);
+                            let (tx, tz) = to_world2(te.pos);
+                            let tp = Vector3::new(tx, self.heights.at(tx, tz).max(0.0) + 2.0, tz);
+                            self.events.push(ClientEvent { kind: "bomb_whistle", pos: tp, to: tp, size: 0.0, text: String::new(), dmg: 0, mine: owner == me });
+                        }
+                    }
+                }
+            }
             // engines: jets roar past, rotors thump, ships chug (near the camera only)
             let moving = pos.x.0 != prev.x.0 || pos.y.0 != prev.y.0;
             if moving && !d.data.icbm && matches!(d.class(), Class::Aircraft | Class::Ship) && Vector2::new(p.x, p.z).distance_to(cull_c) < 120.0 {
@@ -1341,6 +1368,7 @@ impl Client {
                     if e.owner == me && data().def(e.def).is_building() {
                         if let Some(r) = e.rally {
                             flags.push(r);
+                            flags.extend(e.rallies.iter().copied());
                         }
                     }
                 }
@@ -1815,7 +1843,17 @@ impl Client {
         let buildings = self.my_selected_buildings();
         let w = &self.session.world;
         if !units.is_empty() {
-            if target != 0 && !attack_move {
+            let (shape, timing) = self.formation;
+            let formed = (shape != 0 || timing != 0) && !queue;
+            let enemy_at = if target != 0 { w.get(target).filter(|t| w.is_enemy(self.me, t.owner)).map(|t| t.pos) } else { None };
+            if formed && enemy_at.is_some() {
+                // a formation attack converges on the target's position, attacking anything on the way
+                let to = enemy_at.unwrap();
+                self.issue(CommandKind::Formation { units, to, attack_move: true, shape, timing });
+                let (x, z) = to_world2(to);
+                let g = Vector3::new(x, 0.0, z);
+                self.events.push(ClientEvent { kind: "move_marker", pos: g, to: g, size: 0.0, text: String::new(), dmg: 0, mine: true });
+            } else if target != 0 && !attack_move {
                 // transports right-clicking land = unload there
                 self.issue(CommandKind::Target { units, target, queue });
                 self.events.push(ClientEvent { kind: "ack", pos: Vector3::ZERO, to: Vector3::ZERO, size: 0.0, text: "target".into(), dmg: 0, mine: true });
@@ -1835,7 +1873,11 @@ impl Client {
                     self.issue(CommandKind::Move { units: transports, to, attack_move, queue });
                 }
                 if !others.is_empty() {
-                    self.issue(CommandKind::Move { units: others, to, attack_move, queue });
+                    if formed {
+                        self.issue(CommandKind::Formation { units: others, to, attack_move, shape, timing });
+                    } else {
+                        self.issue(CommandKind::Move { units: others, to, attack_move, queue });
+                    }
                 }
                 self.events.push(ClientEvent { kind: "move_marker", pos: g, to: g, size: 0.0, text: String::new(), dmg: 0, mine: attack_move });
             }
@@ -1845,7 +1887,12 @@ impl Client {
                 if self.launch_at(to) {
                     return;
                 }
-                self.issue(CommandKind::SetRally { buildings, to, target });
+                // shift: one more rally point (new units take turns between them)
+                if queue {
+                    self.issue(CommandKind::AddRally { buildings, to });
+                } else {
+                    self.issue(CommandKind::SetRally { buildings, to, target });
+                }
                 self.events.push(ClientEvent { kind: "move_marker", pos: g, to: g, size: 0.0, text: String::new(), dmg: 0, mine: false });
             }
         }
@@ -1853,6 +1900,31 @@ impl Client {
 }
 
 impl Client {
+    /// Sound the air raid siren when enemy aircraft show up over our buildings.
+    fn air_raid_check(&mut self) {
+        if self.time < self.raid_check {
+            return;
+        }
+        self.raid_check = self.time + 1.0;
+        if self.time - self.last_raid < 75.0 {
+            return;
+        }
+        let w = &self.session.world;
+        let me = self.me;
+        let mine: Vec<FVec> = w.entities.iter().filter(|e| e.alive && e.owner == me && data().def(e.def).is_building()).map(|e| e.pos).collect();
+        if mine.is_empty() {
+            return;
+        }
+        let r = Fx::from_int(14);
+        let raid = w.entities.iter().filter(|e| {
+            e.alive && e.inside == 0 && w.is_enemy(me, e.owner) && data().def(e.def).class() == Class::Aircraft && !data().def(e.def).data.icbm && w.can_see(me, e)
+        }).filter(|e| mine.iter().any(|b| b.within(e.pos, r))).count();
+        if raid >= 2 {
+            self.last_raid = self.time;
+            self.events.push(ClientEvent { kind: "air_raid", pos: Vector3::ZERO, to: Vector3::ZERO, size: raid as f32, text: format!("Air raid! {raid} enemy aircraft over our territory"), dmg: 0, mine: false });
+        }
+    }
+
     /// Fire one ICBM from the first selected silo that has one. Returns false if none.
     pub fn launch_at(&mut self, at: FVec) -> bool {
         let w = self.world();

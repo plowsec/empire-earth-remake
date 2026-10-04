@@ -168,6 +168,14 @@ impl Translator<'_> {
                 let t = if *target == 0 { 0 } else { self.entity(*target).unwrap_or(0) };
                 (K::SetRally { buildings: b, to: *to, target: t }, ok)
             }
+            K::Formation { units: u, to, attack_move, shape, timing } => {
+                let (u, ok) = units(u)?;
+                (K::Formation { units: u, to: *to, attack_move: *attack_move, shape: *shape, timing: *timing }, ok)
+            }
+            K::AddRally { buildings, to } => {
+                let (b, ok) = units(buildings)?;
+                (K::AddRally { buildings: b, to: *to }, ok)
+            }
             K::Stop { units: u } => { let (u, ok) = units(u)?; (K::Stop { units: u }, ok) }
             K::Unload { units: u, at } => { let (u, ok) = units(u)?; (K::Unload { units: u, at: *at }, ok) }
             K::ReturnToBase { units: u } => { let (u, ok) = units(u)?; (K::ReturnToBase { units: u }, ok) }

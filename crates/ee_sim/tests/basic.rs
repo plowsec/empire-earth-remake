@@ -1047,3 +1047,65 @@ fn alliances_form_by_mutual_offer_share_vision_and_end_the_game_together() {
     assert!(w.game_over, "the surviving allies win together");
     assert!(!w.players[0].defeated && !w.players[1].defeated && w.players[2].defeated);
 }
+
+/// Fighters at very different distances: a synchronized order brings them in together.
+#[test]
+fn synchronized_formation_arrives_together() {
+    let arrivals = |timing: u8| -> Vec<u32> {
+        let mut w = World::new(MatchConfig::skirmish(5, 2));
+        let s = w.starts[0];
+        let dest = FVec::tile_center(s.0 + 40, s.1);
+        let ids: Vec<u32> = [0, 6, 14, 22].iter().map(|dx| w.spawn(data().id("fighter"), 0, FVec::tile_center(s.0 + 40 - 36 + dx, s.1 + 3))).collect();
+        w.apply_command(&Command { player: 0, kind: CommandKind::Formation { units: ids.clone(), to: dest, attack_move: false, shape: 1, timing } });
+        let mut when = vec![0u32; ids.len()];
+        for _ in 0..20 * 60 {
+            run(&mut w, 1, vec![]);
+            for (k, &id) in ids.iter().enumerate() {
+                if when[k] == 0 && w.get(id).map_or(false, |e| e.sortie.map_or(false, |slot| e.pos.within(slot, ee_sim::fixed::Fx::from_int(2)))) {
+                    when[k] = w.tick;
+                }
+            }
+        }
+        when
+    };
+    let spread = |v: &[u32]| v.iter().max().unwrap() - v.iter().min().unwrap();
+    let free = arrivals(0);
+    let sync = arrivals(1);
+    eprintln!("arrival ticks free {free:?} synchronized {sync:?}");
+    assert!(free.iter().chain(sync.iter()).all(|&t| t > 0), "all arrive: {free:?} {sync:?}");
+    assert!(spread(&free) > 40, "free flight strings out: {free:?}");
+    assert!(spread(&sync) * 3 < spread(&free), "synchronized arrival is tight: {sync:?} vs {free:?}");
+}
+
+#[test]
+fn formation_shapes_and_rally_rotation() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let ids: Vec<u32> = (0..10).map(|k| w.spawn(data().id("fighter"), 0, FVec::tile_center(s.0 + k % 5, s.1 + k / 5))).collect();
+    let dest = FVec::tile_center(s.0 + 30, s.1);
+    // wide spread: a front much wider than the block
+    let width = |w: &World| {
+        let ys: Vec<i32> = ids.iter().filter_map(|&id| w.get(id).and_then(|e| e.sortie)).map(|p| p.y.0).collect();
+        (ys.iter().max().unwrap() - ys.iter().min().unwrap()) / ee_sim::fixed::ONE
+    };
+    w.apply_command(&Command { player: 0, kind: CommandKind::Formation { units: ids.clone(), to: dest, attack_move: false, shape: 0, timing: 0 } });
+    let block = width(&w);
+    w.apply_command(&Command { player: 0, kind: CommandKind::Formation { units: ids.clone(), to: dest, attack_move: false, shape: 4, timing: 0 } });
+    let wide = width(&w);
+    assert!(wide > block * 3, "wide spread {wide} vs block {block}");
+    // rally rotation: a capitol with two rally points sends citizens to both
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let cap = units_of(&w, 0, "capitol")[0];
+    let a = FVec::tile_center(s.0 + 8, s.1);
+    let b = FVec::tile_center(s.0 - 8, s.1);
+    w.apply_command(&Command { player: 0, kind: CommandKind::SetRally { buildings: vec![cap], to: a, target: 0 } });
+    w.apply_command(&Command { player: 0, kind: CommandKind::AddRally { buildings: vec![cap], to: b } });
+    let before: Vec<u32> = units_of(&w, 0, "citizen");
+    let t0 = w.tick;
+    run(&mut w, 1, vec![(t0, Command { player: 0, kind: CommandKind::Train { building: cap, def: data().id("citizen"), count: 4 } })]);
+    run(&mut w, 20 * 60, vec![]);
+    let new: Vec<u32> = units_of(&w, 0, "citizen").into_iter().filter(|c| !before.contains(c)).collect();
+    assert!(new.len() >= 4, "trained {}", new.len());
+    let near = |p: FVec| new.iter().filter(|&&c| w.get(c).unwrap().pos.within(p, ee_sim::fixed::Fx::from_int(3))).count();
+    assert!(near(a) >= 1 && near(b) >= 1, "both rally points used: {} at a, {} at b", near(a), near(b));
+}

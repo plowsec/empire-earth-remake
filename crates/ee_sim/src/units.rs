@@ -1264,7 +1264,15 @@ impl World {
         let pos = e.pos;
         let id = e.id;
         let radius = d.radius;
-        let speed = self.unit_speed(e);
+        let mut speed = self.unit_speed(e);
+        // synchronized move: throttle to arrive with the rest of the wave
+        if e.arrive_tick > self.tick {
+            if let Some(g) = e.goal {
+                let left = (e.arrive_tick - self.tick) as i32;
+                let want = Fx((g - pos).len().0 / left);
+                speed = speed.min(want.max(Fx(speed.0 / 8)));
+            }
+        }
         let mut new_pos = pos;
         let moving = e.goal.is_some();
 

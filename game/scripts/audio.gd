@@ -16,6 +16,8 @@ var budget := {}
 var track_i := 0
 var rig: Node = null
 var _last_alert := -1
+var battle: AudioStreamPlayer   # distant battle bed, swells with the fighting on screen
+var intensity := 0.0
 
 func _ready() -> void:
 	for i in 32:
@@ -46,11 +48,38 @@ func _ready() -> void:
 		ocean.loop_end = ocean.data.size() / 2
 	ambient.stream = ocean
 	ambient.play()
+	battle = AudioStreamPlayer.new()
+	battle.bus = "SFX"
+	battle.volume_db = -60.0
+	add_child(battle)
+	var bed := _load("battle_bed")
+	if bed is AudioStreamWAV:
+		bed.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		bed.loop_end = bed.data.size() / 2
+		battle.stream = bed
 	track_i = randi() % PLAYLIST.size()
 	_play_music(PLAYLIST[track_i])
 	var p := get_parent()
 	if p and p.has_node("CameraRig"):
 		rig = p.get_node("CameraRig")
+
+func _process(dt: float) -> void:
+	if battle == null or battle.stream == null:
+		return
+	intensity = maxf(intensity - dt * 2.5, 0.0)
+	# 0 = quiet, ~40 = a big battle in view
+	var want := -60.0 if intensity < 1.0 else lerpf(-26.0, -7.0, clampf(intensity / 40.0, 0.0, 1.0))
+	battle.volume_db = move_toward(battle.volume_db, want, dt * (30.0 if want > battle.volume_db else 8.0))
+	if battle.volume_db > -59.0 and not battle.playing:
+		battle.play(randf() * 15.0)
+	elif battle.volume_db <= -59.0 and battle.playing:
+		battle.stop()
+
+func _near(pos: Vector3, extra := 150.0) -> bool:
+	if rig == null:
+		return true
+	var d := Vector2(pos.x, pos.z).distance_to(Vector2(rig.target.x, rig.target.z))
+	return d <= rig.dist * 2.5 + extra
 
 func _load(name: String) -> AudioStream:
 	if cache.has(name):
@@ -136,7 +165,9 @@ func ui(name: String, vol := -6.0) -> void:
 
 # --- called by VFX/HUD ------------------------------------------------------
 
-func play_shot(dmg: int, pos: Vector3, unit := "") -> void:
+func play_shot(dmg: int, pos: Vector3, unit := "", to := Vector3.ZERO) -> void:
+	if _near(pos):
+		intensity += 0.6
 	var cat := "shot"
 	var s: AudioStream
 	var vol := -4.0
@@ -164,13 +195,20 @@ func play_shot(dmg: int, pos: Vector3, unit := "") -> void:
 		"bazooka", "stinger", "helicopter", "strike_fighter", "aa_site", "abm_site":
 			s = _pick("missile", 3); cat = "missile"; vol = -2.0
 		"bomber", "nuke_bomber":
-			s = _pick("bomb_whistle", 2); cat = "whistle"; vol = 2.0
+			# the whistle starts before the drop (bomb_whistle event); release is quiet
+			return
 		_:
 			s = _pick("rifle", 4)
 	if _allow(cat, 4):
 		_play3d(s, pos, vol)
+	# heavy shells tear through the air on their way down at the target
+	if unit in ["battleship", "howitzer", "mortar"] and to != Vector3.ZERO and _near(to) and _allow("whizz", 2):
+		var flight := clampf(pos.distance_to(to) / 120.0, 0.15, 1.2)
+		get_tree().create_timer(flight).timeout.connect(func(): _play3d(_pick("shell_whizz", 2), to, 0.0, 0.1))
 
 func play_explosion(size: float, pos: Vector3) -> void:
+	if _near(pos):
+		intensity += 1.0 + size
 	if not _allow("boom", 5):
 		return
 	var s: AudioStream
@@ -183,6 +221,8 @@ func play_explosion(size: float, pos: Vector3) -> void:
 	_play3d(s, pos, 2.0 + size)
 
 func play_death(pos: Vector3) -> void:
+	if _near(pos):
+		intensity += 1.5
 	# Empire Earth style: every fallen soldier cries out (rate limited in big battles)
 	if _allow("death", 3):
 		_play3d(_pick("death", 8), pos, -3.0, 0.1)
@@ -229,6 +269,18 @@ func on_event(e: Dictionary) -> void:
 			ui("alert_%d" % k, -8.0)
 		"notice": ui("notify", -10.0)
 		"nuke_alarm": ui("air_raid_siren", -2.0)
+		"air_raid":
+			# its own voice so clicks and alerts don't cut it off
+			var siren := AudioStreamPlayer.new()
+			siren.bus = "SFX"
+			siren.stream = _load("air_raid_wail")
+			siren.volume_db = -3.0
+			add_child(siren)
+			siren.finished.connect(siren.queue_free)
+			siren.play()
+		"bomb_whistle":
+			if _near(e["pos"]) and _allow("bombfall", 3):
+				play_big("bomb_fall_%d" % (randi() % 2), e["pos"], 3.0, 60.0)
 		"trained": ui("ui_click", -14.0)
 		"placed": _play3d(_pick("hammer", 3), e["pos"], -4.0)
 		"game_over":

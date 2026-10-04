@@ -335,7 +335,7 @@ func on_event(e: Dictionary) -> void:
 			if dmg in [1, 6]:
 				_play("puff", pos, 2.0)
 				_flash(pos, 2.0, 8.0)
-			if audio: audio.play_shot(dmg, pos, e["text"])
+			if audio: audio.play_shot(dmg, pos, e["text"], to)
 		"impact":
 			var dmg: int = e["dmg"]
 			if dmg == 10:

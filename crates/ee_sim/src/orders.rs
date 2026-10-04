@@ -57,6 +57,7 @@ pub fn give(w: &mut World, id: EntityId, order: Order, queue: bool) {
 pub fn set_order(w: &mut World, id: EntityId, order: Order) {
     let tick = w.tick;
     let Some(e) = w.get_mut(id) else { return };
+    e.arrive_tick = 0;
     e.order = order;
     e.goal = None;
     e.path.clear();
@@ -214,6 +215,42 @@ pub fn apply(w: &mut World, c: &Command) {
             let units = owned_units(w, p, units);
             move_group(w, &units, *to, *attack_move, *queue);
         }
+        CommandKind::Formation { units, to, attack_move, shape, timing } => {
+            let units = owned_units(w, p, units);
+            let slots = move_group_shaped(w, &units, *to, *attack_move, false, *shape);
+            if *timing > 0 && !slots.is_empty() {
+                // the slowest unit sets the pace; everyone else throttles to meet it
+                let mut eta = 0u32;
+                for (id, dest) in &slots {
+                    if let Some(e) = w.get(*id) {
+                        let sp = w.unit_speed(e).0.max(1) as i64;
+                        let dist = (*dest - e.pos).len().0 as i64;
+                        eta = eta.max((dist / sp) as u32);
+                    }
+                }
+                let mut arrive = w.tick + eta + 10;
+                if *timing == 2 {
+                    arrive = arrive.max(w.players[p as usize].last_arrival + 200);
+                }
+                w.players[p as usize].last_arrival = arrive;
+                for (id, _) in slots {
+                    if let Some(e) = w.get_mut(id) {
+                        e.arrive_tick = arrive;
+                    }
+                }
+            }
+        }
+        CommandKind::AddRally { buildings, to } => {
+            for b in owned_buildings(w, p, buildings) {
+                let e = w.get_mut(b).unwrap();
+                if e.rally.is_none() {
+                    e.rally = Some(*to);
+                    e.rally_target = 0;
+                } else if e.rallies.len() < 8 {
+                    e.rallies.push(*to);
+                }
+            }
+        }
         CommandKind::Target { units, target, queue } => {
             let units = owned_units(w, p, units);
             smart_target(w, p, &units, *target, *queue, false);
@@ -314,6 +351,7 @@ pub fn apply(w: &mut World, c: &Command) {
         CommandKind::SetRally { buildings, to, target } => {
             for b in owned_buildings(w, p, buildings) {
                 let e = w.get_mut(b).unwrap();
+                e.rallies.clear();
                 if *to == e.pos && *target == 0 {
                     e.rally = None;
                     e.rally_target = 0;
@@ -413,8 +451,14 @@ pub fn apply(w: &mut World, c: &Command) {
 }
 
 pub fn move_group(w: &mut World, units: &[EntityId], to: FVec, attack_move: bool, queue: bool) {
+    move_group_shaped(w, units, to, attack_move, queue, 0);
+}
+
+/// `move_group` in a formation shape (see `CommandKind::Formation`); returns each unit's slot.
+pub fn move_group_shaped(w: &mut World, units: &[EntityId], to: FVec, attack_move: bool, queue: bool, shape: u8) -> Vec<(EntityId, FVec)> {
+    let mut all_slots = Vec::new();
     if units.is_empty() {
-        return;
+        return all_slots;
     }
     // group per layer so ships and tanks ordered together each get a sane formation
     for layer in [Layer::Land, Layer::Water, Layer::Air] {
@@ -440,7 +484,7 @@ pub fn move_group(w: &mut World, units: &[EntityId], to: FVec, attack_move: bool
             group.iter().map(|&id| (w.get(id).unwrap().pos.dist2_raw(to), id)).collect();
         sorted.sort();
         let n = sorted.len();
-        let use_flow = n >= 8 && layer != Layer::Air;
+        let use_flow = n >= 8 && layer != Layer::Air && shape == 0;
         let (gx, gy) = to.tile();
         if use_flow {
             let ok = w.map.passable(gx, gy, layer);
@@ -458,7 +502,12 @@ pub fn move_group(w: &mut World, units: &[EntityId], to: FVec, attack_move: bool
                 }
             }
         }
-        let slots = formation_slots(w, &sorted.iter().map(|x| x.1).collect::<Vec<_>>(), to, layer, spacing);
+        let slots = if shape == 0 {
+            formation_slots(w, &sorted.iter().map(|x| x.1).collect::<Vec<_>>(), to, layer, spacing)
+        } else {
+            shaped_slots(w, &sorted.iter().map(|x| x.1).collect::<Vec<_>>(), to, layer, spacing, shape)
+        };
+        all_slots.extend(slots.iter().copied());
         for (i, (_, id)) in sorted.iter().enumerate() {
             let _ = i;
             let dest = slots.iter().find(|(u, _)| u == id).map(|x| x.1).unwrap_or(to);
@@ -478,6 +527,69 @@ pub fn move_group(w: &mut World, units: &[EntityId], to: FVec, attack_move: bool
             }
         }
     }
+    all_slots
+}
+
+/// Formation shapes facing the direction of travel: 1 line abreast, 2 wedge, 3 column,
+/// 4 wide spread (a thin front several times wider, to hit a coast everywhere at once).
+fn shaped_slots(w: &World, units: &[EntityId], to: FVec, layer: Layer, spacing: Fx, shape: u8) -> Vec<(EntityId, FVec)> {
+    let n = units.len();
+    if n == 0 {
+        return vec![];
+    }
+    let cx = units.iter().map(|&u| w.get(u).unwrap().pos.x.0 as i64).sum::<i64>() / n as i64;
+    let cy = units.iter().map(|&u| w.get(u).unwrap().pos.y.0 as i64).sum::<i64>() / n as i64;
+    let centroid = FVec::new(Fx(cx as i32), Fx(cy as i32));
+    let mut fwd = (to - centroid).normalized();
+    if fwd.len2_raw() == 0 {
+        fwd = FVec::new(Fx::ZERO, Fx::ONE);
+    }
+    let right = FVec::new(-fwd.y, fwd.x);
+    // keep units on the side of the formation they're already on (fewer crossings)
+    let mut order: Vec<(i64, EntityId)> = units.iter().map(|&u| ((w.get(u).unwrap().pos - centroid).dot_raw(right) >> 16, u)).collect();
+    order.sort();
+    let mut used = Vec::new();
+    let mut out = Vec::with_capacity(n);
+    // (lateral, back) offsets in units of spacing, x2 to allow half steps
+    let offsets: Vec<(i32, i32)> = match shape {
+        1 => {
+            let per = 40.min(n) as i32;
+            (0..n as i32).map(|k| (((k % per) * 2 - (per - 1)), (k / per) * 2)).collect()
+        }
+        2 => {
+            // the point first, then alternating arms trailing back
+            let mut v: Vec<(i32, i32)> = (0..n as i32).map(|k| {
+                let row = (k + 1) / 2;
+                let side = if k % 2 == 1 { -1 } else { 1 };
+                (side * row * 2, row * 2)
+            }).collect();
+            v.sort_by_key(|o| o.0);
+            v
+        }
+        3 => {
+            let cols = if n > 12 { 2 } else { 1 };
+            let mut v: Vec<(i32, i32)> = (0..n as i32).map(|k| ((k % cols) * 2 - (cols - 1), (k / cols) * 2)).collect();
+            v.sort_by_key(|o| o.0);
+            v
+        }
+        _ => {
+            let per = 60.min(n) as i32;
+            (0..n as i32).map(|k| (((k % per) * 2 - (per - 1)) * 4, (k / per) * 2)).collect()
+        }
+    };
+    // columns and wedges point at the target: the head arrives there
+    let center_back = match shape {
+        2 | 3 => offsets.iter().map(|o| o.1).max().unwrap_or(0) / 2,
+        _ => 0,
+    };
+    for (k, &(_, u)) in order.iter().enumerate() {
+        let (lat, back) = offsets[k];
+        let lat = Fx(spacing.mul_int(lat).0 / 2);
+        let back = Fx(spacing.mul_int(back - center_back).0 / 2);
+        let p = to + right.scale(lat) - fwd.scale(back);
+        out.push((u, snap_slot(w, p, layer, &mut used)));
+    }
+    out
 }
 
 fn smart_target(w: &mut World, p: u8, units: &[EntityId], target: EntityId, queue: bool, force_attack: bool) {

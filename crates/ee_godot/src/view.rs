@@ -817,6 +817,57 @@ impl GameView {
         }
     }
 
+    /// Add the selection to a control group.
+    #[func]
+    fn add_selection_to_group(&mut self, g: i64) {
+        if let Some(c) = self.client.as_mut() {
+            let sel = c.selection.clone();
+            if let Some(gr) = c.groups.get_mut(g as usize) {
+                for id in sel {
+                    if !gr.contains(&id) {
+                        gr.push(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Save the selection in the first empty group (1-9, then 0). Returns the group or -1.
+    #[func]
+    fn save_selection_group(&mut self) -> i64 {
+        let Some(c) = self.client.as_mut() else { return -1 };
+        if c.selection.is_empty() {
+            return -1;
+        }
+        for g in (1..10).chain(std::iter::once(0)) {
+            let empty = c.groups[g].iter().all(|&id| c.session.world.get(id).is_none());
+            if empty {
+                c.groups[g] = c.selection.clone();
+                return g as i64;
+            }
+        }
+        -1
+    }
+
+    /// Formation for the next move orders (see Client::formation).
+    #[func]
+    fn set_formation(&mut self, shape: i64, timing: i64) {
+        if let Some(c) = self.client.as_mut() {
+            c.formation = (shape.clamp(0, 4) as u8, timing.clamp(0, 2) as u8);
+        }
+    }
+
+    #[func]
+    fn formation(&self) -> Vector2i {
+        self.client.as_ref().map_or(Vector2i::ZERO, |c| Vector2i::new(c.formation.0 as i32, c.formation.1 as i32))
+    }
+
+    /// Any of my units (not buildings) selected?
+    #[func]
+    fn units_selected(&self) -> bool {
+        self.client.as_ref().map_or(false, |c| !c.my_selected_units().is_empty())
+    }
+
     #[func]
     fn recall_group(&mut self, g: i64) -> bool {
         let Some(c) = self.client.as_mut() else { return false };

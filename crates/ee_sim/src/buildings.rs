@@ -83,11 +83,21 @@ impl World {
     }
 
     fn finish_unit(&mut self, i: usize, u: crate::defs::DefId) {
-        let e = &self.entities[i];
+        let e = &mut self.entities[i];
         let owner = e.owner;
         let bid = e.id;
-        let rally = e.rally;
-        let rally_target = e.rally_target;
+        let mut rally = e.rally;
+        let mut rally_target = e.rally_target;
+        // several rally points: new units take turns
+        if rally.is_some() && !e.rallies.is_empty() {
+            let k = e.rally_next as usize % (e.rallies.len() + 1);
+            e.rally_next = e.rally_next.wrapping_add(1);
+            if k > 0 {
+                rally = Some(e.rallies[k - 1]);
+                rally_target = 0;
+            }
+        }
+        let e = &self.entities[i];
         let bpos = e.pos;
         let ud = data().def(u);
         let spawn_at = if ud.layer == Layer::Air {

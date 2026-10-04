@@ -31,6 +31,12 @@ pub enum CommandKind {
     Scout { units: Vec<EntityId> },
     /// Granary: lay out farms on every free plot around it and send citizens to work them.
     RebuildFarms { building: EntityId },
+    /// Move in a chosen formation. shape: 0 block, 1 line abreast, 2 wedge, 3 column,
+    /// 4 wide spread. timing: 0 each at full speed, 1 all arrive together, 2 arrive just
+    /// after the previous synchronized wave.
+    Formation { units: Vec<EntityId>, to: FVec, attack_move: bool, shape: u8, timing: u8 },
+    /// Another rally point: new units take turns between all of a building's points.
+    AddRally { buildings: Vec<EntityId>, to: FVec },
     /// Offer (`ally`) or break / declare war on (`!ally`) another player.
     Diplomacy { target: u8, ally: bool },
     /// Send resources to another player.
