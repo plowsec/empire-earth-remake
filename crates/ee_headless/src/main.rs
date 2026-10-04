@@ -251,6 +251,28 @@ fn report(s: &ee_net::Session, t: u32) {
                 }
             }
             println!("      P{} gatherers f/w/s/g/i {:?} idle {} buildings {:?}", pl.id, g, idle, bk);
+            // how far each gatherer's node is from the nearest drop site for that resource
+            let drops: Vec<(ee_sim::fixed::FVec, Vec<u8>)> = w.entities.iter()
+                .filter(|e| e.alive && e.owner == pl.id && e.complete && !data().def(e.def).data.dropsite.is_empty())
+                .map(|e| (e.pos, data().def(e.def).data.dropsite.iter().map(|r| *r as u8).collect()))
+                .collect();
+            let mut dist = [0i64; 5];
+            let mut far = [0; 5];
+            for e in &w.entities {
+                if !e.alive || e.owner != pl.id { continue; }
+                if let ee_sim::entity::Order::Gather { node } = e.order {
+                    if let Some(n) = w.get(node) {
+                        if let Some(r) = data().def(n.def).data.resource {
+                            let r = r as usize;
+                            let dmin = drops.iter().filter(|(_, rs)| rs.contains(&(r as u8))).map(|(p, _)| p.dist2_raw(n.pos)).min().map(|d2| ((d2 as f64).sqrt() / ee_sim::fixed::ONE as f64) as i64).unwrap_or(999);
+                            dist[r] += dmin;
+                            if dmin > 12 { far[r] += 1; }
+                        }
+                    }
+                }
+            }
+            let avg: Vec<i64> = (0..5).map(|r| if g[r] > 0 { dist[r] / g[r] as i64 } else { 0 }).collect();
+            println!("      P{} gathered total {:?} | avg node-to-drop tiles {:?} | >12 tiles {:?}", pl.id, pl.stats.gathered, avg, far);
             }
             for line in s.controller_debug() { println!("      {line}"); }
             for p in &w.players {

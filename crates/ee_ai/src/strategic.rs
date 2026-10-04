@@ -77,8 +77,9 @@ impl Ai {
         let army = v.land_army.len() + v.navy.len() + v.air.len();
         let silo_cost = d.def(silo).data.cost.arr();
         let have_silos = self.count_with_sites(w, v, silo);
-        if army < if naval { 20 } else { 30 } {
-            // build up forces first
+        let (sea, air_ok) = self.control(w, v);
+        if army < if naval { 20 } else { 30 } || !sea || !air_ok {
+            // build up forces first: missiles don't win back the sea or the sky
         } else if have_silos < max_silos {
             self.nuke_reserve = silo_cost;
             if w.can_afford(p, &d.def(silo).data.cost) {
@@ -90,10 +91,19 @@ impl Ai {
                 self.nuke_reserve = cost.arr();
             }
         }
+        // a few missiles in the tubes are a threat; a dozen is an army we didn't build
+        let in_stock: usize = silos.iter().filter_map(|&s| w.get(s)).map(|e| e.cargo.len() + e.production.len()).sum();
+        let max_stock = if naval { 9 } else { 4 };
+        if in_stock >= max_stock {
+            self.nuke_reserve = [0; 5];
+        }
         for &s in &silos {
+            if in_stock >= max_stock {
+                break;
+            }
             let Some(se) = w.get(s) else { continue };
             let queued = se.production.iter().filter(|it| matches!(it, ProdItem::Unit(u) if *u == icbm)).count();
-            if se.complete && se.cargo.len() + queued < 3 && queued == 0 && w.can_afford(p, &cost) {
+            if se.complete && se.cargo.len() + queued < 3 && queued == 0 && sea && air_ok && w.can_afford(p, &cost) {
                 out.push(CommandKind::Train { building: s, def: icbm, count: 1 });
             }
         }

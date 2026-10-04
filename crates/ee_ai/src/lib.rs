@@ -81,7 +81,8 @@ impl Difficulty {
             Difficulty::Hardest => (110, 26),
         };
         // past a few hundred workers more citizens only starve the army of food and room
-        (base.max(pop_limit * pct / 100) as usize).min(420)
+        // (the user wins with 600-700 workers on big maps; gold and iron need hands)
+        (base.max(pop_limit * pct / 100) as usize).min(720)
     }
     /// first attack, in ticks
     fn first_attack(self) -> u32 {
@@ -144,6 +145,14 @@ pub struct Ai {
     pub diff: Difficulty,
     #[serde(default)]
     pub personality: Personality,
+    /// remembered enemy fleet / air force size (sightings fade after 3 minutes; a fleet
+    /// that slipped out of view is still out there)
+    #[serde(default)]
+    est_navy: i32,
+    #[serde(default)]
+    est_air: i32,
+    #[serde(default)]
+    est_tick: u32,
     rng: SimRng,
     phase: u32,
     base: FVec,
@@ -237,6 +246,9 @@ impl Ai {
             player,
             diff,
             personality: Personality::Standard,
+            est_navy: 0,
+            est_air: 0,
+            est_tick: 0,
             rng: SimRng::new(seed ^ 0xa1a1, player as u64 + 7),
             phase: player as u32 * 3,
             base: FVec::ZERO,
@@ -505,6 +517,14 @@ impl Ai {
         // forget sightings older than 3 minutes (or units now dead)
         let now = w.tick;
         self.sightings.retain(|id, (_, t)| now.wrapping_sub(*t) < 20 * 180 && w.get(*id).is_some());
+        // long memory of the enemy's sea and air power: fades 10% per minute
+        if now.wrapping_sub(self.est_tick) >= 1200 {
+            self.est_tick = now;
+            self.est_navy = self.est_navy * 9 / 10;
+            self.est_air = self.est_air * 9 / 10;
+        }
+        self.est_navy = self.est_navy.max((self.seen(2) + self.seen(3)) as i32);
+        self.est_air = self.est_air.max((self.seen(0) + self.seen(1)) as i32);
         self.seen_air = self.seen_air * 15 / 16;
         self.seen_heavy = self.seen_heavy * 15 / 16;
         self.seen_inf = self.seen_inf * 15 / 16;

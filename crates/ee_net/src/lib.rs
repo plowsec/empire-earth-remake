@@ -214,8 +214,8 @@ impl Session {
         }
         let tick = self.world.tick;
         if self.prepared != Some(tick) {
-            self.prepared = Some(tick);
             // controllers think on the state they can see now; their commands land later
+            // (issued before our bundle for tick + delay goes out, so they make it in)
             let mut ctrl = std::mem::take(&mut self.controllers);
             for c in ctrl.iter_mut() {
                 for kind in c.think(&self.world) {
@@ -224,6 +224,7 @@ impl Session {
                 }
             }
             self.controllers = ctrl;
+            self.prepared = Some(tick);
             // ship our bundle for the tick that just got its last local input
             let send_tick = tick + self.input_delay;
             for &p in &self.local_players.clone() {

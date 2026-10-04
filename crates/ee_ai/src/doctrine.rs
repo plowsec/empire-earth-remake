@@ -320,3 +320,33 @@ impl Ai {
         }
     }
 }
+
+impl Ai {
+    /// Our warships and fighters against what we know of the enemy's.
+    /// (sea control, air control): we hold the edge, or they have next to nothing there.
+    pub(crate) fn control(&self, w: &World, v: &View) -> (bool, bool) {
+        let d = data();
+        let mut navy = 0;
+        for &s in &v.navy {
+            if let Some(e) = w.get(s) {
+                navy += match d.def(e.def).data.key.as_str() {
+                    "battleship" => 3,
+                    "submarine" => 2,
+                    _ => 1,
+                };
+            }
+        }
+        let fighters = v.air.iter().filter(|&&a| w.get(a).map_or(false, |e| matches!(d.def(e.def).data.key.as_str(), "fighter" | "strike_fighter"))).count() as i32;
+        let sea = self.est_navy <= 2 || navy * 10 >= self.est_navy * 14;
+        let air = self.est_air <= 3 || fighters * 10 >= self.est_air * 8;
+        (sea, air)
+    }
+
+    /// Ships and planes we want before spending gold and iron on anything else.
+    pub(crate) fn sea_air_wanted(&self, w: &World) -> (usize, usize) {
+        let cap = (40 + w.config.pop_limit / 25).min(160) as usize;
+        let navy = ((self.est_navy * 3 / 2 + 6) as usize).min(cap);
+        let air = ((self.est_air * 6 / 5 + 8) as usize).min(cap);
+        (navy, air)
+    }
+}

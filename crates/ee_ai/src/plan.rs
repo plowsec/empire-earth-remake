@@ -559,6 +559,13 @@ impl Ai {
         let enemy_bombers = self.seen(1);
         // the enemy fights at sea and in the air: answer in kind, not with more infantry
         let sea_air_war = enemy_navy + enemy_air > (self.seen(4) + self.seen(5)) * 2 && enemy_navy + enemy_air >= 8;
+        // behind at sea or in the air: gold and iron go to ships and fighters first
+        let (want_navy, want_air) = self.sea_air_wanted(w);
+        let have_yard = v.buildings.get(&id("naval_yard")).map_or(false, |b| !b.is_empty());
+        let have_field = v.buildings.get(&id("airport")).map_or(false, |b| !b.is_empty());
+        let behind = w.tick >= self.diff.first_attack() / 2
+            && ((have_yard && v.navy.len() < want_navy) || (have_field && v.air.len() < want_air));
+        let enemy_navy = enemy_navy.max(self.est_navy as usize);
         let armor_threat = self.seen_heavy > 10;
         let navy_threat = enemy_navy >= 4;
 
@@ -603,7 +610,7 @@ impl Ai {
         } else {
             vec![
                 // frigates carry the only torpedoes that can find submarines
-                ("frigate", if enemy_subs >= 2 { 50 } else if air_threat { 35 } else { 20 }),
+                ("frigate", if enemy_subs >= 2 { 50 } else { 35 }),
                 ("battleship", 30),
                 ("submarine", if navy_threat { 35 } else { 15 }),
             ]
@@ -646,9 +653,11 @@ impl Ai {
                 }
             }
             // never pad the army with a kind that's already over its share (save instead),
-            // unless food and wood are piling up: then cheap units are better than nothing
+            // unless food and wood are piling up: then cheap units are better than nothing -
+            // but only ones that don't eat the gold and iron ships and planes need
             let flush = pl.res[0] + pl.res[1] > 6000;
-            best.filter(|b| b.0 > 0 || flush).map(|b| b.1)
+            let cheap = |def: DefId| { let c = d.def(def).data.cost; c.gold == 0 && c.iron == 0 };
+            best.filter(|b| b.0 > 0 || (flush && cheap(b.1))).map(|b| b.1)
         };
 
         let cit_target = self.diff.econ_base();
@@ -668,8 +677,18 @@ impl Ai {
                     continue;
                 }
                 let trainable = &d.def(be.def).trains;
-                if sea_air_war && (bkey == "barracks" || bkey == "tank_factory") && v.land_army.len() >= 60 && v.navy.len() < enemy_navy * 3 / 2 && pl.res[0] + pl.res[1] < 6000 {
-                    continue; // money goes to ships and planes first
+                let land_shop = bkey == "barracks" || bkey == "tank_factory";
+                if land_shop && (behind || sea_air_war) && v.land_army.len() >= 50 {
+                    // money goes to ships and planes first; a garrison of food-and-wood
+                    // infantry at most
+                    if bkey == "tank_factory" || pl.res[0] + pl.res[1] < 6000 {
+                        continue;
+                    }
+                    let rifle = id("rifleman");
+                    if v.land_army.len() < 120 && be.production.is_empty() && d.def(be.def).trains.contains(&rifle) && w.can_afford(self.player, &d.def(rifle).data.cost) {
+                        out.push(CommandKind::Train { building: b, def: rifle, count: 1 });
+                    }
+                    continue;
                 }
                 // naval yard: transports first when an invasion needs them
                 if bkey == "naval_yard" {
@@ -681,7 +700,7 @@ impl Ai {
                         out.push(CommandKind::Train { building: b, def: id("transport"), count: 1 });
                         continue;
                     }
-                    let fleet_cap = if naval_style { 90 } else { (8 + self.wave as usize * 3).min(12 + w.config.pop_limit as usize / 100).max((enemy_navy * 3 / 2 + 6).min(80)) };
+                    let fleet_cap = if naval_style { 90 } else { (8 + self.wave as usize * 3).min(12 + w.config.pop_limit as usize / 100).max(want_navy) };
                     if v.navy.len() >= fleet_cap {
                         continue;
                     }
@@ -700,7 +719,7 @@ impl Ai {
                     continue;
                 }
                 // match the enemy air force (and then some) once it shows up
-                let air_cap = if air_style { 130 } else if naval_style { 40 } else { (8 + self.wave as usize * 3).max((enemy_air * 3 / 2 + 10).min(120)) };
+                let air_cap = if air_style { 130 } else if naval_style { 40 } else { (8 + self.wave as usize * 3).max(want_air) };
                 if bkey == "airport" && v.air.len() >= air_cap {
                     continue;
                 }
@@ -893,7 +912,10 @@ impl Ai {
         if attack_time && w.tick % 400 == (self.phase * 13) % 400 {
             let my_army = v.land_army.len() + v.air.len() * 2 + v.navy.len() * 2;
             let enemy_buildings = self.known.len();
-            if my_army >= 30 && enemy_buildings <= 6 || my_army >= 60 {
+            // ...and only with the edge at sea and in the air: piecemeal raids into a
+            // stronger fleet are how armies die
+            let (sea, air_ok) = self.control(w, v);
+            if (my_army >= 30 && enemy_buildings <= 6 || my_army >= 60) && sea && air_ok {
                 if let Some(t) = self.pick_strike_target(w) {
                     if let Some(tp) = self.known.get(&t).map(|k| k.pos) {
                         let air: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).map_or(false, |e| e.order == Order::Idle && e.def != d.id("nuke_bomber"))).collect();
@@ -1107,6 +1129,11 @@ impl Ai {
             if !ready || available.len() < self.diff.wave_size().min(8 + self.wave as usize * 4) || v.transports.is_empty() {
                 return;
             }
+            // no landing craft into an enemy fleet: win the sea first
+            let (sea, air_ok) = self.control(w, v);
+            if !sea || (!air_ok && self.est_air >= 10) {
+                return;
+            }
             // the next island in the conquest order (contested, enemy colonies, enemy home)
             let Some((target_isl, es)) = self.invasion_target(w) else { return };
             let home_assault = w.starts.iter().any(|s| self.island_at(w, *s) == Some(target_isl));
@@ -1222,7 +1249,19 @@ impl Ai {
             Stage::Load => {
                 let aboard = inv.units.iter().filter(|&&u| w.get(u).map_or(false, |e| e.inside != 0)).count();
                 // big waves take a while to file aboard; don't leave most of them behind
-                if aboard == inv.units.len() || (elapsed > 20 * 60 && aboard * 10 >= inv.units.len() * 8) || elapsed > 20 * 100 {
+                let (sea, _) = self.control(w, v);
+                if !sea {
+                    // their fleet showed up: don't sail into it. Wait for ours, then give up
+                    if elapsed > 20 * 120 {
+                        for &t in &inv.transports {
+                            if w.get(t).map_or(false, |e| !e.cargo.is_empty()) {
+                                out.push(CommandKind::Unload { units: vec![t], at: inv.staging });
+                            }
+                        }
+                        out.push(CommandKind::Move { units: inv.units.clone(), to: self.base, attack_move: true, queue: false });
+                        return;
+                    }
+                } else if aboard == inv.units.len() || (elapsed > 20 * 60 && aboard * 10 >= inv.units.len() * 8) || elapsed > 20 * 100 {
                     let loaded: Vec<EntityId> = inv.transports.iter().copied().filter(|&t| w.get(t).map_or(false, |e| !e.cargo.is_empty())).collect();
                     if loaded.is_empty() {
                         // nobody got on: abort
