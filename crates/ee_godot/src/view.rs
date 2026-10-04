@@ -455,6 +455,10 @@ impl GameView {
     #[func]
     fn set_reveal(&mut self, r: bool) {
         if let Some(c) = self.client.as_mut() {
+            // visibility is part of the simulation: one machine can't change it in LAN
+            if c.lan {
+                return;
+            }
             c.reveal = r;
             c.session.world.config.reveal = r;
         }

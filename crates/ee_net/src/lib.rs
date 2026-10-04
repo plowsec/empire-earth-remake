@@ -182,9 +182,14 @@ impl Session {
         self.controllers.iter().map(|c| c.save_state()).collect()
     }
 
-    /// Issue a command for a local player. It executes `input_delay` ticks later.
+    /// Issue a command for a local player. It executes `input_delay` ticks later - and
+    /// never in a tick whose bundle was already sent to the other players (while we wait
+    /// for a slow peer, the bundle for tick + delay is already out).
     pub fn issue(&mut self, player: u8, kind: CommandKind) {
-        let tick = self.world.tick + self.input_delay;
+        let mut tick = self.world.tick + self.input_delay;
+        if let Some(t) = self.prepared {
+            tick = tick.max(t + self.input_delay + 1);
+        }
         self.scheduled.entry(tick).or_default().push(Command { player, kind });
     }
 
@@ -323,4 +328,52 @@ pub fn run_replay(config: MatchConfig, replay: &Replay, ticks: u32) -> u64 {
         world.step(&tc);
     }
     world.checksum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// A peer that is never ready until released, recording what we send.
+    struct Gate {
+        open: Arc<Mutex<u32>>,
+        sent: Arc<Mutex<Vec<TickCommands>>>,
+    }
+    impl Transport for Gate {
+        fn send(&mut self, _p: u8, tc: &TickCommands) {
+            self.sent.lock().unwrap().push(tc.clone());
+        }
+        fn poll(&mut self) -> Vec<(u8, TickCommands)> {
+            // the remote player's (empty) bundles arrive up to the open tick
+            let upto = *self.open.lock().unwrap();
+            (0..=upto).map(|t| (1u8, TickCommands { tick: t, commands: vec![] })).collect()
+        }
+        fn remote_players(&self) -> Vec<u8> {
+            vec![1]
+        }
+    }
+
+    #[test]
+    fn commands_issued_while_waiting_still_reach_the_peers() {
+        let open = Arc::new(Mutex::new(5u32));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut s = Session::new(MatchConfig::skirmish(1, 2), vec![0], Box::new(Gate { open: open.clone(), sent: sent.clone() }));
+        s.input_delay = 3;
+        // run until we stall on tick 6
+        for _ in 0..20 {
+            s.step_once();
+        }
+        assert_eq!(s.world.tick, 6, "stalled waiting for the peer");
+        // the player gives an order while we wait
+        s.issue(0, CommandKind::Stop { units: vec![] });
+        *open.lock().unwrap() = 40;
+        for _ in 0..30 {
+            s.step_once();
+        }
+        let executed: Vec<u32> = s.replay.iter().filter(|tc| tc.commands.iter().any(|c| c.player == 0)).map(|tc| tc.tick).collect();
+        let shipped: Vec<u32> = sent.lock().unwrap().iter().filter(|tc| !tc.commands.is_empty()).map(|tc| tc.tick).collect();
+        assert_eq!(executed.len(), 1);
+        assert_eq!(executed, shipped, "the order must be sent for exactly the tick it runs on");
+    }
 }
