@@ -157,4 +157,4 @@ func _process(dt: float) -> void:
 				rig.focus(h)
 
 func _setup_environment() -> void:
-	EnvSetup.apply($WorldEnvironment, $Sun)
+	preload("res://scripts/env_setup.gd").apply($WorldEnvironment, $Sun)

@@ -18,9 +18,11 @@ thousands of units fighting on land, at sea and in the air.
 ## Quick start
 
 ```sh
-./tools/build.sh                 # build the Rust GDExtension into game/bin
+./tools/setup.sh                 # once after cloning: builds the Rust extension, imports assets
 godot --path game                # play (main menu → Skirmish)
 ```
+
+After pulling changes to the Rust code, rebuild with `./tools/build.sh`.
 
 Requirements: Rust (stable), Godot 4.7, and Blender 5 (only to regenerate models).
 

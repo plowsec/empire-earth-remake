@@ -7,7 +7,6 @@ use godot::prelude::*;
 const STRIDE: usize = 12 + 4 + 4;
 
 pub struct Batch {
-    pub node: Gd<MultiMeshInstance3D>,
     mm: Gd<MultiMesh>,
     buf: Vec<f32>,
     count: usize,
@@ -30,7 +29,7 @@ impl Batch {
             node.set_material_override(m);
         }
         parent.add_child(&node);
-        Batch { node, mm, buf: Vec::new(), count: 0, capacity: 0, last_visible: -1 }
+        Batch { mm, buf: Vec::new(), count: 0, capacity: 0, last_visible: -1 }
     }
 
     #[inline]
@@ -100,9 +99,5 @@ impl Batch {
             self.mm.set_visible_instance_count(self.count as i32);
             self.last_visible = self.count as i32;
         }
-    }
-
-    pub fn count(&self) -> usize {
-        self.count
     }
 }

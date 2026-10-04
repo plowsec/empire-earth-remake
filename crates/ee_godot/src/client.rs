@@ -123,7 +123,6 @@ pub struct Client {
     engine_next: HashMap<EntityId, f64>,
     pub events: Vec<ClientEvent>,
     pub time: f64,
-    pub notices: Vec<String>,
     last_attack_notice: f64,
     palm_model: usize,
     pine_model: usize,
@@ -170,7 +169,7 @@ pub struct StartOptions {
 }
 
 impl Client {
-    pub fn new(mut root: Gd<Node>, opt: StartOptions, noise: Option<Gd<Texture2D>>) -> Client {
+    pub fn new(root: Gd<Node>, opt: StartOptions, noise: Option<Gd<Texture2D>>) -> Client {
         let mut cfg = MatchConfig::skirmish(opt.seed, opt.players.clamp(2, 8));
         cfg.map_size = opt.map_size;
         cfg.resources = opt.resources;
@@ -184,7 +183,7 @@ impl Client {
             p.name = format!("AI {}", i);
         }
         let mut session = Session::single_player(cfg);
-        let mut add_ai = |s: &mut Session, p: u8, diff: i32, seed: u64| {
+        let add_ai = |s: &mut Session, p: u8, diff: i32, seed: u64| {
             s.add_controller(Box::new(Ai::new(p, Difficulty::from_index(diff), seed)));
             s.ai_setup.push(ee_net::AiSetup { player: p, difficulty: diff, seed });
         };
@@ -310,7 +309,6 @@ impl Client {
             engine_next: HashMap::new(),
             events: Vec::new(),
             time: 0.0,
-            notices: Vec::new(),
             last_attack_notice: -100.0,
             palm_model,
             pine_model,
@@ -375,7 +373,9 @@ impl Client {
                     let _ = std::fs::rename(&tmp, path);
                 }
             }
-            Err(e) => godot_warn!("replay not written: {e}"),
+            Err(e) => {
+                godot_warn!("replay not written: {e}");
+            }
         }
     }
 
@@ -438,7 +438,9 @@ impl Client {
                 self.autosave_slot = self.autosave_slot % 3 + 1;
                 format!("Autosave {}", self.autosave_slot)
             };
-            self.save_to(&name, true);
+            if let Err(e) = self.save_to(&name, true) {
+                godot_warn!("autosave failed: {e}");
+            }
         }
         // keep the replay file current so a crash or quit still leaves a full record
         self.replay_timer -= dt as f32;
@@ -749,7 +751,7 @@ impl Client {
             self.minimap_buf[i * 4 + 2] = (c[2] as u32 * k / 255) as u8;
             self.minimap_buf[i * 4 + 3] = 255;
         }
-        let mut plot = |buf: &mut Vec<u8>, x: i32, y: i32, c: Color, r: i32| {
+        let plot = |buf: &mut Vec<u8>, x: i32, y: i32, c: Color, r: i32| {
             for dy in -r..=r {
                 for dx in -r..=r {
                     let (px, py) = (x + dx, y + dy);
@@ -1337,7 +1339,6 @@ impl Client {
         for b in self.static_batches.values_mut() {
             b.begin();
         }
-        let me = self.me;
         let n = self.session.world.entities.len();
         let tree = data().id("tree");
         for i in 1..n {

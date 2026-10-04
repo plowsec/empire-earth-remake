@@ -40,7 +40,6 @@ pub struct Model {
     pub height: f32,
     /// selection ring radius in meters
     pub radius: f32,
-    pub placeholder: bool,
     /// far-distance version (no shadows)
     pub lod1: Option<usize>,
     pub shadows: bool,
@@ -157,10 +156,6 @@ impl Models {
         let i = self.list.len() - 1;
         self.by_name.insert(name.to_string(), i);
         i
-    }
-
-    pub fn has_real(&self, name: &str) -> bool {
-        self.by_name.get(name).map_or(false, |&i| !self.list[i].placeholder)
     }
 
     fn make_material(&self, src: Option<Gd<Material>>, def: &Def, height: f32) -> Gd<ShaderMaterial> {
@@ -285,7 +280,7 @@ impl Models {
         let mut root = root;
         root.queue_free();
         let scale = visual_scale(def);
-        Some(Model { parts, height: height * scale, radius: radius * scale, placeholder: false, scale, lod1: None, shadows: true })
+        Some(Model { parts, height: height * scale, radius: radius * scale, scale, lod1: None, shadows: true })
     }
 
     fn placeholder(&self, def: &Def) -> Model {
@@ -399,7 +394,7 @@ impl Models {
             })
             .collect();
         let radius = if def.is_building() { sw.max(sh) as f32 * TILE * 0.6 } else { (r * 1.3).max(0.6) };
-        Model { parts, height, radius, placeholder: true, scale: 1.0, lod1: None, shadows: true }
+        Model { parts, height, radius, scale: 1.0, lod1: None, shadows: true }
     }
 }
 

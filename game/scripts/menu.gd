@@ -20,7 +20,7 @@ var _focus := Vector3.ZERO
 var opts := {"players": 2, "difficulty": 1, "map_size": 1, "resources": 100, "start_res": 1500, "pop_limit": 300, "seed": 0, "reveal": 0}
 
 func _ready() -> void:
-	EnvSetup.apply($WorldEnvironment, $Sun)
+	preload("res://scripts/env_setup.gd").apply($WorldEnvironment, $Sun)
 	font_title = load("res://assets/fonts/Cinzel-Variable.ttf")
 	font_body = load("res://assets/fonts/Rajdhani-SemiBold.ttf")
 	font_bold = load("res://assets/fonts/Rajdhani-Bold.ttf")
