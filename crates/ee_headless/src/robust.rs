@@ -267,6 +267,27 @@ pub fn run(path: &str, every_min: u32, reveal_at: Option<u32>) {
             let ai = ai_players.first().copied().unwrap_or(1);
             println!("[{:>3}m] | {} | {} | {}", t / 1200, summary(&orig, me), summary(&s.world, me), summary(&s.world, ai));
             println!("        commands: {} replayed exactly, {} adapted, {} dropped (of {})", stats.exact, stats.partial, stats.dropped, stats.commands);
+            // the AI in detail: stock, army by kind (count, kills), production buildings
+            let w = &s.world;
+            let mut units: std::collections::BTreeMap<String, (u32, u32)> = Default::default();
+            let mut blds: std::collections::BTreeMap<String, u32> = Default::default();
+            for e in &w.entities {
+                if !e.alive || e.owner != ai { continue; }
+                let d = ee_sim::world::data().def(e.def);
+                if d.is_building() { *blds.entry(d.data.key.clone()).or_default() += 1; }
+                else if d.class() != ee_sim::defs::Class::Citizen { let x = units.entry(d.data.key.clone()).or_default(); x.0 += 1; x.1 += e.kills as u32; }
+            }
+            println!("        AI res {:?} units {:?}", w.players[ai as usize].res, units);
+            println!("        AI buildings {:?}", blds);
+            let mut g = [0; 5];
+            for e in &w.entities {
+                if e.alive && e.owner == ai {
+                    if let ee_sim::entity::Order::Gather { node } = e.order {
+                        if let Some(r) = w.get(node).and_then(|n| ee_sim::world::data().def(n.def).data.resource) { g[r as usize] += 1; }
+                    }
+                }
+            }
+            println!("        AI gatherers f/w/s/g/i {:?} gathered {:?} | you gathered {:?}", g, w.players[ai as usize].stats.gathered, w.players[me as usize].stats.gathered);
         }
         if s.world.game_over {
             let won = !s.world.players[me as usize].defeated;

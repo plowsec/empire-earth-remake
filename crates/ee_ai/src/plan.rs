@@ -87,7 +87,7 @@ impl Ai {
         let ring_room = v.buildings.get(&id("granary")).map_or(false, |gs| gs.iter().any(|&g| {
             w.get(g).map_or(false, |e| [(-3, 0), (3, 0), (0, -3), (0, 3), (-3, -3), (3, -3), (-3, 3), (3, 3)].iter().any(|&(dx, dy)| self.site_ok(w, id("farm"), (e.tile.0 + dx, e.tile.1 + dy))))
         }));
-        if cits >= 24 && have(id("granary")) < granaries_wanted.min(1 + cits / 20) && (have(id("farm")) + 2 >= 6 * v.count(id("granary")) || !ring_room) {
+        if cits >= 24 && have(id("granary")) < granaries_wanted.min(1 + cits / 40) && (have(id("farm")) + 2 >= 6 * v.count(id("granary")) || (!ring_room && pl.res[0] < 3000)) {
             wants.push(id("granary"));
         }
         if cits >= 24 && have(id("settlement")) < 1 + cits / 30 {
