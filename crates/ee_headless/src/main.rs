@@ -149,6 +149,7 @@ fn run_match(seed: u64, players: usize, minutes: u32, diff: i32, pop_limit: i32,
     }
     println!("sim time {:?} for {} ticks, max step {:?}, checksum {:016x}", t0.elapsed(), s.world.tick, max_step, s.world.checksum());
     println!("ICBM launches per player: {launches:?}");
+    println!("technologies per player: {:?} of {}", s.world.players.iter().map(|p| p.techs.iter().filter(|t| **t).count()).collect::<Vec<_>>(), ee_sim::world::data().techs.len());
     if let Some(path) = record {
         std::fs::write(&path, ron::to_string(&s.make_replay()).unwrap()).unwrap();
         println!("recorded {path}");

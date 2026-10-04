@@ -108,8 +108,7 @@ impl Ai {
                 }
             }
         }
-        // research
-        self.research(w, v, out);
+        // research happens every think (see Ai::think)
         self.replant(w, v, out);
 
         let mut started = 0;
@@ -229,26 +228,42 @@ impl Ai {
         }
     }
 
-    fn research(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
+    pub(crate) fn research(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
         let d = data();
         let pl = &w.players[self.player as usize];
-        if v.citizens.len() < 25 {
+        if v.citizens.len() < 20 {
             return;
         }
-        for t in &d.techs {
-            if pl.techs[t.id as usize] || pl.researching[t.id as usize] {
-                continue;
+        // economy upgrades first, combat upgrades once the fighting starts (or once rich)
+        let at_war = w.tick >= self.diff.first_attack() || self.defending;
+        let mut todo: Vec<(i32, &ee_sim::defs::Tech)> = d.techs.iter()
+            .filter(|t| !pl.techs[t.id as usize] && !pl.researching[t.id as usize])
+            .map(|t| {
+                let eco = t.data.effects.iter().any(|e| matches!(e.stat, ee_sim::defs::Stat::Gather(_) | ee_sim::defs::Stat::BuildSpeed));
+                let pri = if eco { if at_war { 1 } else { 0 } } else if at_war { 0 } else { 2 };
+                (pri, t)
+            })
+            .collect();
+        todo.sort_by_key(|x| (x.0, x.1.id));
+        let mut started = 0;
+        let mut spent = [0i32; 5];
+        for (_, t) in todo {
+            if started >= 2 {
+                break;
             }
             let Some(bs) = v.buildings.get(&t.at) else { continue };
-            // keep a reserve for the army: only research when comfortably rich
-            let rich = t.data.cost.arr().iter().zip(pl.res.iter()).all(|(c, r)| *r >= c * 2 + 200);
-            if !rich {
+            // affordable with a small margin left for the army
+            let cost = t.data.cost.arr();
+            if cost.iter().enumerate().any(|(r, c)| pl.res[r] - spent[r] < c + c / 4 + 50) {
                 continue;
             }
-            if let Some(&b) = bs.iter().find(|&&b| w.get(b).map_or(false, |e| e.production.len() < 2)) {
-                out.push(CommandKind::Research { building: b, tech: t.id });
-                return;
+            // research may join a busy queue (it goes behind at most two units)
+            let Some(&b) = bs.iter().filter(|&&b| w.get(b).map_or(false, |e| e.complete && e.production.len() < 3)).min_by_key(|&&b| w.get(b).map_or(9, |e| e.production.len())) else { continue };
+            out.push(CommandKind::Research { building: b, tech: t.id });
+            for r in 0..5 {
+                spent[r] += cost[r];
             }
+            started += 1;
         }
     }
 

@@ -370,6 +370,7 @@ impl Controller for Ai {
             self.free_trapped(w, &v, &mut out);
         }
         self.produce(w, &v, &mut out);
+        self.research(w, &v, &mut out);
         self.rebuild_fields(w, &v, &mut out);
         self.military(w, &v, &mut out);
         self.scout(w, &v, &mut out);
