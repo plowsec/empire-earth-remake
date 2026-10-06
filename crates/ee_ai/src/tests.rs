@@ -32,7 +32,7 @@ fn fields_are_built_with_regrowing_berries_and_spending_is_throttled() {
     let spot = ai.find_site(&w, data().id("granary")).unwrap();
     let granary = w.spawn_static(data().id("granary"), 0, spot, true);
     for _ in 0..20 { w.spawn(data().id("citizen"), 0, ai.base); }
-    w.players[0].res = [5000; 5];
+    w.players[0].res = [2000, 5000, 5000, 5000, 5000];
     assert!(w.nearest_resource(0, ai.base, 20, false).is_some());
     let mut cmds = vec![];
     ai.rebuild_fields(&w, &ai.view(&w), &mut cmds);

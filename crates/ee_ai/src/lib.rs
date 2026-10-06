@@ -652,7 +652,9 @@ impl Ai {
             }
         }
         // farms and granaries follow the food target after the floor
-        self.food_wanted = (workers * want[f] / total_w.max(1)).max(target[f]).max(workers * 26 / 100);
+        // (no fields for a granary that's overflowing: hands go to the mines instead)
+        let floor = if pl.res[f] < 5000 { workers * 26 / 100 } else { 0 };
+        self.food_wanted = (workers * want[f] / total_w.max(1)).max(target[f]).max(floor);
         let mut deficit: [i32; NUM_RES] = [0; NUM_RES];
         for r in 0..NUM_RES {
             deficit[r] = target[r] - v.gatherers[r].len() as i32;

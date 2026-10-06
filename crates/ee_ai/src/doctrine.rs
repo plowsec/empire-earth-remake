@@ -326,20 +326,38 @@ impl Ai {
     /// (sea control, air control): we hold the edge, or they have next to nothing there.
     pub(crate) fn control(&self, w: &World, v: &View) -> (bool, bool) {
         let d = data();
-        let mut navy = 0;
-        for &s in &v.navy {
-            if let Some(e) = w.get(s) {
-                navy += match d.def(e.def).data.key.as_str() {
-                    "battleship" => 3,
-                    "submarine" => 2,
-                    _ => 1,
-                };
-            }
-        }
+        let navy = self.navy_strength(w, v);
         let fighters = v.air.iter().filter(|&&a| w.get(a).map_or(false, |e| matches!(d.def(e.def).data.key.as_str(), "fighter" | "strike_fighter"))).count() as i32;
         let sea = self.est_navy <= 2 || navy * 10 >= self.est_navy * 14;
         let air = self.est_air <= 3 || fighters * 10 >= self.est_air * 8;
         (sea, air)
+    }
+
+    /// Weighted strength of our warships.
+    pub(crate) fn navy_strength(&self, w: &World, v: &View) -> i32 {
+        let d = data();
+        v.navy.iter().filter_map(|&s| w.get(s)).map(|e| match d.def(e.def).data.key.as_str() {
+            "battleship" => 3,
+            "submarine" => 2,
+            _ => 1,
+        }).sum()
+    }
+
+    /// Who has the most buildings we know of on an island.
+    pub(crate) fn island_holder(&self, w: &World, isl: usize) -> Option<u8> {
+        let mut count = std::collections::BTreeMap::new();
+        for k in self.known.values() {
+            if self.island_at(w, k.tile) == Some(isl) {
+                *count.entry(k.owner).or_insert(0) += 1;
+            }
+        }
+        count.into_iter().max_by_key(|(o, n)| (*n, *o)).map(|(o, _)| o)
+    }
+
+    /// Our fleet against the warships of one player seen in the last minutes.
+    pub(crate) fn sea_edge_over(&self, w: &World, v: &View, owner: u8) -> bool {
+        let theirs = self.sightings.iter().filter(|(id, (k, _))| (*k == 2 || *k == 3) && w.get(**id).map_or(false, |e| e.owner == owner)).count() as i32;
+        theirs <= 2 || self.navy_strength(w, v) * 10 >= theirs * 14
     }
 
     /// Ships and planes we want before spending gold and iron on anything else.

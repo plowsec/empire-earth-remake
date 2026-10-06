@@ -991,7 +991,7 @@ impl Ai {
     /// Build a full granary ring once the economy can support eight farmers.
     pub(crate) fn rebuild_fields(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) {
         let d = data();
-        if v.citizens.len() < 24 || self.last_fields_rebuild.is_some_and(|t| w.tick.wrapping_sub(t) < 200) {
+        if v.citizens.len() < 24 || self.last_fields_rebuild.is_some_and(|t| w.tick.wrapping_sub(t) < 200) || w.players[self.player as usize].res[0] >= 5000 {
             return;
         }
         let farm = d.id("farm");
@@ -1152,13 +1152,16 @@ impl Ai {
             if !ready || available.len() < self.diff.wave_size().min(8 + self.wave as usize * 4) || v.transports.is_empty() {
                 return;
             }
-            // no landing craft into an enemy fleet: win the sea first
-            let (sea, air_ok) = self.control(w, v);
-            if !sea || (!air_ok && self.est_air >= 10) {
-                return;
-            }
             // the next island in the conquest order (contested, enemy colonies, enemy home)
             let Some((target_isl, es)) = self.invasion_target(w) else { return };
+            // no landing craft into an enemy fleet: win the sea first - against the fleet of
+            // whoever holds the target (in a free-for-all the others' ships aren't there)
+            let (sea, air_ok) = self.control(w, v);
+            let holder = self.island_holder(w, target_isl);
+            let sea = sea || holder.map_or(false, |h| self.sea_edge_over(w, v, h));
+            if !sea || (!air_ok && self.est_air >= 10 && w.players.len() <= 2) {
+                return;
+            }
             let home_assault = w.starts.iter().any(|s| self.island_at(w, *s) == Some(target_isl));
             // launch from whichever island holds most of the idle army (colonies too)
             let Some((src_isl, group)) = self.launch_island(w, &available) else { return };

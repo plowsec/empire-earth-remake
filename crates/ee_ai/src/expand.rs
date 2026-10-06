@@ -346,8 +346,22 @@ impl Ai {
             else {
                 return;
             };
-            // nearest unclaimed island with mines and no known enemy buildings
+            // nearest unclaimed island with mines and no known enemy buildings - iron and
+            // gold count most: they're what ships and planes are made of
             let (bx, by) = self.base_tile;
+            let mut metal = vec![0i64; self.islands.len()];
+            for e in &w.entities {
+                if e.alive && e.amount > 0 {
+                    if let Some(r) = d.def(e.def).data.resource {
+                        let r = r as usize;
+                        if r == 3 || r == 4 {
+                            if let Some(i) = self.island_at(w, e.tile) {
+                                metal[i] += if r == 4 { 2 } else { 1 };
+                            }
+                        }
+                    }
+                }
+            }
             let mut best: Option<(i64, usize)> = None;
             for (i, isl) in self.islands.iter().enumerate() {
                 if isl.claimed || isl.mines.is_empty() || isl.tiles < 60 {
@@ -359,6 +373,7 @@ impl Ai {
                     continue;
                 }
                 let dd = ((isl.center.0 - bx) as i64).pow(2) + ((isl.center.1 - by) as i64).pow(2);
+                let dd = dd / (1 + metal[i]).pow(2).min(64);
                 if best.map_or(true, |b| dd < b.0) {
                     best = Some((dd, i));
                 }
