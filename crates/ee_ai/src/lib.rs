@@ -129,6 +129,14 @@ struct Invasion {
     beaches: Vec<(i32, i32)>,
     #[serde(default)]
     start_size: usize,
+    /// citizens riding with the wave to fortify the foothold
+    #[serde(default)]
+    settlers: Vec<EntityId>,
+    #[serde(default)]
+    island: Option<usize>,
+    /// where the settlers put the town center (once placed)
+    #[serde(default)]
+    plot: Option<(i32, i32)>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -187,7 +195,11 @@ pub struct Ai {
     pub(crate) islands: Vec<expand::Island>,
     pub(crate) island_of: Vec<u16>,
     pub(crate) home_island: usize,
+    /// (old saves: a single colony; migrated into `colonies`)
     pub(crate) colony: Option<expand::Colony>,
+    /// colonies under way (several at once when there are boats for them)
+    #[serde(default)]
+    pub(crate) colonies: Vec<expand::Colony>,
     pub(crate) last_colony: u32,
     pub(crate) last_replant: u32,
     /// food workers the economy would like (drives granary/farm expansion)
@@ -277,6 +289,7 @@ impl Ai {
             island_of: Vec::new(),
             home_island: 0,
             colony: None,
+            colonies: Vec::new(),
             last_colony: 0,
             last_replant: 0,
             food_wanted: 0,
@@ -351,7 +364,7 @@ impl Controller for Ai {
 
     fn debug(&self) -> String {
         let claimed = self.islands.iter().filter(|i| i.claimed).count();
-        let colony = self.colony.as_ref().map(|c| format!("{:?}->isl{}", c.stage, c.island)).unwrap_or_else(|| "-".into());
+        let colony = if self.colonies.is_empty() { "-".to_string() } else { self.colonies.iter().map(|c| format!("{:?}->isl{}", c.stage, c.island)).collect::<Vec<_>>().join(",") };
         let base = match &self.invasion {
             Some(i) => format!("wave {} stage {:?} units {} transports {} from {:?} landings {:?}", self.wave, i.stage, i.units.len(), i.transports.len(), i.staging.tile(), i.landings.iter().map(|l| l.tile()).collect::<Vec<_>>()),
             None => format!("wave {} (no invasion) known {} defending {}", self.wave, self.known.len(), self.defending),

@@ -261,15 +261,28 @@ impl Ai {
         if let Some(&isl) = self.contested.first() {
             return Some((isl, aim(isl)));
         }
-        let mut footholds = self.enemy_footholds(w);
-        footholds.sort_by_key(|&i| near_zone(i));
-        if let Some(&isl) = footholds.first() {
-            return Some((isl, aim(isl)));
+        // every island an enemy holds is a candidate - their colonies and their homes. The
+        // ones with iron and gold come first, however well defended (the wave is sized to
+        // the defenses), nearer ones before farther ones.
+        let metal = self.island_metal(w);
+        let held = self.held_islands(w);
+        let mut cands = self.enemy_footholds(w);
+        for (i, s) in w.starts.iter().enumerate() {
+            if w.is_enemy(self.player, i as u8) && !w.players[i].defeated {
+                if let Some(isl) = self.island_at(w, *s) {
+                    cands.push(isl);
+                }
+            }
         }
-        let enemy = self.enemy_target_player(w)?;
-        let s = *w.starts.get(enemy as usize)?;
-        let isl = self.island_at(w, s)?;
-        Some((isl, aim(isl)))
+        cands.sort();
+        cands.dedup();
+        cands.retain(|i| !held.contains(i) || self.island_holder(w, *i).is_some());
+        let score = |i: usize| -> i64 {
+            let dist = ee_sim::fixed::isqrt_u64(near_zone(i).max(0) as u64) as i64;
+            (metal.get(i).copied().unwrap_or(0) * 3 + 2) * 10_000 / (dist + 25)
+        };
+        let best = cands.into_iter().max_by_key(|&i| (score(i), std::cmp::Reverse(i)))?;
+        Some((best, aim(best)))
     }
 }
 

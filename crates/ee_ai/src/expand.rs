@@ -327,97 +327,107 @@ impl Ai {
         if self.islands.is_empty() {
             return;
         }
+        if let Some(c) = self.colony.take() {
+            self.colonies.push(c);
+        }
+        // several colonies at once: one per few landing craft (every mine is worth having)
+        let max = (1 + v.transports.len() / 3).min(4);
+        if self.colonies.len() < max {
+            if let Some(c) = self.start_colony(w, v, out) {
+                self.colonies.push(c);
+            }
+        }
+        for c in std::mem::take(&mut self.colonies) {
+            if let Some(c) = self.step_colony(w, v, out, c) {
+                self.colonies.push(c);
+            }
+        }
+    }
+
+    fn start_colony(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>) -> Option<Colony> {
         let tick = w.tick;
         let d = data();
-        if self.colony.is_none() {
-            if tick < 20 * 60 * 4 || v.citizens.len() < 20 || self.defending {
-                return;
-            }
-            if tick.wrapping_sub(self.last_colony) < 20 * 30 {
-                return;
-            }
-            let pl = &w.players[self.player as usize];
-            let sc = d.def(d.id("settlement")).data.cost;
-            if pl.res[1] < sc.wood + 150 || pl.res[2] < sc.stone + 200 {
-                return;
-            }
-            let busy: Vec<EntityId> = self.invasion.as_ref().map(|i| i.transports.clone()).unwrap_or_default();
-            let Some(&ship) = v.transports.iter().find(|&&t| !busy.contains(&t) && w.get(t).map_or(false, |e| e.cargo.is_empty() && matches!(e.order, Order::Idle | Order::Move { .. })))
-            else {
-                return;
-            };
-            // nearest unclaimed island with mines and no known enemy buildings - iron and
-            // gold count most: they're what ships and planes are made of
-            let (bx, by) = self.base_tile;
-            let mut metal = vec![0i64; self.islands.len()];
-            for e in &w.entities {
-                if e.alive && e.amount > 0 {
-                    if let Some(r) = d.def(e.def).data.resource {
-                        let r = r as usize;
-                        if r == 3 || r == 4 {
-                            if let Some(i) = self.island_at(w, e.tile) {
-                                metal[i] += if r == 4 { 2 } else { 1 };
-                            }
-                        }
-                    }
-                }
-            }
-            let mut best: Option<(i64, usize)> = None;
-            for (i, isl) in self.islands.iter().enumerate() {
-                if isl.claimed || isl.mines.is_empty() || isl.tiles < 60 {
-                    continue;
-                }
-                let enemy_here = self.known.values().any(|k| self.island_at(w, k.tile) == Some(i));
-                let failed_recently = self.colony_failed.get(&i).map_or(false, |&t| tick.wrapping_sub(t) < 20 * 60 * 6);
-                if enemy_here || failed_recently {
-                    continue;
-                }
-                let dd = ((isl.center.0 - bx) as i64).pow(2) + ((isl.center.1 - by) as i64).pow(2);
-                let dd = dd / (1 + metal[i]).pow(2).min(64);
-                if best.map_or(true, |b| dd < b.0) {
-                    best = Some((dd, i));
-                }
-            }
-            let Some((_, target)) = best else { return };
-            let tc = self.islands[target].center;
-            let tcp = FVec::tile_center(tc.0, tc.1);
-            // staging: our coast nearest the target; landing: their coast nearest us
-            let Some((stage, stage_w)) = self.coast_toward(w, self.home_island, tcp) else { return };
-            let Some((land, _)) = self.coast_toward(w, target, FVec::tile_center(stage.0, stage.1)) else { return };
-            let mine = *self.islands[target].mines.iter().min_by_key(|m| (m.0 - land.0).pow(2) + (m.1 - land.1).pow(2)).unwrap();
-            let staging = FVec::tile_center(stage.0, stage.1);
-            let citizens = self.nearest_citizens(w, v, staging, 3, Some(self.home_island));
-            if citizens.len() < 2 {
-                return;
-            }
-            let escort: Vec<EntityId> = v
-                .land_army
-                .iter()
-                .copied()
-                .filter(|&u| w.get(u).map_or(false, |e| e.inside == 0 && e.order == Order::Idle && self.island_at(w, e.pos.tile()) == Some(self.home_island)))
-                .take(7)
-                .collect();
-            let mut walkers = citizens.clone();
-            walkers.extend(escort.iter().copied());
-            out.push(CommandKind::Move { units: walkers, to: staging, attack_move: false, queue: false });
-            let staging_water = FVec::tile_center(stage_w.0, stage_w.1);
-            out.push(CommandKind::Move { units: vec![ship], to: staging_water, attack_move: false, queue: false });
-            self.colony = Some(crate::expand::Colony {
-                stage: CStage::Gather,
-                island: target,
-                citizens,
-                escort,
-                transport: ship,
-                staging,
-                staging_water,
-                landing: FVec::tile_center(land.0, land.1),
-                mine,
-                stage_tick: tick,
-            });
-            self.last_colony = tick;
-            return;
+        if tick < 20 * 60 * 4 || v.citizens.len() < 20 || self.defending {
+            return None;
         }
-        let mut c = self.colony.take().unwrap();
+        if tick.wrapping_sub(self.last_colony) < 20 * 30 {
+            return None;
+        }
+        let pl = &w.players[self.player as usize];
+        let sc = d.def(d.id("settlement")).data.cost;
+        if pl.res[1] < sc.wood + 150 || pl.res[2] < sc.stone + 200 {
+            return None;
+        }
+        let mut busy: Vec<EntityId> = self.invasion.as_ref().map(|i| i.transports.clone()).unwrap_or_default();
+        busy.extend(self.colonies.iter().map(|c| c.transport));
+        let Some(&ship) = v.transports.iter().find(|&&t| !busy.contains(&t) && w.get(t).map_or(false, |e| e.cargo.is_empty() && matches!(e.order, Order::Idle | Order::Move { .. })))
+        else {
+            return None;
+        };
+        // nearest unclaimed island with mines and no known enemy buildings - iron and
+        // gold count most: they're what ships and planes are made of
+        let (bx, by) = self.base_tile;
+        let metal = self.island_metal(w);
+        let mut best: Option<(i64, usize)> = None;
+        for (i, isl) in self.islands.iter().enumerate() {
+            if isl.claimed || isl.mines.is_empty() || isl.tiles < 60 {
+                continue;
+            }
+            let enemy_here = self.known.values().any(|k| self.island_at(w, k.tile) == Some(i));
+            let failed_recently = self.colony_failed.get(&i).map_or(false, |&t| tick.wrapping_sub(t) < 20 * 60 * 6);
+            let taken = self.colonies.iter().any(|c| c.island == i);
+            if enemy_here || failed_recently || taken {
+                continue;
+            }
+            let dd = ((isl.center.0 - bx) as i64).pow(2) + ((isl.center.1 - by) as i64).pow(2);
+            let dd = dd / (1 + metal[i]).pow(2).min(64);
+            if best.map_or(true, |b| dd < b.0) {
+                best = Some((dd, i));
+            }
+        }
+        let Some((_, target)) = best else { return None };
+        let tc = self.islands[target].center;
+        let tcp = FVec::tile_center(tc.0, tc.1);
+        // staging: our coast nearest the target; landing: their coast nearest us
+        let Some((stage, stage_w)) = self.coast_toward(w, self.home_island, tcp) else { return None };
+        let Some((land, _)) = self.coast_toward(w, target, FVec::tile_center(stage.0, stage.1)) else { return None };
+        let mine = *self.islands[target].mines.iter().min_by_key(|m| (m.0 - land.0).pow(2) + (m.1 - land.1).pow(2)).unwrap();
+        let staging = FVec::tile_center(stage.0, stage.1);
+        let citizens = self.nearest_citizens(w, v, staging, 3, Some(self.home_island));
+        if citizens.len() < 2 {
+            return None;
+        }
+        let escort: Vec<EntityId> = v
+            .land_army
+            .iter()
+            .copied()
+            .filter(|&u| w.get(u).map_or(false, |e| e.inside == 0 && e.order == Order::Idle && self.island_at(w, e.pos.tile()) == Some(self.home_island)))
+            .take(7)
+            .collect();
+        let mut walkers = citizens.clone();
+        walkers.extend(escort.iter().copied());
+        out.push(CommandKind::Move { units: walkers, to: staging, attack_move: false, queue: false });
+        let staging_water = FVec::tile_center(stage_w.0, stage_w.1);
+        out.push(CommandKind::Move { units: vec![ship], to: staging_water, attack_move: false, queue: false });
+        self.last_colony = tick;
+        return Some(crate::expand::Colony {
+            stage: CStage::Gather,
+            island: target,
+            citizens,
+            escort,
+            transport: ship,
+            staging,
+            staging_water,
+            landing: FVec::tile_center(land.0, land.1),
+            mine,
+            stage_tick: tick,
+        });
+    }
+
+    fn step_colony(&mut self, w: &World, v: &View, out: &mut Vec<CommandKind>, mut c: Colony) -> Option<Colony> {
+        let _ = v;
+        let tick = w.tick;
+        let d = data();
         c.citizens.retain(|&u| w.get(u).is_some());
         c.escort.retain(|&u| w.get(u).is_some());
         let elapsed = tick.wrapping_sub(c.stage_tick);
@@ -425,7 +435,7 @@ impl Ai {
             if c.stage != CStage::Settle {
                 self.colony_failed.insert(c.island, tick);
             }
-            return; // mission failed: try again later
+            return None; // mission failed: try again later
         }
         let everyone: Vec<EntityId> = c.citizens.iter().chain(c.escort.iter()).copied().collect();
         match c.stage {
@@ -456,7 +466,7 @@ impl Ai {
                     }
                 } else if elapsed > 20 * 70 {
                     self.colony_failed.insert(c.island, tick);
-                    return;
+                    return None;
                 }
             }
             CStage::Sail => {
@@ -476,7 +486,7 @@ impl Ai {
                         c.stage = CStage::Settle;
                         c.stage_tick = tick;
                     } else {
-                        return;
+                        return Some(c);
                     }
                 } else if elapsed % 300 == 150 {
                     out.push(CommandKind::Unload { units: vec![c.transport], at: c.landing });
@@ -485,11 +495,53 @@ impl Ai {
             CStage::Settle => {
                 // once the Town Center stands, the colonists get to work (claim_fields adds the tower)
                 if elapsed > 20 * 60 {
-                    return;
+                    return None;
                 }
             }
         }
-        self.colony = Some(c);
+        Some(c)
+    }
+
+    /// Iron (2) and gold (1) deposits still in the ground, per island.
+    pub(crate) fn island_metal(&self, w: &World) -> Vec<i64> {
+        let d = data();
+        let mut metal = vec![0i64; self.islands.len()];
+        for e in &w.entities {
+            if e.alive && e.amount > 0 {
+                if let Some(r) = d.def(e.def).data.resource {
+                    let r = r as usize;
+                    if r == Res::Gold as usize || r == Res::Iron as usize {
+                        let isl = self.island_at(w, e.tile).or_else(|| self.island_at(w, (e.tile.0 - 1, e.tile.1))).or_else(|| self.island_at(w, (e.tile.0 + 2, e.tile.1)));
+                        if let Some(i) = isl {
+                            metal[i] += if r == Res::Iron as usize { 2 } else { 1 };
+                        }
+                    }
+                }
+            }
+        }
+        metal
+    }
+
+    /// A free spot for `def` within a few tiles of `at`, on island `isl`.
+    pub(crate) fn plot_near(&self, w: &World, def: ee_sim::defs::DefId, at: (i32, i32), isl: usize) -> Option<(i32, i32)> {
+        for r in 3..10 {
+            for k in 0..16 {
+                let (c, s) = ee_sim::mapgen::sincos_deg(k * 22 + r * 7);
+                let t = (at.0 + c * r / 1024, at.1 + s * r / 1024);
+                if self.site_ok(w, def, t) && self.island_at(w, t) == Some(isl) {
+                    return Some(t);
+                }
+            }
+        }
+        None
+    }
+
+    /// Town center plot next to the mine nearest `from` on an island (for a foothold).
+    pub(crate) fn foothold_plot(&self, w: &World, isl: usize, from: FVec) -> Option<(i32, i32)> {
+        let (fx, fy) = from.tile();
+        let mut mines = self.islands.get(isl)?.mines.clone();
+        mines.sort_by_key(|m| (m.0 - fx).pow(2) + (m.1 - fy).pow(2));
+        mines.iter().take(4).find_map(|&m| self.settlement_plot(w, m))
     }
 
     /// (coastal land tile on `island`, adjacent ship water) nearest to `toward`.

@@ -543,8 +543,8 @@ impl Ai {
         }
         // a free landing craft (not the invasion's, not the colonists')
         let busy: Vec<EntityId> = self.invasion.as_ref().map(|i| i.transports.clone()).unwrap_or_default();
-        let colony_ship = self.colony.as_ref().map(|c| c.transport);
-        let Some(&ship) = v.transports.iter().find(|&&t| !busy.contains(&t) && Some(t) != colony_ship && w.get(t).map_or(false, |e| e.cargo.is_empty() && matches!(e.order, Order::Idle))) else { return };
+        let colony_ships: Vec<EntityId> = self.colonies.iter().map(|c| c.transport).collect();
+        let Some(&ship) = v.transports.iter().find(|&&t| !busy.contains(&t) && !colony_ships.contains(&t) && w.get(t).map_or(false, |e| e.cargo.is_empty() && matches!(e.order, Order::Idle))) else { return };
         let sp = w.get(ship).unwrap().pos;
         let invading: Vec<EntityId> = self.invasion.as_ref().map(|i| i.units.clone()).unwrap_or_default();
         let mut pool: Vec<(i64, EntityId)> = v.land_army.iter().copied()

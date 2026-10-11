@@ -826,6 +826,8 @@ impl Ai {
                 .copied()
                 .filter(|u| !invading.contains(u))
                 .filter(|&u| w.get(u).map_or(false, |e| e.order == Order::Idle && e.inside == 0 && !e.pos.within(self.base, Fx::from_int(14))))
+                // garrisons on other islands stay where they are
+                .filter(|&u| w.get(u).map_or(false, |e| self.island_at(w, e.pos.tile()) == Some(self.home_island)))
                 .collect();
             if !idle.is_empty() {
                 let to = self.rally_point(w);
@@ -1177,11 +1179,11 @@ impl Ai {
             if group.len() < need {
                 return;
             }
-            let colony_ship = self.colony.as_ref().map(|c| c.transport);
-            let mut ships: Vec<EntityId> = v.transports.iter().copied().filter(|t| Some(*t) != colony_ship).collect();
+            let colony_ships: Vec<EntityId> = self.colonies.iter().map(|c| c.transport).collect();
+            let mut ships: Vec<EntityId> = v.transports.iter().copied().filter(|t| !colony_ships.contains(t)).collect();
             // keep one landing ship back for colonists while islands remain unclaimed
             let unclaimed = self.islands.iter().any(|i| !i.claimed && !i.mines.is_empty() && i.tiles >= 60);
-            if unclaimed && self.colony.is_none() && ships.len() > 1 {
+            if unclaimed && self.colonies.is_empty() && ships.len() > 1 {
                 ships.remove(0);
             }
             if ships.is_empty() {
@@ -1204,6 +1206,13 @@ impl Ai {
             let mut units: Vec<EntityId> = aa.into_iter().take(n_aa).collect();
             units.extend(rest.into_iter().take(size - units.len()));
             let staging = FVec::tile_center(stage.0, stage.1);
+            // islands with mines get settlers: take the ground and keep it
+            let settlers = if self.islands.get(target_isl).map_or(true, |i| i.mines.is_empty()) {
+                Vec::new()
+            } else {
+                self.nearest_citizens(w, v, staging, 4, Some(src_isl))
+            };
+            units.extend(settlers.iter().copied());
             out.push(CommandKind::Move { units: units.clone(), to: staging, attack_move: false, queue: false });
             let staging_water = FVec::tile_center(stage_w.0, stage_w.1);
             out.push(CommandKind::Move { units: ships.clone(), to: staging_water, attack_move: false, queue: false });
@@ -1233,6 +1242,9 @@ impl Ai {
                 landings: beaches.iter().map(|b| FVec::tile_center(b.0 .0, b.0 .1)).collect(),
                 beaches: beaches.iter().map(|b| b.0).collect(),
                 start_size,
+                settlers,
+                island: Some(target_isl),
+                plot: None,
             });
             self.wave += 1;
             self.last_wave = tick;
@@ -1334,7 +1346,7 @@ impl Ai {
             Stage::Sail => {
                 let still_aboard = inv.units.iter().filter(|&&u| w.get(u).map_or(false, |e| e.inside != 0)).count();
                 if still_aboard == 0 || elapsed > 20 * 150 {
-                    let landed: Vec<EntityId> = inv.units.iter().copied().filter(|&u| w.get(u).map_or(false, |e| e.inside == 0)).collect();
+                    let landed: Vec<EntityId> = inv.units.iter().copied().filter(|&u| !inv.settlers.contains(&u) && w.get(u).map_or(false, |e| e.inside == 0)).collect();
                     if !landed.is_empty() {
                         out.push(CommandKind::Move { units: landed, to: inv.target, attack_move: true, queue: false });
                     }
@@ -1353,7 +1365,52 @@ impl Ai {
                 }
             }
             Stage::Fight => {
-                // keep pushing toward known buildings; end after a while
+                // settlers fortify the foothold: a town center by the mines, then a tower and AA
+                inv.settlers.retain(|&u| w.get(u).is_some());
+                if inv.plot.is_none() && elapsed % 100 == 20 {
+                    if let Some(isl) = inv.island {
+                        let ashore: Vec<EntityId> = inv.settlers.iter().copied().filter(|&u| w.get(u).map_or(false, |e| e.inside == 0 && self.island_at(w, e.pos.tile()) == Some(isl))).collect();
+                        if !ashore.is_empty() {
+                            if let Some(t) = self.foothold_plot(w, isl, inv.landing) {
+                                out.push(CommandKind::Build { units: ashore.clone(), def: d.id("settlement"), tile: t, queue: false });
+                                for key in ["guard_tower", "aa_site"] {
+                                    if let Some(bt) = self.plot_near(w, d.id(key), (t.0 + 1, t.1 + 1), isl) {
+                                        out.push(CommandKind::Build { units: ashore.clone(), def: d.id(key), tile: bt, queue: true });
+                                    }
+                                }
+                                inv.plot = Some(t);
+                            }
+                        }
+                    }
+                }
+                // clear their buildings on this island, then hold the foothold
+                if elapsed % 200 == 0 {
+                    let idle: Vec<EntityId> = inv.units.iter().copied().filter(|&u| !inv.settlers.contains(&u) && w.get(u).map_or(false, |e| e.order == Order::Idle && e.inside == 0)).collect();
+                    if let Some(isl) = inv.island {
+                        let on_island = self.known.values().filter(|k| d.def(k.def).is_building() && self.island_at(w, k.tile).or_else(|| self.island_at(w, (k.tile.0 - 1, k.tile.1))) == Some(isl)).min_by_key(|k| k.pos.dist2_raw(inv.landing)).map(|k| k.pos);
+                        let hold = inv.plot.map(|t| FVec::tile_center(t.0 + 1, t.1 + 1)).unwrap_or(inv.landing);
+                        if !idle.is_empty() {
+                            out.push(CommandKind::Move { units: idle.clone(), to: on_island.unwrap_or(hold), attack_move: true, queue: false });
+                        }
+                    }
+                }
+                if inv.island.is_some() {
+                    // a foothold with settlers stays a campaign until it stands or dies
+                    let standing = inv.plot.map_or(false, |t| w.entities.iter().any(|e| e.alive && e.owner == self.player && e.tile == t));
+                    if elapsed > 20 * 60 * 4 && (standing || inv.settlers.is_empty() || elapsed > 20 * 60 * 8) {
+                        if standing {
+                            if let Some(isl) = inv.island {
+                                if isl < self.islands.len() {
+                                    self.islands[isl].claimed = true;
+                                }
+                            }
+                        }
+                        self.wave_result(&inv.beaches, inv.start_size, inv.units.len());
+                        return; // the garrison stays on the island it took
+                    }
+                    self.invasion = Some(inv);
+                    return;
+                }
                 if elapsed % 200 == 0 {
                     let idle: Vec<EntityId> = inv.units.iter().copied().filter(|&u| w.get(u).map_or(false, |e| e.order == Order::Idle && e.inside == 0)).collect();
                     let heads: Vec<FVec> = if inv.landings.is_empty() { vec![inv.landing] } else { inv.landings.clone() };
