@@ -161,6 +161,19 @@ build that made them and the tools warn when it differs.
   after the previous synchronized wave). Example: a wide-spread air wave set to *Together*
   hits a whole coast at once; a second group sent with *Next wave* follows it in.
 
+## Windows build
+
+From macOS or Linux (needs `mingw-w64`: `brew install mingw-w64` / `apt install mingw-w64`):
+
+```sh
+./tools/build_windows.sh            # game/bin/ee_godot.dll (the Windows extension)
+./tools/build_windows.sh --export   # + a playable build in build/windows/ (needs Godot's
+                                    #   export templates: Editor > Manage Export Templates)
+```
+
+The DLL only depends on Windows system libraries. On a Windows machine itself, `tools/build.sh`
+works from Git Bash with Rust installed.
+
 ## Alliances
 
 Pick teams before the match (skirmish **Teams** option, or a team per seat in the LAN
