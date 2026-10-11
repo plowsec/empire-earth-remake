@@ -350,7 +350,7 @@ fn aircraft_patrol_circles_engages_and_resumes_after_refuel() {
     run(&mut w, 20 * 15, vec![]);
     let e = w.get(f).unwrap();
     assert!(matches!(e.order, Order::Patrol { .. }), "order {:?}", e.order);
-    assert!(e.pos.within(dest, ee_sim::fixed::Fx::from_int(8)), "near patrol point");
+    assert!(e.pos.within(dest, ee_sim::fixed::Fx::from_int(16)), "on its (wide) circuit around the patrol point");
     let p0 = e.pos;
     run(&mut w, 20, vec![]);
     assert!(w.get(f).unwrap().pos != p0, "still flying circuits");

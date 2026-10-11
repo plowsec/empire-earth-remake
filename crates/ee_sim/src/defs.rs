@@ -82,8 +82,10 @@ pub enum DamageType {
     Missile = 9,
     Nuclear = 10,
     Interceptor = 11,
+    /// anti-submarine: depth charges and ASW rockets
+    DepthCharge = 12,
 }
-pub const NUM_DMG: usize = 12;
+pub const NUM_DMG: usize = 13;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Layer {

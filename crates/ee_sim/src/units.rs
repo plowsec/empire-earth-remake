@@ -176,7 +176,10 @@ impl World {
             }
             return;
         }
-        let station = Fx::from_int(5);
+        // a wide circuit, each plane on its own orbit (7-13 tiles) so a squadron covers
+        // the whole area instead of one tight spot
+        let orbit = Fx::from_int(7 + (id % 7) as i32);
+        let station = orbit + Fx::from_int(2);
         if !e.pos.within(at, station) {
             if e.goal.map_or(true, |g| !g.within(at, Fx::ONE)) {
                 self.set_goal(i, at, None);
@@ -193,7 +196,7 @@ impl World {
         } else if e.goal.is_none() || e.goal.map_or(false, |g| e.pos.within(g, Fx::ONE)) {
             // jets: fly a circuit of waypoints around the point
             let rel = e.pos - at;
-            let r = Fx::from_ratio(380, 100);
+            let r = orbit;
             // next waypoint = current direction rotated ~50 degrees around the point
             let dir = if rel.len2_raw() > 0 { rel.normalized() } else { FVec::new(Fx::ONE, Fx::ZERO) };
             let c = Fx::from_ratio(643, 1000);
@@ -299,6 +302,8 @@ impl World {
         let e = &mut self.entities[i];
         e.queue = q;
         e.forced_target = false;
+        // spotted a fight: bring the neighbours
+        combat::call_for_help(self, id, t);
         true
     }
 

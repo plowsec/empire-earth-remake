@@ -346,28 +346,30 @@ impl World {
 #[allow(dead_code)]
 fn _unused(_: FVec) {}
 
-/// A unit under fire it can't answer (e.g. infantry vs helicopter) calls nearby
-/// friends that can hit the attacker and are within their own reach.
-pub fn call_for_help(w: &mut World, victim: EntityId, attacker: EntityId) {
+/// Shared aggro: every unit has a circle of influence (its sight, plus a margin). A unit
+/// that is hit, or that picks a fight, alerts the free units of its side whose own circles
+/// reach the enemy and who can hurt it - idle submarines come to the aid of the one being
+/// hunted, idle tanks join the one that spotted the enemy.
+pub fn call_for_help(w: &mut World, caller: EntityId, enemy: EntityId) {
     let tick = w.tick;
-    let Some(v) = w.get(victim) else { return };
-    let Some(a) = w.get(attacker) else { return };
+    let Some(v) = w.get(caller) else { return };
+    let Some(a) = w.get(enemy) else { return };
     if tick.wrapping_sub(v.help_tick) < 30 && v.help_tick != 0 {
         return;
     }
-    let can_answer = can_attack(w, v, a) && data().def(v.def).class() != Class::Citizen;
-    if can_answer {
+    if !w.is_enemy(v.owner, a.owner) {
         return;
     }
     let owner = v.owner;
     let vpos = v.pos;
     let apos = a.pos;
-    let vslot = slot_of(victim);
+    let influence = Fx::from_int(data().def(v.def).sight_tiles + 6);
+    let vslot = slot_of(caller);
     w.entities[vslot].help_tick = tick;
     let mut helpers: Vec<(i64, EntityId)> = Vec::new();
-    w.spatial.for_each(vpos, Fx::from_int(14), |oid, slot| {
+    w.spatial.for_each(vpos, influence, |oid, slot| {
         let o = &w.entities[slot];
-        if oid == victim || o.owner != owner || !o.on_map() {
+        if oid == caller || o.owner != owner || !o.on_map() {
             return;
         }
         let od = data().def(o.def);
@@ -378,12 +380,12 @@ pub fn call_for_help(w: &mut World, victim: EntityId, attacker: EntityId) {
         if !free {
             return;
         }
-        let Some(a) = w.get(attacker) else { return };
+        let Some(a) = w.get(enemy) else { return };
         if !can_attack(w, o, a) {
             return;
         }
-        // only if the attacker is within this unit's reach (what it can see/chase)
-        let reach = Fx::from_int(od.sight_tiles) + od.max_range;
+        // the two circles touch: the enemy is within this unit's own reach
+        let reach = Fx::from_int(od.sight_tiles + 4) + od.max_range;
         let dist = o.pos.dist(apos);
         if dist > reach {
             return;
@@ -391,15 +393,17 @@ pub fn call_for_help(w: &mut World, victim: EntityId, attacker: EntityId) {
         helpers.push((dist.0 as i64, oid));
     });
     helpers.sort();
-    for (_, h) in helpers.into_iter().take(8) {
+    for (_, h) in helpers.into_iter().take(12) {
         let slot = slot_of(h);
         let cur = w.entities[slot].order;
         if matches!(cur, Order::Patrol { .. } | Order::Scout { .. } | Order::Move { .. }) {
             w.entities[slot].queue.insert(0, cur);
         }
         let q = std::mem::take(&mut w.entities[slot].queue);
-        crate::orders::set_order(w, h, Order::Attack { target: attacker });
+        crate::orders::set_order(w, h, Order::Attack { target: enemy });
         w.entities[slot].queue = q;
         w.entities[slot].forced_target = false;
+        // they don't re-broadcast at once (no chain reaction across the map)
+        w.entities[slot].help_tick = tick;
     }
 }
