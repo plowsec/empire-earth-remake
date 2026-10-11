@@ -6,7 +6,7 @@ const ACCENT := Color(0.95, 0.78, 0.38)
 const DIM := Color(0.68, 0.66, 0.6)
 const RES_NAMES := ["Food", "Wood", "Stone", "Gold", "Iron"]
 const RES_COLORS := [Color(0.85, 0.35, 0.3), Color(0.55, 0.38, 0.22), Color(0.7, 0.7, 0.68), Color(0.95, 0.8, 0.3), Color(0.55, 0.62, 0.72)]
-const CHARTS := [["score", "Score"], ["population", "Population"], ["military", "Army"], ["citizens", "Citizens"], ["gathered", "Resources gathered"], ["buildings", "Buildings"], ["kills", "Kills"], ["technologies", "Technologies"]]
+const CHARTS := [["score", "Score"], ["population", "Population"], ["military", "Army"], ["citizens", "Citizens"], ["gathered", "Resources gathered"], ["buildings", "Buildings"], ["kills", "Kills"], ["technologies", "Technologies"], ["units", "Units"], ["food", "Food"], ["wood", "Wood"], ["stone", "Stone"], ["gold", "Gold"], ["iron", "Iron"], ["loot", "Loot recovered"]]
 
 var stats: Dictionary
 var won := false
@@ -19,6 +19,25 @@ var chart: Chart
 var on_play_again: Callable
 var on_menu: Callable
 var on_watch: Callable
+var live := false
+var on_refresh: Callable
+var refresh_in := 1.0
+var current_tab := ""
+var current_metric := "score"
+var time_label: Label
+
+func _process(dt: float) -> void:
+	if not live or not on_refresh: return
+	refresh_in -= dt
+	if refresh_in > 0: return
+	refresh_in = 1.0
+	stats = on_refresh.call()
+	var secs: int = stats.get("seconds", 0)
+	time_label.text = "All players · Live totals · History every 30 seconds · %d:%02d:%02d" % [secs / 3600, (secs / 60) % 60, secs % 60]
+	if current_tab == "Graphs":
+		_set_chart(current_metric, false)
+	else:
+		_show_tab(current_tab)
 
 class Chart extends Control:
 	var times: Array = []
@@ -87,8 +106,9 @@ class Chart extends Control:
 			return "%dk" % int(v / 1000.0)
 		return str(int(round(v)))
 
-func setup(data: Dictionary, victory: bool, fonts: Array) -> void:
+func setup(data: Dictionary, victory: bool, fonts: Array, during_match := false) -> void:
 	stats = data
+	live = during_match
 	won = victory
 	font_title = fonts[0]
 	font_bold = fonts[1]
@@ -107,32 +127,33 @@ func _label(text: String, size: int, color := Color(0.92, 0.9, 0.84), font: Font
 	return l
 
 func _build() -> void:
-	set_anchors_preset(Control.PRESET_FULL_RECT)
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	var shade := ColorRect.new()
 	shade.color = Color(0.02, 0.02, 0.03, 0.93)
-	shade.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(shade)
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var margin := MarginContainer.new()
-	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
 	for side in ["left", "right"]:
 		margin.add_theme_constant_override("margin_" + side, 70)
 	margin.add_theme_constant_override("margin_top", 64)
 	margin.add_theme_constant_override("margin_bottom", 130)
 	add_child(margin)
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 14)
 	margin.add_child(v)
 
 	# banner
-	var title := _label("VICTORY" if won else "DEFEAT", 76, ACCENT if won else Color(0.9, 0.32, 0.28), font_title)
+	var title := _label("MATCH CHARTS" if live else ("VICTORY" if won else "DEFEAT"), 48 if live else 76, ACCENT if live or won else Color(0.9, 0.32, 0.28), font_title)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_constant_override("shadow_offset_y", 4)
 	title.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
 	v.add_child(title)
 	var secs: int = stats.get("seconds", 0)
-	var sub := "Your empire stands supreme" if won else "Your empire has fallen"
+	var sub := "All players · Live totals · History every 30 seconds" if live else ("Your empire stands supreme" if won else "Your empire has fallen")
 	var subl := _label("%s  ·  %d:%02d:%02d" % [sub, secs / 3600, (secs / 60) % 60, secs % 60], 22, DIM, font_bold)
+	time_label = subl
 	subl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(subl)
 	var rule := ColorRect.new()
@@ -163,7 +184,8 @@ func _build() -> void:
 	var hb := HBoxContainer.new()
 	hb.alignment = BoxContainer.ALIGNMENT_CENTER
 	hb.add_theme_constant_override("separation", 16)
-	for item in [["Play Again", func(): if on_play_again: on_play_again.call()], ["Main Menu", func(): if on_menu: on_menu.call()], ["Keep Watching", func(): if on_watch: on_watch.call()]]:
+	var actions := [["Back to Game", func(): if on_watch: on_watch.call()]] if live else [["Play Again", func(): if on_play_again: on_play_again.call()], ["Main Menu", func(): if on_menu: on_menu.call()], ["Keep Watching", func(): if on_watch: on_watch.call()]]
+	for item in actions:
 		var b := Button.new()
 		b.text = item[0]
 		b.custom_minimum_size = Vector2(170, 44)
@@ -172,16 +194,17 @@ func _build() -> void:
 		b.pressed.connect(item[1])
 		hb.add_child(b)
 	v.add_child(hb)
-	_show_tab("Summary")
+	_show_tab("Graphs" if live else "Summary")
 
 func _show_tab(t: String) -> void:
+	current_tab = t
 	for b in tab_buttons:
 		b.button_pressed = b.text == t
 	for c in body.get_children():
 		c.queue_free()
 	match t:
 		"Summary": body.add_child(_summary())
-		"Military": body.add_child(_table([["Units trained", "trained"], ["Kills", "kills"], ["Units lost", "lost"], ["Buildings razed", "razed"], ["Buildings lost", "buildings_lost"], ["Peak army", "peak_army"], ["Military score", "military"]]))
+		"Military": body.add_child(_table([["Units trained", "trained"], ["Kills", "kills"], ["Units lost", "lost"], ["Buildings razed", "razed"], ["Buildings lost", "buildings_lost"], ["Peak army", "peak_army"], ["Military score", "military"], ["Loot recovered", "looted"]]))
 		"Economy": body.add_child(_economy())
 		"Graphs": body.add_child(_graphs())
 
@@ -339,8 +362,8 @@ func _economy() -> Control:
 func _graphs() -> Control:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 10)
-	var pick := HBoxContainer.new()
-	pick.alignment = BoxContainer.ALIGNMENT_CENTER
+	var pick := GridContainer.new()
+	pick.columns = 8
 	pick.add_theme_constant_override("separation", 6)
 	v.add_child(pick)
 	chart = Chart.new()
@@ -358,6 +381,8 @@ func _graphs() -> Control:
 	for c in CHARTS:
 		var b := Button.new()
 		b.text = c[1]
+		b.custom_minimum_size.y = 32
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		b.toggle_mode = true
 		b.add_theme_font_override("font", font_bold)
 		b.add_theme_font_size_override("font_size", 16)
@@ -370,10 +395,11 @@ func _graphs() -> Control:
 	_set_chart("score")
 	return v
 
-func _set_chart(metric: String) -> void:
+func _set_chart(metric: String, animate := true) -> void:
+	current_metric = metric
 	var ps: Array = stats.get("players", [])
 	chart.times = stats.get("times", [])
 	chart.series = stats.get("series", {}).get(metric, [])
 	chart.colors = ps.map(func(p): return p["color"])
-	chart.reveal = 0.0
+	if animate: chart.reveal = 0.0
 	chart.queue_redraw()

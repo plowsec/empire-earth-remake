@@ -613,7 +613,7 @@ impl Ai {
             // a defensive garrison: anti-tank, anti-air, medics
             land = vec![("bazooka", 35), ("stinger", 30), ("medic", 15), ("aa_vehicle", 15), ("tank", 5)];
         }
-        let air: Vec<(&str, i32)> = if air_style {
+        let mut air: Vec<(&str, i32)> = if air_style {
             vec![("bomber", 70), ("fighter", 20), ("strike_fighter", 10)]
         } else if naval_style {
             vec![("bomber", 35), ("fighter", 25), ("strike_fighter", 25), ("helicopter", 5)]
@@ -625,6 +625,9 @@ impl Ai {
                 ("helicopter", 18),
             ]
         };
+        if enemy_subs > 0 {
+            air.push(("asw_helicopter", if enemy_subs >= 3 { 40 } else { 20 }));
+        }
         let navy: Vec<(&str, i32)> = if naval_style {
             vec![("frigate", 40), ("submarine", 35), ("battleship", 25)]
         } else {
@@ -724,6 +727,16 @@ impl Ai {
                     if v.navy.len() >= fleet_cap {
                         continue;
                     }
+                }
+                // A submarine threat needs a dedicated response even if our old air
+                // force already fills the normal production cap.
+                let asw = id("asw_helicopter");
+                let asw_cost = d.def(asw).data.cost.arr();
+                if bkey == "airport" && enemy_subs > 0 && count_of("asw_helicopter") < enemy_subs.min(6) as i32
+                    && asw_cost.iter().enumerate().all(|(r, c)| pl.res[r] - reserve[r] >= *c) {
+                    out.push(CommandKind::Train { building: b, def: asw, count: 1 });
+                    for r in 0..5 { reserve[r] += asw_cost[r]; }
+                    continue;
                 }
                 // Maintain one strategic bomber after the economy matures. It gets
                 // its own slot so an existing conventional air force cannot block it.

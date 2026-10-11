@@ -175,6 +175,7 @@ pub struct StartOptions {
     pub ai_self: bool,
     /// 0 free-for-all, 1 you + AI 1 vs the rest, 2 you vs all AIs
     pub teams: i32,
+    pub team_ids: Vec<u8>,
 }
 
 impl Client {
@@ -191,8 +192,13 @@ impl Client {
             p.team = match opt.teams {
                 1 => if i <= 1 { 0 } else { 1 },
                 2 => if i == 0 { 0 } else { 1 },
+                3 => opt.team_ids.get(i).copied().unwrap_or(i as u8).min(7),
                 _ => i as u8,
             };
+        }
+        // Invalid all-allied presets would finish immediately (notably 2-player 2v2).
+        if cfg.players.iter().all(|p| p.team == cfg.players[0].team) {
+            for (i, p) in cfg.players.iter_mut().enumerate() { p.team = i as u8; }
         }
         let _ = np;
         // part of the match setup (recorded in replays): the sim's visibility depends on it
@@ -507,6 +513,13 @@ impl Client {
     fn handle_event(&mut self, ev: &SimEvent) {
         let me = self.me;
         match ev {
+            SimEvent::Loot { owner, pos, res } if *owner == me => {
+                let text = res.iter().enumerate().filter(|(_, n)| **n > 0)
+                    .map(|(i, n)| format!("+{n} {}", ee_sim::defs::RES_NAMES[i])).collect::<Vec<_>>().join("  ");
+                let p = self.world_pos3(*pos, Layer::Land, 0) + Vector3::UP * 4.0;
+                self.events.push(ClientEvent { kind: "loot", pos: p, to: p, size: res.iter().sum::<i32>() as f32,
+                    text, dmg: 0, mine: true });
+            }
             SimEvent::Shot { from, to, from_pos, to_pos, weapon } => {
                 let (fx, fy) = from_pos.tile();
                 let (tx, ty) = to_pos.tile();
@@ -545,7 +558,7 @@ impl Client {
                     mine: src.owner == me,
                 });
             }
-            SimEvent::Impact { pos, dmg_type, splash, .. } => {
+            SimEvent::Impact { pos, dmg_type, splash, source_def, .. } => {
                 let (tx, ty) = pos.tile();
                 if !self.sees(tx, ty) {
                     return;
@@ -553,7 +566,7 @@ impl Client {
                 let water = self.session.world.map.is_water(tx, ty);
                 let p = self.world_pos3(*pos, if water { Layer::Water } else { Layer::Land }, 0);
                 self.events.push(ClientEvent {
-                    kind: if water && *dmg_type != DamageType::Nuclear as u8 { "splash" } else { "impact" },
+                    kind: if water && *dmg_type != DamageType::Nuclear as u8 { "splash" } else if *source_def == data().id("bomber") { "carpet_bomb" } else { "impact" },
                     pos: p,
                     to: p,
                     size: splash.to_f32() * TILE,
@@ -1296,7 +1309,7 @@ impl Client {
                     // size per munition: thick glowing shells, long missiles, dark bombs
                     let (thick, long, col) = match pr.dmg_type {
                         DamageType::NavalGun => (5.0, 4.5, Color::from_rgba(1.0, 0.75, 0.35, 1.0)),
-                        DamageType::Cannon | DamageType::Explosive => (3.0, 2.6, Color::from_rgba(1.0, 0.8, 0.4, 1.0)),
+                        DamageType::Cannon | DamageType::CoastalGun | DamageType::Explosive => (3.0, 2.6, Color::from_rgba(1.0, 0.8, 0.4, 1.0)),
                         DamageType::Missile | DamageType::Flak => (2.8, 3.2, Color::from_rgba(1.0, 0.62, 0.25, 1.0)),
                         DamageType::Interceptor => (3.5, 5.0, Color::from_rgba(1.0, 0.95, 0.8, 1.0)),
                         DamageType::AirGun => (1.8, 6.0, Color::from_rgba(1.0, 0.85, 0.45, 1.0)),
@@ -1318,7 +1331,7 @@ impl Client {
                     let kind = match pr.dmg_type {
                         DamageType::Torpedo => "wake",
                         DamageType::Interceptor => "missile_trail",
-                        DamageType::NavalGun | DamageType::Cannon => "shell_trail",
+                        DamageType::NavalGun | DamageType::Cannon | DamageType::CoastalGun => "shell_trail",
                         _ if pr.homing => "trail",
                         _ => "",
                     };

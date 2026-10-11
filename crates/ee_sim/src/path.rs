@@ -284,3 +284,32 @@ impl FlowField {
         map.in_bounds(x, y) && self.cost[(y * map.w + x) as usize] != FLOW_UNREACHABLE
     }
 }
+
+/// Connected walkable areas, including static obstacles. Zero means blocked.
+/// Four-neighbour connectivity also covers paths with legal diagonal steps.
+pub fn connected_regions(map: &Map, layer: Layer) -> Vec<u32> {
+    let mut regions = vec![0; (map.w * map.h) as usize];
+    let mut next = 0;
+    let mut pending = Vec::new();
+    for y in 0..map.h {
+        for x in 0..map.w {
+            let i = map.idx(x, y);
+            if regions[i] != 0 || !map.passable(x, y, layer) { continue; }
+            next += 1;
+            regions[i] = next;
+            pending.push((x, y));
+            while let Some((cx, cy)) = pending.pop() {
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if !map.passable(nx, ny, layer) { continue; }
+                    let ni = map.idx(nx, ny);
+                    if regions[ni] == 0 {
+                        regions[ni] = next;
+                        pending.push((nx, ny));
+                    }
+                }
+            }
+        }
+    }
+    regions
+}

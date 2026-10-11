@@ -17,7 +17,7 @@ var credits_panel: Control
 var orbit := 0.0
 var _hot_t := 0.0
 var _focus := Vector3.ZERO
-var opts := {"players": 2, "difficulty": 3, "map_size": 2, "resources": 150, "start_res": 10000, "pop_limit": 3000, "seed": 0, "reveal": 1, "teams": 0}
+var opts := {"players": 2, "difficulty": 3, "map_size": 2, "resources": 150, "start_res": 10000, "pop_limit": 3000, "seed": 0, "reveal": 1, "teams": 0, "team_0": 0, "team_1": 1, "team_2": 2, "team_3": 3}
 
 func _ready() -> void:
 	preload("res://scripts/env_setup.gd").apply($WorldEnvironment, $Sun)
@@ -30,7 +30,7 @@ func _ready() -> void:
 	game_view.set_camera(rig.cam)
 	game_view.start_game({"seed": randi() % 100000, "players": 3, "difficulty": 3, "ai_self": 1, "reveal": 1, "map_size": 0})
 	game_view.set_reveal(true)
-	game_view.warp(20 * 60 * 9)
+	game_view.warp(20 if Engine.has_meta("support_test") else 20 * 60 * 9)
 	game_view.set_speed(1.0)
 	rig.game_view = game_view
 	rig.map_size = game_view.map_size()
@@ -117,7 +117,7 @@ func _panel(w: int, h: int) -> PanelContainer:
 	p.custom_minimum_size = Vector2(w, h)
 	return p
 
-func _option(parent: Control, label: String, items: Array, key: String, values: Array) -> void:
+func _option(parent: Control, label: String, items: Array, key: String, values: Array) -> OptionButton:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 16)
 	var l := _lbl(label, 22, Color(0.78, 0.76, 0.7))
@@ -134,6 +134,7 @@ func _option(parent: Control, label: String, items: Array, key: String, values: 
 	ob.item_selected.connect(func(i): opts[key] = values[i])
 	row.add_child(ob)
 	parent.add_child(row)
+	return ob
 
 # ------------------------------------------------------------------ layout
 
@@ -208,18 +209,35 @@ func _show(p: Control) -> void:
 
 func _build_skirmish(root: Control) -> void:
 	var p := _panel(620, 560)
-	p.position = Vector2(470, 300)
+	p.position = Vector2(470, 250)
 	p.visible = false
 	root.add_child(p)
 	skirmish_panel = p
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 12)
+	v.add_theme_constant_override("separation", 8)
 	p.add_child(v)
 	v.add_child(_lbl("SKIRMISH", 34, ACCENT, font_title))
 	v.add_child(_lbl("Big Islands · Atomic Modern", 18, Color(0.65, 0.64, 0.6)))
-	_option(v, "Opponents", ["1 AI", "2 AI", "3 AI"], "players", [2, 3, 4])
+	var players := _option(v, "Opponents", ["1 AI", "2 AI", "3 AI"], "players", [2, 3, 4])
+	players.item_selected.connect(func(_i): _update_alliances())
 	_option(v, "Difficulty", ["Easy", "Normal", "Hard", "Hardest"], "difficulty", [0, 1, 2, 3])
-	_option(v, "Teams", ["Free for all", "You + AI 1 vs the rest", "You vs all AIs"], "teams", [0, 1, 2])
+	var team_preset := _option(v, "Alliances", ["Free for all", "You + AI 1 vs the rest", "You vs all AIs", "Custom teams"], "teams", [0, 1, 2, 3])
+	team_preset.item_selected.connect(func(_i): _update_alliances())
+	alliance_box = GridContainer.new()
+	alliance_box.columns = 2
+	v.add_child(alliance_box)
+	for i in 4:
+		var row := HBoxContainer.new()
+		row.add_child(_lbl("You" if i == 0 else "AI %d" % i, 20))
+		var pick := OptionButton.new()
+		for team in 4: pick.add_item("Team %d" % (team + 1))
+		pick.select(clampi(opts["team_%d" % i], 0, 3))
+		pick.item_selected.connect(func(t): opts["team_%d" % i] = t; _update_alliances())
+		row.add_child(pick)
+		alliance_box.add_child(row)
+		alliance_rows.append(row)
+	alliance_hint = _lbl("", 16)
+	v.add_child(alliance_hint)
 	_option(v, "Map size", ["Small", "Medium", "Large"], "map_size", [0, 1, 2])
 	_option(v, "Resources on map", ["Standard", "High", "Very high"], "resources", [100, 150, 220])
 	_option(v, "Starting resources", ["Low", "Standard", "High", "Deathmatch"], "start_res", [600, 1500, 3000, 10000])
@@ -227,12 +245,34 @@ func _build_skirmish(root: Control) -> void:
 	_option(v, "Fog of war", ["On", "Revealed map"], "reveal", [0, 1])
 	var hb := HBoxContainer.new()
 	hb.alignment = BoxContainer.ALIGNMENT_END
-	hb.add_theme_constant_override("separation", 12)
+	hb.add_theme_constant_override("separation", 8)
 	hb.add_child(_btn("Back", func(): _show(null), 150, 50))
 	var start := _btn("Start Game", _start, 220, 50)
+	skirmish_start = start
+	_update_alliances()
 	hb.add_child(start)
 	v.add_child(Control.new())
 	v.add_child(hb)
+
+var alliance_rows: Array[Control] = []
+var alliance_box: Control
+var alliance_hint: Label
+var skirmish_start: Button
+
+func _update_alliances() -> void:
+	alliance_box.visible = opts["teams"] == 3
+	for i in alliance_rows.size():
+		alliance_rows[i].visible = i < opts["players"]
+	var teams: Array = []
+	for i in opts["players"]:
+		var team: int = i
+		match opts["teams"]:
+			1: team = 0 if i <= 1 else 1
+			2: team = 0 if i == 0 else 1
+			3: team = opts["team_%d" % i]
+		if not teams.has(team): teams.append(team)
+	skirmish_start.disabled = teams.size() < 2
+	alliance_hint.text = "Choose at least two opposing teams." if teams.size() < 2 else "Same team = allies, shared vision and shared victory."
 
 var load_panel: Control
 var lan_panel: Control
@@ -279,6 +319,7 @@ func _load(path: String) -> void:
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
 func _start() -> void:
+	if skirmish_start.disabled: return
 	if Engine.has_meta("load_save"):
 		Engine.remove_meta("load_save")
 	Settings.last_skirmish = opts.duplicate()

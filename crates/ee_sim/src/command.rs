@@ -44,6 +44,8 @@ pub enum CommandKind {
     /// Missile silo: fire one stored ICBM at a point.
     Launch { building: EntityId, at: FVec },
     Resign,
+    /// Fill reachable mine vacancies with up to eight idle citizens on one island.
+    StaffMines { near: FVec, count: u8 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -26,6 +26,9 @@ pub fn gather_cap(d: &Def) -> i32 {
     }
 }
 
+/// Enemy losses return a quarter of their build cost to the credited player.
+pub const LOOT_PERCENT: i32 = 25;
+
 pub fn data() -> &'static GameData {
     DATA.get_or_init(GameData::load)
 }
@@ -89,6 +92,8 @@ pub struct PlayerStats {
     #[serde(default)]
     pub buildings_lost: u32,
     pub gathered: [i64; NUM_RES],
+    #[serde(default)]
+    pub looted: [i64; NUM_RES],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -123,7 +128,7 @@ pub struct Player {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SimEvent {
     Shot { from: EntityId, to: EntityId, from_pos: FVec, to_pos: FVec, weapon: u8 },
-    Impact { pos: FVec, dmg_type: u8, splash: Fx, owner: u8 },
+    Impact { pos: FVec, dmg_type: u8, splash: Fx, owner: u8, source_def: DefId },
     Damaged { id: EntityId, owner: u8, attacker_owner: u8, pos: FVec },
     Died { id: EntityId, def: DefId, owner: u8, pos: FVec, facing: FVec, velocity: FVec, inside: EntityId, killer_owner: u8 },
     Spawned { id: EntityId, def: DefId, owner: u8 },
@@ -135,6 +140,7 @@ pub enum SimEvent {
     /// a sapling became a tree
     Grown { id: EntityId },
     Gathered { owner: u8, res: u8, amount: i32 },
+    Loot { owner: u8, pos: FVec, res: [i32; NUM_RES] },
     /// command feedback for the issuing player's UI
     Notice { owner: u8, text: &'static str },
     PlayerDefeated { player: u8 },
@@ -489,6 +495,9 @@ impl World {
         e.amount = d.data.amount * self.config.resources.clamp(50, 300) as i32 / 100;
         e.fuel = d.fuel_ticks;
         e.ammo = d.weapons.first().map(|w| w.ammo).unwrap_or(0);
+        if d.trains.iter().any(|&u| data().def(u).data.ammunition > 0) {
+            e.ammo = 0;
+        }
         // face away from map center-ish deterministic default
         e.facing = FVec::new(Fx::ZERO, Fx::ONE);
         self.entities[slot] = e;
@@ -541,6 +550,9 @@ impl World {
         let velocity = (e.pos - e.prev_pos).scale(Fx::from_int(20));
         let cargo = e.cargo.clone();
         let inside = e.inside;
+        let loot_pos = if inside == 0 { pos } else {
+            self.entities.get(slot_of(inside)).filter(|e| e.id == inside).map_or(pos, |e| e.pos)
+        };
         let d = data().def(def);
         if d.is_building() || (d.is_resource() && !self.fish.contains(&id)) {
             let (sw, sh) = d.size();
@@ -580,6 +592,17 @@ impl World {
                     p.stats.buildings_lost += 1;
                 } else {
                     p.stats.lost += 1;
+                }
+            }
+            if (killer_owner as usize) < self.players.len() && self.is_enemy(killer_owner, owner) {
+                let res = d.data.cost.arr().map(|n| n * LOOT_PERCENT / 100);
+                let p = &mut self.players[killer_owner as usize];
+                for (i, amount) in res.iter().enumerate() {
+                    p.res[i] = p.res[i].saturating_add(*amount);
+                    p.stats.looted[i] += *amount as i64;
+                }
+                if res.iter().any(|&n| n > 0) {
+                    self.events.push(SimEvent::Loot { owner: killer_owner, pos: loot_pos, res });
                 }
             }
             // credit the destroyer: units count as kills, buildings as razed
@@ -803,6 +826,7 @@ impl World {
             mix(e.def as u64 | (e.owner as u64) << 16);
             mix(e.pos.x.0 as u32 as u64 | (e.pos.y.0 as u32 as u64) << 32);
             mix(e.hp as u32 as u64);
+            mix(e.ammo as u32 as u64);
             mix(e.knockback.x.0 as u32 as u64 | (e.knockback.y.0 as u32 as u64) << 32);
             mix(e.carry as u64 | (e.amount as u32 as u64) << 32);
             mix(e.progress as u32 as u64 | (e.inside as u64) << 32);

@@ -310,3 +310,8 @@ func _play_music(name: String) -> void:
 func _next_track() -> void:
 	track_i = (track_i + 1) % PLAYLIST.size()
 	_play_music(PLAYLIST[track_i])
+
+func play_loot(pos: Vector3) -> void:
+	# One crisp reward cue per burst of kills; avoid a wall of coin sounds.
+	if _allow("loot", 1):
+		_play3d(_load("loot"), pos, -5.0, 0.035)

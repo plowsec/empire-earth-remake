@@ -11,11 +11,13 @@ var smoke_tex: Texture2D
 var markers: Array = []
 var decals: Array[Decal] = []
 var decal_i := 0
+var decal_tweens := {}
+var loot_labels: Array[Label3D] = []
 var audio: Node
 var last_nuclear_msec := -1
 var blast_smoke_textures: Array[Texture2D] = []
 
-const EXPLOSIVE := [1, 2, 5, 6, 7, 9]   # Cannon, Explosive, Torpedo, NavalGun, Bomb, Missile
+const EXPLOSIVE := [1, 2, 5, 6, 7, 9, 12, 13]   # Cannon, Explosive, Torpedo, NavalGun, Bomb, Missile
 
 func bind(game_view: Node, camera_rig: Node) -> void:
 	gv = game_view
@@ -80,15 +82,17 @@ func _scorch_tex() -> Texture2D:
 			img.set_pixel(x, y, Color(0.05, 0.04, 0.035, a * 0.85))
 	return ImageTexture.create_from_image(img)
 
-func _scorch(pos: Vector3, size: float) -> void:
+func _scorch(pos: Vector3, size: float, linger := 12.0) -> void:
 	var d := decals[decal_i]
+	if decal_tweens.has(d) and decal_tweens[d].is_valid(): decal_tweens[d].kill()
 	decal_i = (decal_i + 1) % decals.size()
 	d.global_position = pos
 	d.rotation.y = randf() * TAU
 	d.size = Vector3(size, 8.0, size)
 	d.modulate = Color(1, 1, 1, 1)
 	var tw := create_tween()
-	tw.tween_interval(12.0)
+	decal_tweens[d] = tw
+	tw.tween_interval(linger)
 	tw.tween_property(d, "modulate:a", 0.0, 8.0)
 
 func _smoke_tex() -> Texture2D:
@@ -327,12 +331,18 @@ func on_event(e: Dictionary) -> void:
 	var kind: String = e["kind"]
 	var pos: Vector3 = e["pos"]
 	match kind:
+		"loot":
+			if e["mine"] and _near_camera(pos):
+				_loot_popup(pos, e["text"])
+				if audio: audio.play_loot(pos)
+		"carpet_bomb":
+			if _near_camera(pos): _carpet_bomb(pos, e["size"])
 		"shot":
 			if not _near_camera(pos): return
 			var to: Vector3 = e["to"]
 			_play("muzzle", pos, 0.8 + clamp(e["size"] / 80.0, 0.0, 1.5), to - pos)
 			var dmg: int = e["dmg"]
-			if dmg in [1, 6]:
+			if dmg in [1, 6, 13]:
 				_play("puff", pos, 2.0)
 				_flash(pos, 2.0, 8.0)
 			if audio: audio.play_shot(dmg, pos, e["text"], to)
@@ -716,3 +726,46 @@ func _marker(pos: Vector3, col: Color) -> void:
 	tw.tween_property(m, "scale", Vector3(0.2, 1, 0.2), 0.5).from(Vector3(1.6, 1, 1.6))
 	tw.tween_property(mat, "albedo_color:a", 0.0, 0.5)
 	tw.chain().tween_callback(m.queue_free)
+
+func _loot_popup(pos: Vector3, reward: String) -> void:
+	loot_labels = loot_labels.filter(func(l): return is_instance_valid(l))
+	if loot_labels.size() >= 40:
+		var oldest: Label3D = loot_labels.pop_front()
+		oldest.queue_free()
+	var label := Label3D.new()
+	label.text = reward
+	label.font = load("res://assets/fonts/Rajdhani-Bold.ttf")
+	label.font_size = 42
+	label.outline_size = 10
+	label.pixel_size = 0.018
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.no_depth_test = true
+	label.modulate = Color(1.0, 0.87, 0.35)
+	label.outline_modulate = Color(0.08, 0.055, 0.01, 0.95)
+	add_child(label)
+	label.global_position = pos + Vector3(randf_range(-0.6, 0.6), randf_range(0.0, 1.0), 0.0)
+	loot_labels.append(label)
+	var tw := label.create_tween().set_parallel(true)
+	tw.tween_property(label, "position:y", label.position.y + 5.0, 1.8).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(label, "modulate:a", 0.0, 0.65).set_delay(1.15)
+	tw.tween_property(label, "outline_modulate:a", 0.0, 0.65).set_delay(1.15)
+	tw.chain().tween_callback(label.queue_free)
+
+func _carpet_bomb(pos: Vector3, radius: float) -> void:
+	# The visual footprint uses the exact simulation radius, with staggered ground
+	# bursts across it and a lingering scar so the bombed area remains readable.
+	_scorch(pos, radius * 2.0, 45.0)
+	_flash(pos, 14.0, radius * 2.5)
+	if audio: audio.play_explosion(3.5, pos)
+	for i in 10:
+		var angle := float(i) * 2.399963
+		var distance := radius * sqrt(float(i) / 10.0) * 0.9
+		var at := pos + Vector3(cos(angle) * distance, 0, sin(angle) * distance)
+		if gv: at.y = gv.height_at(at.x, at.z)
+		var tw := create_tween()
+		tw.tween_interval(float(i) * 0.055)
+		tw.tween_callback(func():
+			_play("fire", at + Vector3.UP * 0.3, 1.1)
+			_play("dust", at, 1.3)
+			_play("smoke", at, 1.1)
+			_play("sparks", at, 0.8))

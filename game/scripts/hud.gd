@@ -28,6 +28,7 @@ var drag_rect: Panel
 var hover_label: Label
 var end_panel: PanelContainer
 var menu_panel: PanelContainer
+var charts_panel: Control
 var debug_label: Label
 
 var idle_btn: Button
@@ -122,6 +123,8 @@ func _label(text: String, size := 17, color := Color(0.92, 0.9, 0.85), title := 
 # ---------------------------------------------------------------- layout
 
 func _icon(key: String) -> Texture2D:
+	if key in ["abm_ammo", "conventional_icbm", "cluster_icbm"]: key = "icbm"
+	if key == "asw_helicopter": key = "helicopter"
 	var path := "res://assets/icons/%s.png" % key
 	if ResourceLoader.exists(path):
 		return load(path)
@@ -204,6 +207,11 @@ func _build() -> void:
 	dip_btn.custom_minimum_size = Vector2(96, 32)
 	dip_btn.pressed.connect(_toggle_diplomacy)
 	hb.add_child(dip_btn)
+	var charts_btn := Button.new()
+	charts_btn.text = "Charts"
+	charts_btn.tooltip_text = "Compare resources, units, army and economy for all players"
+	charts_btn.pressed.connect(_open_charts)
+	hb.add_child(charts_btn)
 	var save_btn := Button.new()
 	save_btn.text = "Save"
 	save_btn.tooltip_text = "Save the game (F5 quicksaves)"
@@ -240,16 +248,22 @@ func _build() -> void:
 	idle_btn.add_theme_font_size_override("font_size", 20)
 	idle_btn.icon = _icon("citizen")
 	idle_btn.expand_icon = true
-	idle_btn.tooltip_text = "Idle citizens (;). Ctrl-click: 8 nearest idle citizens. Shift-click: all idle citizens."
+	idle_btn.tooltip_text = "Idle citizens (;). Ctrl-click: up to 8 idle citizens on the viewed island. Shift-click: all idle citizens."
 	idle_btn.pressed.connect(_on_idle_pressed)
 	strip.add_child(idle_btn)
 	var idle8 := Button.new()
 	idle8.text = "×8"
 	idle8.custom_minimum_size = Vector2(46, 46)
 	idle8.add_theme_font_size_override("font_size", 18)
-	idle8.tooltip_text = "Select 8 idle citizens (the next one and the 7 nearest to it)"
+	idle8.tooltip_text = "Select up to 8 idle citizens on one island, prioritizing the island in view."
 	idle8.pressed.connect(func(): _select_idle(8))
 	strip.add_child(idle8)
+	var mine8 := Button.new()
+	mine8.text = "Mine ×8"
+	mine8.custom_minimum_size = Vector2(84, 46)
+	mine8.tooltip_text = "Dispatch up to 8 idle citizens to open mine slots on the viewed island. Uses only explored, reachable mines; never mixes islands."
+	mine8.pressed.connect(func(): gv.dispatch_idle_miners())
+	strip.add_child(mine8)
 	var save_grp := Button.new()
 	save_grp.text = "+ Group"
 	save_grp.custom_minimum_size = Vector2(84, 46)
@@ -376,7 +390,7 @@ func _build_menu() -> void:
 	v.add_theme_constant_override("separation", 10)
 	menu_panel.add_child(v)
 	v.add_child(_label("PAUSED", 30, ACCENT, true))
-	for item in [["Resume", _toggle_menu], ["Game Speed: Normal", _cycle_speed], ["Save Game", _save_game], ["Reveal Map (debug)", _toggle_reveal], ["Restart", _restart], ["Main Menu", _to_menu], ["Quit", _quit]]:
+	for item in [["Resume", _toggle_menu], ["Game Speed: Normal", _cycle_speed], ["Save Game", _save_game], ["Current Charts", _open_charts], ["Reveal Map (debug)", _toggle_reveal], ["Restart", _restart], ["Main Menu", _to_menu], ["Quit", _quit]]:
 		var b := Button.new()
 		b.text = item[0]
 		b.custom_minimum_size = Vector2(0, 38)
@@ -705,6 +719,7 @@ func _refresh_selection() -> void:
 		if x.has("growth"): stats = "Growing: %d%%" % int(x["growth"] * 100)
 		if x.has("carry"): stats += "   Carrying %d %s" % [x["carry"], x["carry_res"]]
 		if x.has("cargo_max") and x["cargo_max"] > 0: stats += "   Cargo %d/%d" % [x["cargo"], x["cargo_max"]]
+		if x.has("ammo"): stats += "   Ammo %d/%d" % [x["ammo"], x["ammo_max"]]
 		if x.has("fuel"): stats += "   Fuel %d%%" % int(x["fuel"] * 100)
 		if x.get("kills", 0) > 0: stats += "   Kills %d" % x["kills"]
 		if x.has("complete") and not x["complete"]: stats += "   Under construction %d%%" % int(x["progress"] * 100)
@@ -1026,6 +1041,18 @@ func _show_end(won: bool) -> void:
 
 # ---------------------------------------------------------------- menu actions
 
+func _open_charts() -> void:
+	if is_instance_valid(charts_panel): return
+	charts_panel = load("res://scripts/end_screen.gd").new()
+	charts_panel.on_watch = _close_charts
+	charts_panel.on_refresh = func(): return gv.end_stats()
+	root.add_child(charts_panel)
+	charts_panel.setup(gv.end_stats(), false, [font_title, font_title, font_body], true)
+
+func _close_charts() -> void:
+	if is_instance_valid(charts_panel): charts_panel.queue_free()
+	charts_panel = null
+
 func _toggle_menu() -> void:
 	menu_panel.visible = not menu_panel.visible
 	gv.set_paused(menu_panel.visible)
@@ -1293,6 +1320,9 @@ func _unhandled_input(e: InputEvent) -> void:
 		_on_key(e as InputEventKey)
 
 func _on_key(k: InputEventKey) -> void:
+	if is_instance_valid(charts_panel):
+		if k.keycode == KEY_ESCAPE: _close_charts()
+		return
 	var code := k.keycode
 	if code == KEY_ESCAPE and save_panel != null and save_panel.visible:
 		_close_save_dialog(); return

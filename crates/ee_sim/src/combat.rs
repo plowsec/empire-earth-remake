@@ -8,7 +8,7 @@ use crate::world::{data, Proj, SimEvent, World};
 
 #[inline]
 pub fn weapon_hits(w: &Weapon, tdef: &Def) -> bool {
-    if tdef.is_resource() {
+    if tdef.is_resource() || (w.sub_only && tdef.data.armor_class != crate::defs::ArmorClass::Sub) {
         return false;
     }
     let layer_ok = match tdef.layer {
@@ -99,6 +99,9 @@ pub fn fire_ready(w: &mut World, i: usize, target: EntityId) {
     let e = &w.entities[i];
     let d = data().def(e.def);
     let mods = w.mods(e.owner, e.def);
+    if td.data.icbm && !w.players[e.owner as usize].radar {
+        return;
+    }
     let dist = w.edge_dist(e.pos, t);
     let range_bonus = Fx::from_ratio(mods.range, 100);
     for (wi, wp) in d.weapons.iter().enumerate() {
@@ -278,7 +281,7 @@ impl World {
     }
 
     pub(crate) fn impact(&mut self, p: &Proj) {
-        self.events.push(SimEvent::Impact { pos: p.pos, dmg_type: p.dmg_type as u8, splash: p.splash, owner: p.owner });
+        self.events.push(SimEvent::Impact { pos: p.pos, dmg_type: p.dmg_type as u8, splash: p.splash, owner: p.owner, source_def: p.src_def });
         if p.dmg_type == crate::defs::DamageType::Nuclear && p.splash > Fx::ZERO {
             self.shockwaves.push(crate::world::Shockwave { pos: p.pos, radius: p.splash, age: 0,
                 damage: p.damage, owner: p.owner, src: p.src, hit: Vec::new() });

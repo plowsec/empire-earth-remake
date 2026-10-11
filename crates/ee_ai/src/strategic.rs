@@ -61,6 +61,20 @@ impl Ai {
             }
         }
 
+        // Keep paid interceptor magazines stocked, even before the economy matures.
+        let ammo = d.id("abm_ammo");
+        let mut budget = me.res;
+        let cost = d.def(ammo).data.cost.arr();
+        for &site in v.buildings.get(&d.id("abm_site")).map(Vec::as_slice).unwrap_or(&[]) {
+            let Some(e) = w.get(site) else { continue };
+            let queued = e.production.iter().filter(|it| matches!(it, ProdItem::Unit(u) if *u == ammo)).count();
+            if e.complete && e.ammo + (queued as i32) < 3 && queued == 0
+                && cost.iter().enumerate().all(|(i, c)| budget[i] >= *c) {
+                out.push(CommandKind::Train { building: site, def: ammo, count: 1 });
+                for i in 0..5 { budget[i] -= cost[i]; }
+            }
+        }
+
         // ---- offense (Hard+): silos, missiles, salvos
         self.nuke_reserve = [0; 5];
         if !hard || !mature {

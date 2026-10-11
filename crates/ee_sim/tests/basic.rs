@@ -840,7 +840,8 @@ fn launch_setup(radar: bool) -> (World, u32, u32) {
     run(&mut w, 2, vec![]);
     assert_eq!(w.get(silo).unwrap().cargo.len(), 1, "missile stored in silo");
     let target = w.spawn_static(data().id("barracks"), 1, (b.0 + 6, b.1 + 6), true);
-    w.spawn_static(data().id("abm_site"), 1, (b.0 - 6, b.1 - 6), true);
+    let abm = w.spawn_static(data().id("abm_site"), 1, (b.0 - 6, b.1 - 6), true);
+    w.get_mut(abm).unwrap().ammo = 3;
     if radar {
         w.spawn_static(data().id("radar_station"), 1, (b.0 + 6, b.1 - 7), true);
     }

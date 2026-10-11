@@ -7,6 +7,7 @@ use ee_sim::defs::{Class, DefId, NUM_RES, RES_NAMES};
 use ee_sim::entity::{EntityId, Order, ProdItem};
 use ee_sim::mapgen::GAIA;
 use ee_sim::world::data;
+use ee_sim::fixed::FVec;
 use godot::classes::{
     Camera3D, CompressedTexture2DArray, FastNoiseLite, INode3D, MeshInstance3D, Node3D, NoiseTexture2D, PlaneMesh, Shader,
     ShaderMaterial, Texture2D,
@@ -113,6 +114,7 @@ impl GameView {
             start_res: get_i("start_res", 1500) as i32,
             ai_self: get_i("ai_self", 0) != 0,
             teams: get_i("teams", 0) as i32,
+            team_ids: (0..8).map(|i| get_i(&format!("team_{i}"), i) as u8).collect(),
         };
         // clear previous match
         for mut ch in self.base().get_children().iter_shared() {
@@ -505,6 +507,9 @@ impl GameView {
         let mut d = dict();
         let Some(c) = &self.client else { return d };
         let w = c.world();
+        let current = crate::stats::sample(w);
+        let mut history: Vec<_> = c.history.iter().filter(|s| s.tick < w.tick).collect();
+        history.push(&current);
         let mut players = VarArray::new();
         for pl in &w.players {
             let (m, e, t) = crate::stats::score_parts(w, pl.id);
@@ -530,9 +535,10 @@ impl GameView {
                 g.push(&pl.stats.gathered[r].to_variant());
             }
             x.set("gathered", &g);
+            x.set("looted", pl.stats.looted.iter().sum::<i64>());
             x.set("techs", pl.techs.iter().filter(|t| **t).count() as i64);
             // peaks from the history
-            let peak = |k: usize| c.history.iter().filter_map(|s| s.values.get(pl.id as usize)).map(|v| v[k] as i64).max().unwrap_or(0);
+            let peak = |k: usize| history.iter().filter_map(|s| s.values.get(pl.id as usize)).map(|v| v.get(k).copied().unwrap_or(0.0) as i64).max().unwrap_or(0);
             x.set("peak_pop", peak(1));
             x.set("peak_army", peak(2));
             players.push(&x.to_variant());
@@ -540,7 +546,7 @@ impl GameView {
         d.set("players", &players);
         d.set("seconds", (w.tick / 20) as i64);
         let mut times = VarArray::new();
-        for s in &c.history {
+        for s in &history {
             times.push(&((s.tick / 20) as i64).to_variant());
         }
         d.set("times", &times);
@@ -549,8 +555,8 @@ impl GameView {
             let mut per = VarArray::new();
             for p in 0..w.players.len() {
                 let mut vals = PackedFloat32Array::new();
-                for s in &c.history {
-                    vals.push(s.values.get(p).map_or(0.0, |v| v[k]));
+                for s in &history {
+                    vals.push(s.values.get(p).and_then(|v| v.get(k)).copied().unwrap_or(0.0));
                 }
                 per.push(&vals.to_variant());
             }
@@ -736,24 +742,39 @@ impl GameView {
         Vector3::new(x, 0.0, z)
     }
 
-    /// Select the next idle citizen and the `n - 1` idle citizens nearest to it.
+    /// Select nearby idle citizens on one island, prioritizing the camera focus.
     #[func]
     fn select_idle_citizens(&mut self, n: i64) -> Vector3 {
-        let focus = self.select_idle_citizen();
-        let Some(c) = self.client.as_mut() else { return focus };
-        let Some(&first) = c.selection.first() else { return focus };
-        let w = c.world();
-        let Some(fp) = w.get(first).map(|e| e.pos) else { return focus };
-        let mut idle: Vec<(i64, EntityId)> = w
-            .entities
-            .iter()
-            .filter(|e| e.alive && e.owner == c.me && e.inside == 0 && e.id != first && data().def(e.def).class() == Class::Citizen && e.order == Order::Idle)
-            .map(|e| (e.pos.dist2_raw(fp), e.id))
-            .collect();
-        idle.sort();
-        let more: Vec<EntityId> = idle.into_iter().take((n.max(1) - 1) as usize).map(|x| x.1).collect();
-        c.selection.extend(more);
+        let near = self.worker_focus();
+        let Some(c) = self.client.as_mut() else { return Vector3::new(-1.0, -1.0, -1.0) };
+        let ids = c.world().idle_citizens_near(c.me, near, n.clamp(1, 3000) as usize);
+        let focus = ids.first().and_then(|&id| c.world().get(id)).map(|e| {
+            let (x, z) = crate::client::to_world2(e.pos);
+            Vector3::new(x, 0.0, z)
+        }).unwrap_or(Vector3::new(-1.0, -1.0, -1.0));
+        c.selection = ids;
         focus
+    }
+
+    fn worker_focus(&self) -> FVec {
+        if let (Some(c), Some(cam)) = (&self.client, &self.camera) {
+            let size = cam.get_viewport().unwrap().get_visible_rect().size;
+            if let Some(p) = c.ground_at(cam, size * 0.5) {
+                return crate::client::from_world(p.x, p.z);
+            }
+        }
+        self.client.as_ref().map(|c| {
+            let (x, y) = c.world().starts[c.me as usize];
+            FVec::tile_center(x, y)
+        }).unwrap_or(FVec::ZERO)
+    }
+
+    #[func]
+    fn dispatch_idle_miners(&mut self) {
+        let near = self.worker_focus();
+        if let Some(c) = self.client.as_mut() {
+            c.issue(CommandKind::StaffMines { near, count: 8 });
+        }
     }
 
     /// Right click at a screen point.
@@ -928,6 +949,10 @@ impl GameView {
                 x.set("complete", e.complete);
                 x.set("progress", e.progress as f32 / d.build_ticks.max(1) as f32);
             }
+            if d.weapons.first().map_or(false, |wp| wp.ammo > 0) {
+                x.set("ammo", e.ammo);
+                x.set("ammo_max", d.weapons[0].ammo);
+            }
             x.set("kills", e.kills as i64);
             x.set("order", format!("{:?}", e.order).split(' ').next().unwrap_or("").trim_end_matches('{').to_string().as_str());
             out.push(&x.to_variant());
@@ -1021,7 +1046,11 @@ impl GameView {
             if b.complete {
                 for (i, &u) in d.trains.iter().enumerate() {
                     let ud = data().def(u);
-                    let afford = w.can_afford(c.me, &ud.data.cost);
+                    let queued_ammo: i32 = b.production.iter().filter_map(|it| match it {
+                        ProdItem::Unit(u) => Some(data().def(*u).data.ammunition), _ => None,
+                    }).sum();
+                    let afford = w.can_afford(c.me, &ud.data.cost) && (ud.data.ammunition == 0
+                        || b.ammo + queued_ammo < d.weapons[0].ammo);
                     let tip = format!("{}\nHP {}  Armor {}{}", ud.data.role, ud.data.hp, ud.data.armor, ud.weapons.first().map(|wp| format!("  Attack {}  Range {:.1}", wp.damage * wp.burst, wp.range.to_f32())).unwrap_or_default());
                     button("train", &ud.data.key, &ud.data.name, HOTKEYS.get(i).copied().unwrap_or(""), Some(&ud.data.cost), afford, &tip);
                 }
@@ -1042,7 +1071,7 @@ impl GameView {
                     button("ungarrison", "", &format!("Release Garrison ({})", b.cargo.len()), "U", None, !b.cargo.is_empty(), "Send the stored units back out (they walk to the rally point if set). Garrisoned units don't count toward population.");
                 }
                 if d.trains.iter().any(|&u| data().def(u).data.icbm) {
-                    button("icbm", "", &format!("Launch ICBM ({}/{})", b.cargo.len(), d.data.cargo), "L", None, !b.cargo.is_empty(), "Click the target point (or right-click it, also on the minimap). Enemy ABM sites backed by an early warning radar can shoot it down.");
+                    button("icbm", "", &format!("Launch missile ({}/{})", b.cargo.len(), d.data.cargo), "L", None, !b.cargo.is_empty(), &format!("Next payload: {}. Launches in loading order. Click the target point (or right-click it, also on the minimap). Radar-backed ABMs can intercept every payload.", b.cargo.first().and_then(|id| w.get(*id)).map(|e| data().def(e.def).data.name.as_str()).unwrap_or("none")));
                 }
                 if d.data.key == "granary" {
                     let fc = data().def(data().id("farm")).data.cost;
@@ -1467,7 +1496,8 @@ impl GameView {
                 let at = spos + dir.scale(Fx::from_int(40));
                 if scenario.to_string() == "icbm_abm" {
                     let (ax, ay) = at.tile();
-                    w.spawn_static(data().id("abm_site"), 1, (ax - 6, ay - 6), true);
+                    let abm = w.spawn_static(data().id("abm_site"), 1, (ax - 6, ay - 6), true);
+                    w.get_mut(abm).unwrap().ammo = 3;
                     w.spawn_static(data().id("radar_station"), 1, (ax + 6, ay + 6), true);
                     w.recount_pop();
                 }

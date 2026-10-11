@@ -203,3 +203,43 @@ fn conquered_islands_are_fortified_and_garrisoned() {
     assert!(count("abm_site") >= 2, "anti-ICBM cover");
     assert!(count("naval_yard") >= 1 && count("airport") >= 1, "a yard and an airfield");
 }
+
+#[test]
+fn strategic_ai_reloads_empty_interceptors_and_respects_its_budget() {
+    let (mut w, mut ai, _) = nuclear_setup(0);
+    let abm = data().id("abm_site");
+    let ammo = data().id("abm_ammo");
+    let site = w.entities.iter().find(|e| e.alive && e.owner == 0 && e.def == abm).unwrap().id;
+    w.players[0].res = data().def(ammo).data.cost.arr();
+    let v = ai.view(&w);
+    let mut cmds = vec![];
+    ai.strategic(&w, &v, &mut cmds);
+    assert!(cmds.iter().any(|c| matches!(c, CommandKind::Train { building, def, count: 1 } if *building == site && *def == ammo)));
+    w.get_mut(site).unwrap().ammo = 3;
+    cmds.clear();
+    ai.strategic(&w, &v, &mut cmds);
+    assert!(!cmds.iter().any(|c| matches!(c, CommandKind::Train { def, .. } if *def == ammo)));
+}
+
+#[test]
+fn ai_adds_asw_aircraft_when_submarines_are_seen() {
+    let mut w = world();
+    let mut ai = Ai::new(0, Difficulty::Hard, 9);
+    ai.init(&w);
+    ai.personality = Personality::Standard;
+    w.players[0].res = [10000; 5];
+    w.players[0].pop_cap = 3000;
+    w.tick = 20000;
+    let airport = w.spawn(data().id("airport"), 0, ai.base);
+    for (i, key) in ["fighter", "bomber", "strike_fighter", "helicopter"].iter().enumerate() {
+        for _ in 0..[5, 5, 3, 4][i] { w.spawn(data().id(key), 0, ai.base); }
+    }
+    let mut cmds = vec![];
+    ai.produce(&w, &ai.view(&w), &mut cmds);
+    let asw = data().id("asw_helicopter");
+    assert!(!cmds.iter().any(|c| matches!(c, CommandKind::Train { def, .. } if *def == asw)));
+    for i in 0..4 { ai.sightings.insert(100000 + i, (3, w.tick)); }
+    cmds.clear();
+    ai.produce(&w, &ai.view(&w), &mut cmds);
+    assert!(cmds.iter().any(|c| matches!(c, CommandKind::Train { building, def, .. } if *building == airport && *def == asw)), "{cmds:?}");
+}

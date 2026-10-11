@@ -14,6 +14,7 @@ pub mod spatial;
 pub mod units;
 pub mod vision;
 pub mod world;
+pub mod workers;
 
 pub use command::{Command, CommandKind, TickCommands};
 pub use world::{data, MatchConfig, World};

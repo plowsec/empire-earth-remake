@@ -84,8 +84,9 @@ pub enum DamageType {
     Interceptor = 11,
     /// anti-submarine: depth charges and ASW rockets
     DepthCharge = 12,
+    CoastalGun = 13,
 }
-pub const NUM_DMG: usize = 13;
+pub const NUM_DMG: usize = 14;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Layer {
@@ -121,6 +122,7 @@ pub struct WeaponData {
     pub vs_ground: bool,
     pub vs_air: bool,
     pub vs_water: bool,
+    pub sub_only: bool,
     /// bombers: weapon only fires when directly overhead, then needs rearming
     pub ammo: i32,
     /// shots per salvo (machine guns fire bursts: VFX + damage split)
@@ -139,6 +141,7 @@ impl Default for WeaponData {
             vs_ground: true,
             vs_air: false,
             vs_water: true,
+            sub_only: false,
             ammo: 0,
             burst: 1,
         }
@@ -187,6 +190,10 @@ pub struct UnitData {
     /// heals nearby friendly infantry, hp per second
     pub heal: i32,
     pub heal_range: i32,
+    /// Restrict a building's repair aura to this class; None heals every unit.
+    pub heal_class: Option<Class>,
+    /// Production item that adds rounds to its building instead of spawning a unit.
+    pub ammunition: i32,
     /// buildings that must sit on the coast
     pub coastal: bool,
     /// farms: walkable building that is also an infinite food node
@@ -247,6 +254,8 @@ impl Default for UnitData {
             fuel: 0,
             heal: 0,
             heal_range: 0,
+            heal_class: None,
+            ammunition: 0,
             coastal: false,
             walkable: false,
             near: None,
@@ -346,6 +355,7 @@ pub struct Weapon {
     pub vs_ground: bool,
     pub vs_air: bool,
     pub vs_water: bool,
+    pub sub_only: bool,
     pub ammo: i32,
     pub burst: i32,
 }
@@ -469,6 +479,7 @@ impl GameData {
                         vs_ground: w.vs_ground,
                         vs_air: w.vs_air,
                         vs_water: w.vs_water,
+                        sub_only: w.sub_only,
                         ammo: w.ammo,
                         burst: w.burst.max(1),
                     }

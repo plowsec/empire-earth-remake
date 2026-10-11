@@ -49,13 +49,17 @@ impl World {
             ProdItem::Tech(t) => data().techs[t as usize].research_ticks,
         };
         if let ProdItem::Unit(u) = item {
+            let ud = data().def(u);
+            if ud.data.ammunition > 0 && e.ammo >= data().def(e.def).weapons[0].ammo {
+                return;
+            }
             // silos hold a limited number of missiles
             if data().def(u).data.icbm && e.cargo.len() as i32 >= data().def(e.def).data.cargo {
                 return;
             }
             let p = &self.players[owner as usize];
             // pop includes this unit already (see recount_pop)
-            if p.pop > p.pop_cap {
+            if ud.data.pop > 0 && p.pop > p.pop_cap {
                 if self.tick % 100 == 0 {
                     self.events.push(SimEvent::Notice { owner, text: "Population limit reached: build houses" });
                 }
@@ -83,6 +87,12 @@ impl World {
     }
 
     fn finish_unit(&mut self, i: usize, u: crate::defs::DefId) {
+        let ud = data().def(u);
+        if ud.data.ammunition > 0 {
+            let cap = data().def(self.entities[i].def).weapons[0].ammo;
+            self.entities[i].ammo = (self.entities[i].ammo + ud.data.ammunition).min(cap);
+            return;
+        }
         let e = &mut self.entities[i];
         let owner = e.owner;
         let bid = e.id;
@@ -212,8 +222,16 @@ impl World {
         let mut targets = Vec::new();
         self.spatial.for_each(pos, r, |oid, slot| {
             let o = &self.entities[slot];
-            if o.owner == owner && o.on_map() && data().def(o.def).is_unit() && o.pos.within(pos, r) {
+            let od = data().def(o.def);
+            if o.owner == owner && o.on_map() && od.is_unit() && !od.data.icbm
+                && d.data.heal_class.map_or(true, |class| od.class() == class) && o.pos.within(pos, r) {
                 targets.push(oid);
+            }
+            if d.data.heal_class == Some(Class::Aircraft) && od.data.airport && o.owner == owner
+                && o.complete && o.pos.within(pos, r) {
+                targets.extend(o.cargo.iter().copied().filter(|&id| self.get(id).map_or(false, |a|
+                    a.owner == owner && a.inside == oid && data().def(a.def).class() == Class::Aircraft
+                        && !data().def(a.def).data.icbm)));
             }
         });
         for t in targets {

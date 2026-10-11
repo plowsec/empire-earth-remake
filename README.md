@@ -36,7 +36,9 @@ Requirements: Rust (stable), Godot 4.7, and Blender 5 (only to regenerate models
 | Building hotkeys (citizens) / training hotkeys (buildings) | `Q W E R T F G Z X C V B` (shown on buttons) |
 | Stop / Unload transport / Return to airfield / Delete | `H` / `U` / `Y` / `Delete` |
 | Control groups | `Ctrl+1..9` set, `1..9` recall (double tap to center) |
-| Next idle citizen / 8 idle citizens / all idle citizens | `;` or idle button / `×8` or Ctrl-click / Shift-click |
+| Next idle citizen / 8 idle citizens / all idle citizens | `;` or idle button / `×8` or Ctrl-click (one island, prioritizing the camera) / Shift-click |
+| Fill mine vacancies | **Mine ×8** sends up to eight idle citizens to explored mines they can walk to |
+| Live comparison charts | **Charts** on the top bar or **Current Charts** in the pause menu |
 | Scout island | `S` |
 | Mass training | Shift-click / Shift+training hotkey: 10 per selected building |
 | Center on selection | `Space` |
@@ -60,10 +62,16 @@ to see its rally flag or use **Clear Rally**. Granaries can **Rebuild Fields** t
 out available farm plots and assign a citizen to each. Saved control groups appear
 above the minimap; click to recall, double-click to center.
 
-Strategic weapons: a **Missile Silo** builds and stores up to three ICBMs; select it and
-right-click any point (also on the minimap) to launch. Missiles fly a ballistic arc and
-detonate as a full nuclear blast. Only **ABM Sites** can shoot them down, and only while
-their owner has an **Early Warning Radar**, which also sounds the alarm on any enemy launch.
+Strategic weapons: a **Missile Silo** stores three missiles. Train nuclear ICBMs,
+**Conventional ICBMs** (20% of the nuclear price, concentrated blast), or **Cluster
+ICBMs** (30%, wider anti-infantry blast). Right-click a point to fire the oldest loaded
+payload; the launch button identifies it. All payloads draw ABM fire, so cheap rounds
+can exhaust defenses before a nuclear strike.
+
+**ABM Sites** cost 150 stone, 150 gold and 100 iron and start empty. Buy **ABM
+Interceptors** through their production card: each costs 400 stone, 1000 gold and
+750 iron, exactly half a nuclear ICBM. A site stores three rounds and fires once every
+six seconds while its owner has **Early Warning Radar**. The AI purchases reloads too.
 A **Fortress** garrisons up to 80 units; stored units don't count toward population.
 **Apartment Blocks** house 50. Population limits go up to 3000.
 
@@ -76,8 +84,25 @@ Citizens right-clicked onto a granary take one field each; extra citizens lay an
 new fields on the free plots. A new granary lays out its fields as soon as it's built.
 Sending more citizens to a resource than it can take spreads the rest over the nearest
 free nodes they can actually walk to; double-click selects every unit or building of
-that kind on screen. When the match ends, the end screen ranks every player with score
-breakdowns, honours, military/economy tables and history charts.
+that kind on screen. During play, **Charts** compares current stockpiles, units, army,
+economy and loot for every player, with history sampled every 30 seconds. When the
+match ends, the end screen ranks every player with score breakdowns, honours,
+military/economy tables and history charts.
+
+Production facilities have stacking repair zones within 10 tiles of their centers:
+naval yards restore 20 HP/s to ships, tank factories 12 HP/s to vehicles, airfields
+12 HP/s to aircraft, and barracks 6 HP/s to infantry. Nearby airfields also help planes
+in hangars. Hospitals retain their general healing aura. Guard towers and fortresses
+now hit surface ships harder with their coastal guns.
+
+**B2 Carpet Bombers** hit an 11-tile-wide area for 900 base damage, killing infantry
+throughout the blast, including upgraded soldiers. Staggered ground explosions, dust,
+smoke and scorch marks show the area hit; the marks linger for 45 seconds before fading.
+
+**Combat loot:** destroying an enemy unit or building immediately returns 25% of each
+resource in its build cost (rounded down). The credited player sees a rising reward
+label and hears a coin chime for nearby kills. Friendly losses, self-destruction and
+natural resources pay nothing. Loot is tracked separately in the match charts.
 
 Computer opponents use island scouting and granary field rebuilding. Hard and
 Hardest opponents can invest in a nuclear bomber after their economy matures,
@@ -113,6 +138,7 @@ python3 tools/assets/fetch_polyhaven.py && .venv/bin/python tools/assets/pack_te
 tools/shot.sh out.png 200 --ai0 --warp=14000 --seed=5    # screenshot of a running match
 godot --path game -- --scene=main --autotest             # end-to-end UI test
 godot --path game -- --scene=main --savetest             # save/load round trip
+godot --path game --script res://scripts/supporttest.gd  # alliances, workers, charts, combat effects
 godot --path game -- --scene=main --featuretest --seed=5 --reveal # feature inputs + screenshots in build/verification
 godot --path game -- --scene=main --stress=1500 --reveal # 3000-unit battle benchmark
 ```
@@ -121,8 +147,10 @@ godot --path game -- --scene=main --stress=1500 --reveal # 3000-unit battle benc
 
 Save from the **Save** button on the top bar (name it, or click an existing save to
 overwrite), or quicksave with `F5`. The game also autosaves every 5 minutes of game time
-(rotating *Autosave 1–3*) and when a match ends. Saves (`user://saves/*.eesave`) are full snapshots: world plus AI state, so loading is
-instant and the game continues bit-identically. Every match is also recorded as a replay
+(rotating *Autosave 1–3*) and when a match ends. Changing balance data invalidates saves
+from earlier data versions; start a new match after this update. Saves
+(`user://saves/*.eesave`) are full snapshots: world plus AI state, so loading is instant
+and the game continues bit-identically. Every match is also recorded as a replay
 (`user://replays/*.eerep`, on macOS under `~/Library/Application Support/Godot/app_userdata/`):
 match setup, AI seeds and every command, refreshed every 30 s and on exit.
 
@@ -176,7 +204,8 @@ works from Git Bash with Rust installed.
 
 ## Alliances
 
-Pick teams before the match (skirmish **Teams** option, or a team per seat in the LAN
+Pick teams before the match (skirmish **Alliances → Custom teams** sets each player
+individually; presets are also available, or pick a team per seat in the LAN
 lobby), or change them during play with **Diplomacy** on the top bar: offer an alliance
 (formed when both sides offer), break one at any moment, and send tribute. Allies share
 vision and never fight; when everyone left standing is allied, they win together. AIs

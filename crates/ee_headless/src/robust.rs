@@ -186,6 +186,7 @@ impl Translator<'_> {
             K::Diplomacy { target, ally } => (K::Diplomacy { target: *target, ally: *ally }, true),
             K::Tribute { to, res } => (K::Tribute { to: *to, res: *res }, true),
             K::Resign => (K::Resign, true),
+            K::StaffMines { near, count } => (K::StaffMines { near: *near, count: *count }, true),
         })
     }
 }

@@ -292,7 +292,14 @@ pub fn apply(w: &mut World, c: &Command) {
             }
             let cost = data().def(*def).data.cost;
             for _ in 0..(*count).clamp(1, 10) {
-                let len = w.get(*building).unwrap().production.len();
+                let b = w.get(*building).unwrap();
+                if data().def(*def).data.ammunition > 0 {
+                    let queued: i32 = b.production.iter().filter_map(|it| match it {
+                        ProdItem::Unit(u) => Some(data().def(*u).data.ammunition), _ => None,
+                    }).sum();
+                    if b.ammo + queued >= w.def_of(b).weapons[0].ammo { break; }
+                }
+                let len = b.production.len();
                 if len >= MAX_QUEUE {
                     break;
                 }
@@ -438,7 +445,7 @@ pub fn apply(w: &mut World, c: &Command) {
             w.events.push(crate::world::SimEvent::MissileLaunch { id: m, owner: p, from: bpos, to });
             for q in 0..w.players.len() {
                 if q as u8 != p && w.players[q].radar && !w.players[q].defeated {
-                    w.events.push(crate::world::SimEvent::Notice { owner: q as u8, text: "Nuclear launch detected!" });
+                    w.events.push(crate::world::SimEvent::Notice { owner: q as u8, text: "Ballistic missile launch detected!" });
                 }
             }
         }
@@ -446,6 +453,12 @@ pub fn apply(w: &mut World, c: &Command) {
         CommandKind::Tribute { to, res } => w.tribute(p, *to, *res),
         CommandKind::Resign => {
             w.resign(p);
+        }
+        CommandKind::StaffMines { near, count } => {
+            let n = w.staff_mines(p, *near, *count);
+            let text = if n == 0 { "No reachable mine vacancies for idle citizens on this island" }
+                else { "Idle citizens dispatched to reachable mine vacancies" };
+            w.events.push(SimEvent::Notice { owner: p, text });
         }
     }
 }
