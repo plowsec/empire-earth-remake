@@ -167,3 +167,39 @@ fn intruders_anywhere_on_our_island_get_an_immediate_response() {
     let to = responders.expect("our troops should move against the intruders");
     assert!(to.within(FVec::tile_center(far.0, far.1), Fx::from_int(6)), "response aimed at the intruders");
 }
+
+#[test]
+fn conquered_islands_are_fortified_and_garrisoned() {
+    let mut cfg = MatchConfig::skirmish(29241, 2);
+    cfg.reveal = true;
+    cfg.map_size = 2;
+    let mut w = World::new(cfg);
+    let mut ai = Ai::new(0, Difficulty::Hardest, 3);
+    ai.init(&w);
+    // a decent island that isn't anyone's home, with room for a town center
+    let homes: Vec<usize> = w.starts.iter().filter_map(|s| ai.island_at(&w, *s)).collect();
+    let sett = data().id("settlement");
+    let (isl, tile) = (0..ai.islands.len())
+        .filter(|i| !homes.contains(i) && ai.islands[*i].tiles >= 300)
+        .find_map(|i| { let c = ai.islands[i].center; ai.plot_near(&w, sett, c, i).map(|t| (i, t)) })
+        .expect("an island to settle");
+    let tc = w.spawn_static(sett, 0, tile, true);
+    let at = w.get(tc).unwrap().pos;
+    for _ in 0..4 { w.spawn(data().id("citizen"), 0, at); }
+    w.players[0].res = [50_000; 5];
+    for _ in 0..20 * 60 * 5 {
+        let cmds: Vec<Command> = if w.tick % 4 == 0 { ai.think(&w).into_iter().map(|kind| Command { player: 0, kind }).collect() } else { vec![] };
+        let t = w.tick;
+        w.step(&ee_sim::command::TickCommands { tick: t, commands: cmds });
+        w.players[0].res = [50_000; 5];
+    }
+    let count = |key: &str| w.entities.iter().filter(|e| e.alive && e.owner == 0 && e.def == data().id(key) && ai.island_at(&w, e.tile).or_else(|| ai.island_at(&w, (e.tile.0 - 1, e.tile.1))) == Some(isl)).count();
+    let locals = w.entities.iter().filter(|e| e.alive && e.owner == 0 && e.def == data().id("citizen") && ai.island_at(&w, e.pos.tile()) == Some(isl)).count();
+    let mines = w.entities.iter().filter(|e| e.alive && e.amount > 0 && data().def(e.def).data.key.ends_with("_mine") && ai.island_at(&w, e.tile).or_else(|| ai.island_at(&w, (e.tile.0 - 1, e.tile.1))) == Some(isl)).count();
+    eprintln!("island {isl}: mines {mines} citizens {locals} towers {} aa {} abm {} yards {} airports {}", count("guard_tower"), count("aa_site"), count("abm_site"), count("naval_yard"), count("airport"));
+    assert!(locals >= (mines * 8).max(12) * 8 / 10, "eight settlers per mine ({locals} for {mines} mines)");
+    assert!(count("guard_tower") >= 4, "towers around the coast");
+    assert!(count("aa_site") >= 2, "anti-air among the towers");
+    assert!(count("abm_site") >= 2, "anti-ICBM cover");
+    assert!(count("naval_yard") >= 1 && count("airport") >= 1, "a yard and an airfield");
+}

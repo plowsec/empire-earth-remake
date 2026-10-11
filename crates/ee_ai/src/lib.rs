@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 mod campaign;
 mod doctrine;
 mod expand;
+mod outpost;
 mod plan;
 mod strategic;
 
@@ -399,6 +400,7 @@ impl Controller for Ai {
             self.raid_tick(w, &v, &mut out);
         }
         self.colonize(w, &v, &mut out);
+        self.fortify_outposts(w, &v, &mut out);
         if (w.tick / interval) % 4 == (self.phase % 4) {
             self.strategic(w, &v, &mut out);
         }

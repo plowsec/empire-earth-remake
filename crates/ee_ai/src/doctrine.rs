@@ -376,8 +376,10 @@ impl Ai {
     /// Ships and planes we want before spending gold and iron on anything else.
     pub(crate) fn sea_air_wanted(&self, w: &World) -> (usize, usize) {
         let cap = (40 + w.config.pop_limit / 25).min(160) as usize;
-        let navy = ((self.est_navy * 3 / 2 + 6) as usize).min(cap);
-        let air = ((self.est_air * 6 / 5 + 8) as usize).min(cap);
+        // every fortified outpost wants its own ring of ships and fighters
+        let outposts = self.outposts(w).len();
+        let navy = ((self.est_navy * 3 / 2 + 6) as usize + outposts * 6).min(cap);
+        let air = ((self.est_air * 6 / 5 + 8) as usize + outposts * 6).min(cap);
         (navy, air)
     }
 }

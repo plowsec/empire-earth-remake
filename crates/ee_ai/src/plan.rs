@@ -519,7 +519,7 @@ impl Ai {
         best.map(|b| b.1)
     }
 
-    fn deep_water_near(&self, w: &World, x: i32, y: i32, sw: i32, sh: i32) -> bool {
+    pub(crate) fn deep_water_near(&self, w: &World, x: i32, y: i32, sw: i32, sh: i32) -> bool {
         let mut n = 0;
         for yy in y - 2..=y + sh + 1 {
             for xx in x - 2..=x + sw + 1 {
