@@ -8,6 +8,46 @@ use ee_sim::map::PASS_WATER;
 use ee_sim::world::{data, World};
 use std::collections::VecDeque;
 
+#[derive(Default)]
+pub(crate) struct PlacementCache {
+    version: Option<u32>,
+    regions: Vec<u32>,
+    sizes: Vec<usize>,
+    natural: Vec<u32>,
+    natural_sizes: Vec<usize>,
+    results: std::collections::HashMap<(DefId, (i32, i32)), bool>,
+}
+
+impl PlacementCache {
+    /// If the walkable perimeter is one continuous arc, removing the inside cannot
+    /// split its component. Count the remaining area without visiting the island.
+    fn remaining_area(regions: &[u32], sizes: &[usize], m: &ee_sim::map::Map, t: (i32, i32), size: (i32, i32)) -> Option<usize> {
+        let (x, y) = t;
+        let (sw, sh) = size;
+        let at = |x, y| if m.in_bounds(x, y) { regions[m.idx(x, y)] } else { 0 };
+        let ring: Vec<u32> = (x - 1..=x + sw).map(|xx| at(xx, y - 1))
+            .chain((y..=y + sh).map(|yy| at(x + sw, yy)))
+            .chain((x - 1..x + sw).rev().map(|xx| at(xx, y + sh)))
+            .chain((y..y + sh).rev().map(|yy| at(x - 1, yy))).collect();
+        let region = *ring.iter().find(|&&r| r != 0)?;
+        let runs = (0..ring.len()).filter(|&i| ring[i] != 0 && ring[(i + ring.len() - 1) % ring.len()] == 0).count();
+        if runs > 1 { return None; }
+        let mut remaining = sizes[region as usize];
+        for yy in y..y + sh {
+            for xx in x..x + sw {
+                if at(xx, yy) == region { remaining -= 1; }
+            }
+        }
+        Some(remaining)
+    }
+}
+
+fn region_sizes(regions: &[u32]) -> Vec<usize> {
+    let mut sizes = vec![0; regions.iter().copied().max().unwrap_or(0) as usize + 1];
+    for &r in regions { sizes[r as usize] += 1; }
+    sizes
+}
+
 impl Ai {
     // ------------------------------------------------------------------ building
 
@@ -239,7 +279,7 @@ impl Ai {
                 let tiles: Vec<(i32, i32)> = (-1..=1).flat_map(|dy| (-1..=1).map(move |dx| (cx + dx, cy + dy))).filter(|&t| self.site_ok(w, sap, t)).collect();
                 // a grown grove is a 3x3 wall: it must not seal anything in (check it as
                 // a 3x3 building would be)
-                let grove_ok = w.keeps_paths(d.id("granary"), (cx - 1, cy - 1));
+                let grove_ok = tiles.len() >= 6 && self.keeps_paths(w, d.id("granary"), (cx - 1, cy - 1));
                 if tiles.len() >= 6 && grove_ok {
                     let workers: Vec<EntityId> = v.gatherers[ee_sim::defs::Res::Wood as usize].iter().take(2).copied().collect();
                     let workers = if workers.is_empty() { v.citizens.iter().take(2).copied().collect() } else { workers };
@@ -374,7 +414,8 @@ impl Ai {
                     let (c, s) = ee_sim::mapgen::sincos_deg(ang);
                     let x = cx + c * r / 1024 - sw / 2;
                     let y = cy + s * r / 1024 - sh / 2;
-                    if self.site_ok(w, def, (x, y)) && self.margin_clear(w, x, y, sw, sh) && self.reachable_by_land(w, x, y, sw, sh) {
+                    if w.can_place(p, def, (x, y)).is_ok() && self.margin_clear(w, x, y, sw, sh)
+                        && self.reachable_by_land(w, x, y, sw, sh) && self.keeps_paths(w, def, (x, y)) {
                         return Some((x, y));
                     }
                 }
@@ -395,7 +436,7 @@ impl Ai {
                 let (c, s) = ee_sim::mapgen::sincos_deg(ang);
                 let x = bx + c * r / 1024 - 1;
                 let y = by + s * r / 1024 - 1;
-                if !self.site_ok(w, def, (x, y)) || !self.margin_clear(w, x, y, 3, 3) {
+                if w.can_place(self.player, def, (x, y)).is_err() || !self.margin_clear(w, x, y, 3, 3) {
                     continue;
                 }
                 let mut free = 0;
@@ -406,10 +447,10 @@ impl Ai {
                         }
                     }
                 }
-                if free >= 76 {
+                if free >= 76 && self.keeps_paths(w, def, (x, y)) {
                     return Some((x, y));
                 }
-                if fallback.is_none() && free >= 60 {
+                if fallback.is_none() && free >= 60 && self.keeps_paths(w, def, (x, y)) {
                     fallback = Some((x, y));
                 }
             }
@@ -440,7 +481,7 @@ impl Ai {
             }
             for (ox, oy) in [(3, 0), (-4, 0), (0, 3), (0, -4), (3, 3), (-4, -4)] {
                 let t = (mx + ox, my + oy);
-                if self.site_ok(w, def, t) && self.margin_clear(w, t.0, t.1, 3, 3) {
+                if w.can_place(self.player, def, t).is_ok() && self.margin_clear(w, t.0, t.1, 3, 3) && self.keeps_paths(w, def, t) {
                     if best.map_or(true, |(bd, _)| dist < bd) {
                         best = Some((dist, t));
                     }
@@ -453,7 +494,53 @@ impl Ai {
 
     /// Placeable, and it won't wall units in (see `World::keeps_paths`).
     pub(crate) fn site_ok(&self, w: &World, def: DefId, t: (i32, i32)) -> bool {
-        w.can_place(self.player, def, t).is_ok() && w.keeps_paths(def, t)
+        w.can_place(self.player, def, t).is_ok() && self.keeps_paths(w, def, t)
+    }
+
+    fn keeps_paths(&self, w: &World, def: DefId, t: (i32, i32)) -> bool {
+        let d = data().def(def);
+        if d.data.walkable || d.data.plantable { return true; }
+        let mut cache = self.placement.borrow_mut();
+        if cache.version != Some(w.map.version) {
+            cache.regions = ee_sim::path::connected_regions(&w.map, Layer::Land);
+            cache.sizes = region_sizes(&cache.regions);
+            // Natural passability changes much less often, but rebuilding on the
+            // same revision also handles terrain changes and loaded games safely.
+            let mut natural_map = w.map.clone();
+            natural_map.pass.clone_from(&w.map.base_pass);
+            cache.natural = ee_sim::path::connected_regions(&natural_map, Layer::Land);
+            cache.natural_sizes = region_sizes(&cache.natural);
+            cache.results.clear();
+            cache.version = Some(w.map.version);
+        }
+        if let Some(&ok) = cache.results.get(&(def, t)) { return ok; }
+        // Removing a footprint cannot join land that is already disconnected.
+        // Reject these candidates without flooding the whole island for each one.
+        let (sw, sh) = d.size();
+        let mut region = 0;
+        for y in t.1 - 1..=t.1 + sh {
+            for x in t.0 - 1..=t.0 + sw {
+                if x != t.0 - 1 && x != t.0 + sw && y != t.1 - 1 && y != t.1 + sh { continue; }
+                if !w.map.in_bounds(x, y) { continue; }
+                let r = cache.regions[w.map.idx(x, y)];
+                if r == 0 { continue; }
+                if region != 0 && region != r {
+                    cache.results.insert((def, t), false);
+                    return false;
+                }
+                region = r;
+            }
+        }
+        let area = PlacementCache::remaining_area(&cache.regions, &cache.sizes, &w.map, t, d.size());
+        let natural = PlacementCache::remaining_area(&cache.natural, &cache.natural_sizes, &w.map, t, d.size());
+        // The original flood stops at 6000 cells. Keep that exact search (and its
+        // traversal order) for larger regions and irregular/disconnected rings.
+        let ok = match (area, natural) {
+            (Some(count), Some(natural)) if count < 6000 => natural < count * 2 + 20,
+            _ => w.keeps_paths(def, t),
+        };
+        cache.results.insert((def, t), ok);
+        ok
     }
 
     fn margin_clear(&self, w: &World, x: i32, y: i32, sw: i32, sh: i32) -> bool {
@@ -511,7 +598,8 @@ impl Ai {
                     && self.island_at(w, (x + sw / 2, y - 1)) != Some(self.home_island) && self.island_at(w, (x - 1, y + sh)) != Some(self.home_island) {
                     continue;
                 }
-                if self.site_ok(w, def, (x, y)) && self.deep_water_near(w, x, y, sw, sh) && self.reachable_by_land(w, x, y, sw, sh) {
+                if w.can_place(self.player, def, (x, y)).is_ok() && self.deep_water_near(w, x, y, sw, sh)
+                    && self.reachable_by_land(w, x, y, sw, sh) && self.keeps_paths(w, def, (x, y)) {
                     best = Some((dist, (x, y)));
                 }
             }
@@ -1491,3 +1579,75 @@ fn land_component(w: &World, start: (i32, i32)) -> Vec<bool> {
 
 #[allow(dead_code)]
 fn _class(_: Class) {}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+    use ee_net::Controller;
+    use ee_sim::{map::{Map, PASS_LAND}, world::MatchConfig};
+
+    #[test]
+    fn cached_placement_matches_flood_on_islands_obstacles_and_edges() {
+        let mut w = World::new(MatchConfig::skirmish(9, 2));
+        for seed in 0..4 {
+            w.map = Map::new(32, 28);
+            let mut rng = ee_sim::rng::SimRng::new(seed, 17);
+            for y in 0..w.map.h {
+                for x in 0..w.map.w {
+                    let i = w.map.idx(x, y);
+                    let land = seed == 0 || (x != 16 && rng.below(10) != 0);
+                    w.map.base_pass[i] = if land { PASS_LAND } else { 0 };
+                    w.map.pass[i] = if seed < 2 || rng.below(5) != 0 { w.map.base_pass[i] } else { 0 };
+                }
+            }
+            let ai = Ai::new(0, Difficulty::Hard, 9);
+            for key in ["house", "granary", "airport", "naval_yard", "farm", "sapling"] {
+                let def = data().id(key);
+                for y in (-1..w.map.h).step_by(2) {
+                    for x in (-1..w.map.w).step_by(2) {
+                        let expected = w.keeps_paths(def, (x, y));
+                        assert_eq!(ai.keeps_paths(&w, def, (x, y)), expected, "{seed} {key} at {x},{y}");
+                        assert_eq!(ai.keeps_paths(&w, def, (x, y)), expected, "cached result");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn placement_cache_refreshes_after_blocking_clearing_and_loading() {
+        let mut w = World::new(MatchConfig::skirmish(9, 2));
+        w.map = Map::new(32, 32);
+        w.map.base_pass.fill(PASS_LAND);
+        w.map.pass.fill(PASS_LAND);
+        let ai = Ai::new(0, Difficulty::Hard, 9);
+        let def = data().id("house");
+        let tile = (15, 15);
+        assert!(ai.keeps_paths(&w, def, tile));
+        w.map.occupy(15, 0, 2, 32, 999, false);
+        assert!(!ai.keeps_paths(&w, def, tile), "wall divides the surrounding land");
+        w.map.vacate(15, 15, 2, 2, 999);
+        assert!(!ai.keeps_paths(&w, def, tile), "building in the gate would split connected land");
+        w.map.vacate(15, 0, 2, 32, 999);
+        assert!(ai.keeps_paths(&w, def, tile), "clearing the wall invalidates rejection");
+        let state = ai.save_state().unwrap();
+        let restored = Ai::from_state(&state).unwrap();
+        assert!(restored.placement.borrow().results.is_empty());
+        assert!(restored.keeps_paths(&w, def, tile));
+    }
+
+    #[test]
+    fn placement_preserves_large_region_search_limit() {
+        let mut w = World::new(MatchConfig::skirmish(9, 2));
+        w.map = Map::new(112, 112);
+        w.map.base_pass.fill(PASS_LAND);
+        w.map.pass.fill(PASS_LAND);
+        let ai = Ai::new(0, Difficulty::Hard, 9);
+        for tile in [(0, 0), (50, 50), (105, 105)] {
+            for key in ["house", "airport", "naval_yard"] {
+                let def = data().id(key);
+                assert_eq!(ai.keeps_paths(&w, def, tile), w.keeps_paths(def, tile));
+            }
+        }
+    }
+}

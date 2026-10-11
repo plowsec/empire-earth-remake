@@ -3,10 +3,16 @@ use ee_sim::mapgen::{generate, MapParams};
 use std::io::Write;
 
 mod robust;
+mod bench;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
+        Some("bench-save") => {
+            let path = args.get(2).expect("bench-save <file.eesave> [ticks]");
+            let ticks = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);
+            bench::run(path, ticks);
+        }
         Some("map") => {
             let seed: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
             let players: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2);
@@ -89,7 +95,7 @@ fn main() {
             let exact = args.iter().any(|a| a == "--exact");
             run_replay_file(&path, every, exact);
         }
-        _ => eprintln!("usage: ee_headless map <seed> <players> <out.ppm> | match <seed> <players> <minutes> <difficulty> [pop_limit] [record.eerep] | replay <file.eerep> [report_every_minutes] [--exact] | robust <file.eerep> [report_every_minutes]"),
+        _ => eprintln!("usage: ee_headless map <seed> <players> <out.ppm> | match <seed> <players> <minutes> <difficulty> [pop_limit] [record.eerep] | replay <file.eerep> [report_every_minutes] [--exact] | robust <file.eerep> [report_every_minutes] | bench-save <file.eesave> [ticks]"),
     }
 }
 

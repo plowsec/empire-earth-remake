@@ -150,6 +150,9 @@ struct Known {
 
 #[derive(Serialize, Deserialize)]
 pub struct Ai {
+    /// Derived placement checks, shared by repeated searches on an unchanged map.
+    #[serde(skip)]
+    placement: std::cell::RefCell<plan::PlacementCache>,
     pub player: u8,
     pub diff: Difficulty,
     #[serde(default)]
@@ -256,6 +259,7 @@ pub struct Ai {
 impl Ai {
     pub fn new(player: u8, diff: Difficulty, seed: u64) -> Ai {
         Ai {
+            placement: Default::default(),
             player,
             diff,
             personality: Personality::Standard,

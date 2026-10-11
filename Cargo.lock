@@ -47,6 +47,7 @@ dependencies = [
  "ee_net",
  "ee_sim",
  "ron",
+ "serde",
 ]
 
 [[package]]
