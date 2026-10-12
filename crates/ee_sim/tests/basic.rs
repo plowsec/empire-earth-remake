@@ -1110,3 +1110,36 @@ fn formation_shapes_and_rally_rotation() {
     let near = |p: FVec| new.iter().filter(|&&c| w.get(c).unwrap().pos.within(p, ee_sim::fixed::Fx::from_int(3))).count();
     assert!(near(a) >= 1 && near(b) >= 1, "both rally points used: {} at a, {} at b", near(a), near(b));
 }
+
+/// Production buildings repair their own kind nearby, and overlapping areas add up.
+#[test]
+fn facility_healing_stacks() {
+    let healed = |factories: usize| -> i32 {
+        let mut w = World::new(MatchConfig::skirmish(5, 2));
+        let s = w.starts[0];
+        let fac = data().id("tank_factory");
+        let mut placed = 0;
+        'f: for r in 6..20 {
+            for dx in -r..=r {
+                for t in [(s.0 + dx, s.1 + r), (s.0 + dx, s.1 - r)] {
+                    if placed < factories && w.can_place(0, fac, t).is_ok() {
+                        w.spawn_static(fac, 0, t, true);
+                        placed += 1;
+                        if placed == factories { break 'f; }
+                    }
+                }
+            }
+        }
+        assert_eq!(placed, factories);
+        let tank = w.spawn(data().id("tank"), 0, FVec::tile_center(s.0, s.1 + 3));
+        let start = w.get(tank).unwrap().hp / 4;
+        w.get_mut(tank).unwrap().hp = start;
+        run(&mut w, 20 * 10, vec![]);
+        w.get(tank).unwrap().hp - start
+    };
+    let one = healed(1);
+    let two = healed(2);
+    eprintln!("healed in 10 s: one factory {one}, two {two}");
+    assert!(one > 0, "a tank factory repairs vehicles nearby");
+    assert!(two >= one * 2 - 12, "two factories repair about twice as fast ({one} vs {two})");
+}
