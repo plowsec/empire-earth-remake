@@ -72,7 +72,7 @@ impl Ai {
     }
 
     /// The held island whose zone (land + sea belt) contains `p`, if any.
-    fn zone_of(&self, held: &[usize], p: (i32, i32)) -> Option<usize> {
+    pub(crate) fn zone_of(&self, held: &[usize], p: (i32, i32)) -> Option<usize> {
         held.iter().copied().find(|&i| {
             let c = self.islands[i].center;
             let r = self.island_radius(i) + BELT;
@@ -178,7 +178,12 @@ impl Ai {
             }
         }
         // ---- hostile ships in our waters: the nearest warships, outnumbering them
-        for cl in sea.values() {
+        let war_zone = self.war.as_ref().map(|wr| wr.island);
+        for (z, cl) in sea.iter() {
+            // a siege is fought by the war machinery (massed), not by the nearest ships
+            if Some(*z) == war_zone {
+                continue;
+            }
             let at = cl.center();
             // send what can actually hurt them: against submarines that's frigates, our own
             // submarines and ASW helicopters - battleships would just be sunk
@@ -208,7 +213,10 @@ impl Ai {
             }
         }
         // ---- enemy aircraft overhead: fighters go up and the airfields keep sending them
-        for cl in air.values() {
+        for (z, cl) in air.iter() {
+            if Some(*z) == war_zone {
+                continue;
+            }
             let at = cl.center();
             let fighters: Vec<EntityId> = v.air.iter().copied().filter(|&a| w.get(a).map_or(false, |e| d.def(e.def).weapons.iter().any(|wp| wp.vs_air) && !matches!(e.order, Order::Attack { .. }))).collect();
             if !fighters.is_empty() {

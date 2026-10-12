@@ -3,6 +3,7 @@
 //! run on every peer in lockstep, or on the host only.
 use serde::{Deserialize, Serialize};
 mod campaign;
+mod defense;
 mod doctrine;
 mod expand;
 mod outpost;
@@ -204,6 +205,12 @@ pub struct Ai {
     /// colonies under way (several at once when there are boats for them)
     #[serde(default)]
     pub(crate) colonies: Vec<expand::Colony>,
+    /// enemy forces seen around our islands (last few minutes)
+    #[serde(default)]
+    pub(crate) threat_memory: BTreeMap<EntityId, defense::Seen>,
+    /// a siege on one of our islands: we're mobilized
+    #[serde(default)]
+    pub(crate) war: Option<defense::War>,
     pub(crate) last_colony: u32,
     pub(crate) last_replant: u32,
     /// food workers the economy would like (drives granary/farm expansion)
@@ -295,6 +302,8 @@ impl Ai {
             home_island: 0,
             colony: None,
             colonies: Vec::new(),
+            threat_memory: BTreeMap::new(),
+            war: None,
             last_colony: 0,
             last_replant: 0,
             food_wanted: 0,
@@ -369,12 +378,13 @@ impl Controller for Ai {
 
     fn debug(&self) -> String {
         let claimed = self.islands.iter().filter(|i| i.claimed).count();
+        let war = self.war_debug();
         let colony = if self.colonies.is_empty() { "-".to_string() } else { self.colonies.iter().map(|c| format!("{:?}->isl{}", c.stage, c.island)).collect::<Vec<_>>().join(",") };
         let base = match &self.invasion {
             Some(i) => format!("wave {} stage {:?} units {} transports {} from {:?} landings {:?}", self.wave, i.stage, i.units.len(), i.transports.len(), i.staging.tile(), i.landings.iter().map(|l| l.tile()).collect::<Vec<_>>()),
             None => format!("wave {} (no invasion) known {} defending {}", self.wave, self.known.len(), self.defending),
         };
-        format!("{base} | islands {claimed}/{} colony {colony} | nukes: {}", self.islands.len(), self.nuke_debug)
+        format!("{base} | {war} | islands {claimed}/{} colony {colony} | nukes: {}", self.islands.len(), self.nuke_debug)
     }
 
     fn think(&mut self, w: &World) -> Vec<CommandKind> {
@@ -392,6 +402,7 @@ impl Controller for Ai {
         let mut out = Vec::new();
         let v = self.view(w);
         self.observe(w);
+        self.assess_threat(w, &v);
         self.economy(w, &v, &mut out);
         if (w.tick / interval) % 3 == (self.phase % 3) {
             self.build(w, &v, &mut out);
@@ -416,6 +427,8 @@ impl Controller for Ai {
         self.diplomacy(w, &mut out);
         self.rebuild_fields(w, &v, &mut out);
         self.military(w, &v, &mut out);
+        // mobilized: the war overrides peacetime dispositions (comes last)
+        self.wage_war(w, &v, &mut out);
         self.scout(w, &v, &mut out);
         out
     }
@@ -607,6 +620,8 @@ impl Ai {
             .map(|e| e.production.iter().filter(|it| matches!(it, ProdItem::Unit(u) if *u == cid)).count())
             .sum();
         let per_tc = if self.diff == Difficulty::Easy { 1 } else { 3 };
+        // at war, the workforce stops growing past 60% of its goal: food goes to soldiers
+        let target = if self.war.is_some() { target.min((target * 6 / 10).max(60)) } else { target };
         if v.citizens.len() + in_training < target && pl.pop < pl.pop_cap && v.idle_citizens.len() < 4 {
             let mut food = pl.res[0];
             for key in ["capitol", "settlement"] {

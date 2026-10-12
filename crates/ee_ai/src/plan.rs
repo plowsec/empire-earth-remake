@@ -169,6 +169,13 @@ impl Ai {
                 }
             }
         }
+        // at war: more factories in parallel, before anything else
+        let mut war_first = self.war_buildings(v);
+        war_first.retain(|&d| pending_count(&self.pending, d) + sites_of(d) < 2);
+        if !war_first.is_empty() {
+            war_first.extend(wants);
+            wants = war_first;
+        }
         // research happens every think (see Ai::think)
         self.replant(w, v, out);
 
@@ -716,6 +723,14 @@ impl Ai {
         if enemy_subs > 0 {
             air.push(("asw_helicopter", if enemy_subs >= 3 { 40 } else { 20 }));
         }
+        if let Some(wr) = &self.war {
+            if wr.sea * 10 >= wr.threat * 3 {
+                air.push(("bomber", 45));
+            }
+            if wr.air * 10 >= wr.threat * 3 {
+                air.push(("fighter", 60));
+            }
+        }
         let navy: Vec<(&str, i32)> = if naval_style {
             vec![("frigate", 40), ("submarine", 35), ("battleship", 25)]
         } else {
@@ -812,6 +827,8 @@ impl Ai {
                         continue;
                     }
                     let fleet_cap = if naval_style { 90 } else { (8 + self.wave as usize * 3).min(12 + w.config.pop_limit as usize / 100).max(want_navy) };
+                    // mobilized: no fleet cap
+                    let fleet_cap = if self.war.is_some() { fleet_cap.max(200) } else { fleet_cap };
                     if v.navy.len() >= fleet_cap {
                         continue;
                     }
@@ -841,6 +858,7 @@ impl Ai {
                 }
                 // match the enemy air force (and then some) once it shows up
                 let air_cap = if air_style { 130 } else if naval_style { 40 } else { (8 + self.wave as usize * 3).max(want_air) };
+                let air_cap = if self.war.is_some() { air_cap.max(200) } else { air_cap };
                 if bkey == "airport" && v.air.len() >= air_cap {
                     continue;
                 }

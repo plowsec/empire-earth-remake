@@ -243,3 +243,44 @@ fn ai_adds_asw_aircraft_when_submarines_are_seen() {
     ai.produce(&w, &ai.view(&w), &mut cmds);
     assert!(cmds.iter().any(|c| matches!(c, CommandKind::Train { building, def, .. } if *building == airport && *def == asw)), "{cmds:?}");
 }
+
+/// An enemy fleet parked in our waters is a siege: the AI mobilizes (more yards and
+/// airfields in parallel), rallies everything to the island and strikes in mass.
+#[test]
+fn a_siege_puts_the_ai_on_war_footing() {
+    let mut w = world();
+    let mut ai = Ai::new(0, Difficulty::Hardest, 3);
+    ai.init(&w);
+    // our economy and a modest fleet already exist
+    w.players[0].res = [50_000; 5];
+    w.players[0].pop_cap = 600;
+    for _ in 0..40 { w.spawn(data().id("citizen"), 0, ai.base); }
+    let yard_site = ai.find_site(&w, data().id("naval_yard")).expect("a coast for a yard");
+    w.spawn_static(data().id("naval_yard"), 0, yard_site, true);
+    let field_site = ai.find_site(&w, data().id("airport")).expect("room for an airfield");
+    w.spawn_static(data().id("airport"), 0, field_site, true);
+    // an enemy fleet in our waters, a few tiles off the yard
+    let (land, water) = ai.coast_toward(&w, ai.home_island, FVec::tile_center(yard_site.0, yard_site.1)).unwrap();
+    let _ = land;
+    let off = FVec::tile_center(water.0, water.1);
+    for k in 0..6 {
+        let p = off + FVec::new(Fx::from_int(k % 3), Fx::from_int(k / 3));
+        w.spawn(data().id(if k % 2 == 0 { "battleship" } else { "submarine" }), 1, p);
+    }
+    let yards0 = w.entities.iter().filter(|e| e.alive && e.owner == 0 && e.def == data().id("naval_yard")).count();
+    let mut built = std::collections::BTreeSet::new();
+    for _ in 0..20 * 60 {
+        let cmds: Vec<Command> = if w.tick % 2 == 0 { ai.think(&w).into_iter().map(|kind| Command { player: 0, kind }).collect() } else { vec![] };
+        for c in &cmds {
+            if let CommandKind::Build { def, .. } = &c.kind { built.insert(data().def(*def).data.key.clone()); }
+        }
+        let t = w.tick;
+        w.step(&ee_sim::command::TickCommands { tick: t, commands: cmds });
+        w.players[0].res = [50_000; 5];
+    }
+    let war = ai.war_debug();
+    let yards = w.entities.iter().filter(|e| e.alive && e.owner == 0 && e.def == data().id("naval_yard")).count();
+    eprintln!("{war} | yards {yards0} -> {yards} | ordered {:?}", built);
+    assert!(war.starts_with("WAR"), "on war footing: {war}");
+    assert!(built.contains("naval_yard") && built.contains("airport"), "extra yards and airfields ordered: {built:?}");
+}
