@@ -3,7 +3,7 @@ extends Node3D
 ## Shift+middle-drag or comma/period rotate. Clamped to the map.
 
 @export var pan_speed := 70.0
-@export var edge_margin := 14
+@export var edge_margin := 24
 @export var min_dist := 22.0
 @export var max_dist := 190.0
 
@@ -54,6 +54,13 @@ func _unhandled_input(e: InputEvent) -> void:
 		var k := dist * 0.045
 		target += (_right() * e.delta.x - _fwd() * e.delta.y) * k
 
+## Pan strength for a pointer `d` pixels from an edge: 0 outside the band, 0.3 at its
+## inner side up to 1 at the edge.
+func _edge(d: float, band: float) -> float:
+	if d >= band:
+		return 0.0
+	return lerpf(1.0, 0.3, clampf(d / band, 0.0, 1.0))
+
 func _fwd() -> Vector3:
 	return Vector3(sin(yaw), 0, cos(yaw)) * -1.0
 
@@ -70,11 +77,14 @@ func _process(dt: float) -> void:
 	if edge_pan and DisplayServer.window_is_focused():
 		var mp := get_viewport().get_mouse_position()
 		var vs := get_viewport().get_visible_rect().size
-		if mp.x >= 0 and mp.y >= 0 and mp.x <= vs.x and mp.y <= vs.y:
-			if mp.x < edge_margin: v.x -= 1
-			if mp.x > vs.x - edge_margin: v.x += 1
-			if mp.y < edge_margin: v.y += 1
-			if mp.y > vs.y - edge_margin: v.y -= 1
+		# a band of ~3% of the screen (never under edge_margin); the speed ramps up
+		# from 30% at its inner side to full speed at the very edge
+		var band := maxf(edge_margin, vs.y * 0.03)
+		if mp.x >= -2 and mp.y >= -2 and mp.x <= vs.x + 2 and mp.y <= vs.y + 2:
+			v.x -= _edge(mp.x, band)
+			v.x += _edge(vs.x - mp.x, band)
+			v.y += _edge(mp.y, band)
+			v.y -= _edge(vs.y - mp.y, band)
 	if Input.is_key_pressed(KEY_PAGEUP) or Input.is_key_pressed(KEY_COMMA): _yaw_goal += dt * 1.6
 	if Input.is_key_pressed(KEY_PAGEDOWN) or Input.is_key_pressed(KEY_PERIOD): _yaw_goal -= dt * 1.6
 	var speed := pan_speed * (dist / 70.0)

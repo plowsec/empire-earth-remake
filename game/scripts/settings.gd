@@ -48,9 +48,14 @@ func apply() -> void:
 		var i := AudioServer.get_bus_index(bus[0])
 		if i >= 0:
 			AudioServer.set_bus_volume_db(i, linear_to_db(max(bus[1], 0.0001)))
-	var mode := DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen else DisplayServer.WINDOW_MODE_WINDOWED
+	# exclusive fullscreen: on macOS it keeps the menu bar and Dock from sliding in when
+	# the pointer touches the screen edge (which is exactly where RTS players pan)
+	var mode := DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN if fullscreen else DisplayServer.WINDOW_MODE_WINDOWED
 	if DisplayServer.window_get_mode() != mode and _shot_path == "":
 		DisplayServer.window_set_mode(mode)
+	# fullscreen keeps the pointer on the game screen so edge panning always registers
+	if _shot_path == "":
+		Input.mouse_mode = Input.MOUSE_MODE_CONFINED if fullscreen else Input.MOUSE_MODE_VISIBLE
 
 func save() -> void:
 	var c := ConfigFile.new()
