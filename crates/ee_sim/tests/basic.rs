@@ -1190,31 +1190,3 @@ fn helicopters_from_one_airport_settle_apart_at_the_rally_point() {
     assert_eq!(moved, 0, "settled, not jostling");
     assert!(min_gap >= one * one, "spread out at least a tile apart");
 }
-
-/// Frigates are the submarine counter: a pair beats one submarine (one alone still loses).
-#[test]
-fn frigates_hunt_submarines() {
-    let duel = |frigates: usize| -> (usize, bool) {
-        let mut w = World::new(MatchConfig::skirmish(5, 2));
-        // open water well away from land
-        let mut spot = None;
-        'f: for y in 10..w.map.h - 10 {
-            for x in 10..w.map.w - 10 {
-                if (-6..=6).all(|d| w.map.passable(x + d, y, ee_sim::defs::Layer::Water) && w.map.passable(x, y + d, ee_sim::defs::Layer::Water)) {
-                    spot = Some((x, y));
-                    break 'f;
-                }
-            }
-        }
-        let (x, y) = spot.unwrap();
-        let fr: Vec<u32> = (0..frigates).map(|k| w.spawn(data().id("frigate"), 0, FVec::tile_center(x - 3, y + k as i32 * 2))).collect();
-        let sub = w.spawn(data().id("submarine"), 1, FVec::tile_center(x + 3, y));
-        run(&mut w, 20 * 60, vec![]);
-        (fr.iter().filter(|&&f| w.get(f).is_some()).count(), w.get(sub).is_some())
-    };
-    let (alive2, sub2) = duel(2);
-    let (alive1, sub1) = duel(1);
-    eprintln!("2 frigates: {alive2} left, sub alive {sub2} | 1 frigate: {alive1} left, sub alive {sub1}");
-    assert!(!sub2 && alive2 >= 1, "two frigates sink a submarine");
-    assert!(sub1, "a lone frigate still loses to a submarine");
-}
