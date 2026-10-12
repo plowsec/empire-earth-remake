@@ -1143,3 +1143,50 @@ fn facility_healing_does_not_stack() {
     assert!(one > 0, "a tank factory repairs vehicles nearby");
     assert_eq!(one, two, "a second factory in range doesn't speed up repairs");
 }
+
+/// Helicopters trained at an airport with a rally point fan out around it and settle,
+/// instead of converging on the same spot and shoving each other forever.
+#[test]
+fn helicopters_from_one_airport_settle_apart_at_the_rally_point() {
+    let mut w = World::new(MatchConfig::skirmish(5, 2));
+    let s = w.starts[0];
+    let air = data().id("airport");
+    let mut tile = None;
+    'f: for r in 6..20 {
+        for dx in -r..=r {
+            for t in [(s.0 + dx, s.1 + r), (s.0 + dx, s.1 - r)] {
+                if w.can_place(0, air, t).is_ok() {
+                    tile = Some(t);
+                    break 'f;
+                }
+            }
+        }
+    }
+    let ap = w.spawn_static(air, 0, tile.unwrap(), true);
+    let rally = FVec::tile_center(s.0 + 4, s.1);
+    w.players[0].res = [10_000; 5];
+    w.players[0].pop_cap = 200;
+    run(&mut w, 1, vec![
+        (0, Command { player: 0, kind: CommandKind::SetRally { buildings: vec![ap], to: rally, target: 0 } }),
+        (0, Command { player: 0, kind: CommandKind::Train { building: ap, def: data().id("helicopter"), count: 3 } }),
+    ]);
+    // the queue holds three: order the rest as it empties
+    let t = w.tick + 20 * 75;
+    run(&mut w, 20 * 180, vec![(t, Command { player: 0, kind: CommandKind::Train { building: ap, def: data().id("helicopter"), count: 3 } })]);
+    let helis = units_of(&w, 0, "helicopter");
+    assert_eq!(helis.len(), 6, "all trained");
+    let pos: Vec<FVec> = helis.iter().map(|&h| w.get(h).unwrap().pos).collect();
+    run(&mut w, 40, vec![]);
+    let moved = helis.iter().zip(&pos).filter(|(h, p)| !w.get(**h).unwrap().pos.within(**p, ee_sim::fixed::Fx::from_ratio(30, 100))).count();
+    let mut min_gap = i64::MAX;
+    for a in 0..helis.len() {
+        for b in a + 1..helis.len() {
+            min_gap = min_gap.min(w.get(helis[a]).unwrap().pos.dist2_raw(w.get(helis[b]).unwrap().pos));
+        }
+    }
+    let one = ee_sim::fixed::Fx::ONE.0 as i64;
+    eprintln!("still moving after settling: {moved}/6, closest pair {:.2} tiles", (min_gap as f64).sqrt() / one as f64);
+    assert!(helis.iter().all(|&h| w.get(h).unwrap().pos.within(rally, ee_sim::fixed::Fx::from_int(6))), "they're at the rally point");
+    assert_eq!(moved, 0, "settled, not jostling");
+    assert!(min_gap >= one * one, "spread out at least a tile apart");
+}

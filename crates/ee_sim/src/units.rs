@@ -176,21 +176,31 @@ impl World {
             }
             return;
         }
+        if d.data.hover {
+            // helicopters each hold their own station on a ring around the point (2-4
+            // tiles out): a flight sent to one rally point fans out instead of piling
+            // onto the same spot and shoving each other forever
+            let (c, s) = crate::mapgen::sincos_deg(((id as i64 * 137) % 360) as i32);
+            let rr = Fx::from_int(2 + (id % 3) as i32).0;
+            let spot = at + FVec::new(Fx(rr / 1024 * c), Fx(rr / 1024 * s));
+            if e.pos.within(spot, Fx::ONE) {
+                if e.goal.is_some() {
+                    let e = &mut self.entities[i];
+                    e.goal = None;
+                    e.path.clear();
+                }
+            } else if e.goal.map_or(true, |g| !g.within(spot, Fx::from_ratio(1, 2))) {
+                self.set_goal(i, spot, None);
+            }
+            self.entities[i].action = Action::Move;
+            return;
+        }
         // a wide circuit, each plane on its own orbit (7-13 tiles) so a squadron covers
         // the whole area instead of one tight spot
         let orbit = Fx::from_int(7 + (id % 7) as i32);
         let station = orbit + Fx::from_int(2);
         if !e.pos.within(at, station) {
             if e.goal.map_or(true, |g| !g.within(at, Fx::ONE)) {
-                self.set_goal(i, at, None);
-            }
-        } else if d.data.hover {
-            // helicopters hover over the point
-            if e.goal.is_some() && e.pos.within(at, Fx::ONE) {
-                let e = &mut self.entities[i];
-                e.goal = None;
-                e.path.clear();
-            } else if e.goal.is_none() && !e.pos.within(at, Fx::ONE) {
                 self.set_goal(i, at, None);
             }
         } else if e.goal.is_none() || e.goal.map_or(false, |g| e.pos.within(g, Fx::ONE)) {
