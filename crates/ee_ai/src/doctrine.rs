@@ -180,12 +180,31 @@ impl Ai {
         // ---- hostile ships in our waters: the nearest warships, outnumbering them
         for cl in sea.values() {
             let at = cl.center();
-            let mut navy: Vec<(i64, EntityId)> = v.navy.iter().filter_map(|&s| w.get(s).map(|e| (e.pos.dist2_raw(at), s))).collect();
+            // send what can actually hurt them: against submarines that's frigates, our own
+            // submarines and ASW helicopters - battleships would just be sunk
+            let r = ee_sim::fixed::Fx::from_int(10);
+            let enemies: Vec<&ee_sim::entity::Entity> = w.entities.iter().filter(|e| {
+                e.alive && e.on_map() && w.is_enemy(p, e.owner) && d.def(e.def).layer == ee_sim::defs::Layer::Water && e.pos.within(at, r) && w.can_see(p, e)
+            }).collect();
+            let subs = enemies.iter().filter(|e| d.def(e.def).data.armor_class == ee_sim::defs::ArmorClass::Sub).count();
+            let fit = |id: EntityId| -> bool {
+                w.get(id).map_or(false, |u| enemies.iter().any(|t| ee_sim::combat::can_attack(w, u, t)))
+            };
+            let mut navy: Vec<(i64, EntityId)> = v.navy.iter().copied().filter(|&s| fit(s)).filter_map(|s| w.get(s).map(|e| (e.pos.dist2_raw(at), s))).collect();
             navy.sort();
-            let want = ((cl.strength * 3 / 2) / 5 + 2).max(3) as usize;
+            // submarines are tough: answer them with more
+            let want = ((cl.strength * 3 / 2) / 5 + 2).max(3) as usize * if subs > 0 { 2 } else { 1 };
             let ships: Vec<EntityId> = navy.into_iter().take(want).map(|x| x.1).collect();
             if !ships.is_empty() {
                 out.push(CommandKind::Move { units: ships, to: at, attack_move: true, queue: false });
+            }
+            if subs > 0 {
+                let hunters: Vec<EntityId> = v.air.iter().copied()
+                    .filter(|&a| w.get(a).map_or(false, |e| !matches!(e.order, Order::Attack { .. }) && d.def(e.def).weapons.iter().any(|wp| wp.dmg_type == ee_sim::defs::DamageType::DepthCharge)))
+                    .collect();
+                if !hunters.is_empty() {
+                    out.push(CommandKind::Move { units: hunters, to: at, attack_move: true, queue: false });
+                }
             }
         }
         // ---- enemy aircraft overhead: fighters go up and the airfields keep sending them

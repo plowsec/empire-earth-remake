@@ -163,8 +163,8 @@
          weapons: [
             (dmg_type: Flak, damage: 36, range: 950, reload: 12, burst: 3, vs_ground: false,
              vs_water: false, vs_air: true, projectile: Homing(speed: 2500)),
-            (dmg_type: Torpedo, damage: 30, range: 750, reload: 25, vs_ground: false,
-             projectile: Homing(speed: 1200)),
+            (dmg_type: DepthCharge, damage: 70, range: 800, reload: 25, vs_ground: false,
+             vs_air: false, projectile: Homing(speed: 1200)),
          ],
          role: "Escort. Air defense and anti-submarine rockets."),
         (key: "battleship", name: "Battleship", class: Ship, armor_class: Ship,
