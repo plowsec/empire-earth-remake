@@ -12,11 +12,13 @@ var last_skirmish := {}
 var player_name := "Commander"
 
 var _shot_path := ""
+var _settle := 0   # frames to wait after a window mode change before reading it back
 var _shot_frames := 0
 var _frame := 0
 
 func _process(_dt: float) -> void:
 	if _shot_path == "":
+		_follow_window_mode()
 		return
 	_frame += 1
 	if _frame == _shot_frames:
@@ -53,9 +55,29 @@ func apply() -> void:
 	var mode := DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN if fullscreen else DisplayServer.WINDOW_MODE_WINDOWED
 	if DisplayServer.window_get_mode() != mode and _shot_path == "":
 		DisplayServer.window_set_mode(mode)
+		_settle = 90
 	# fullscreen keeps the pointer on the game screen so edge panning always registers
 	if _shot_path == "":
 		Input.mouse_mode = Input.MOUSE_MODE_CONFINED if fullscreen else Input.MOUSE_MODE_VISIBLE
+
+## The macOS green button / Ctrl+Cmd+F put the window in the system's own fullscreen,
+## where the menu bar and title bar slide in whenever the pointer touches the top edge
+## (right where we pan). Switch that to exclusive fullscreen, which keeps them away, and
+## remember it as the game's fullscreen setting.
+func _follow_window_mode() -> void:
+	if _settle > 0:
+		_settle -= 1
+		return
+	var m := DisplayServer.window_get_mode()
+	if m == DisplayServer.WINDOW_MODE_FULLSCREEN:
+		fullscreen = true
+		apply()
+		save()
+	elif m == DisplayServer.WINDOW_MODE_WINDOWED and fullscreen:
+		# left fullscreen some other way (e.g. a system shortcut)
+		fullscreen = false
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		save()
 
 func save() -> void:
 	var c := ConfigFile.new()
