@@ -14,6 +14,8 @@ impl World {
         if periodic {
             self.recount_gatherers();
         }
+        // healing doesn't stack: each unit takes the best single source in range
+        let mut heals: Vec<(EntityId, i32)> = Vec::new();
         for i in 1..n {
             let e = &self.entities[i];
             if !e.alive || e.owner == GAIA {
@@ -35,7 +37,18 @@ impl World {
                 self.building_fire(i);
             }
             if d.data.heal > 0 && periodic {
-                self.building_heal(i);
+                self.building_heal(i, &mut heals);
+            }
+        }
+        if !heals.is_empty() {
+            // best offer per unit (sorted by id, strongest heal first)
+            heals.sort_by_key(|&(id, h)| (id, -h));
+            heals.dedup_by_key(|x| x.0);
+            for (t, heal) in heals {
+                let Some(e) = self.get(t) else { continue };
+                let mh = self.max_hp(e);
+                let o = self.get_mut(t).unwrap();
+                o.hp = (o.hp + heal).min(mh);
             }
         }
     }
@@ -212,7 +225,7 @@ impl World {
         }
     }
 
-    fn building_heal(&mut self, i: usize) {
+    fn building_heal(&mut self, i: usize, heals: &mut Vec<(EntityId, i32)>) {
         let e = &self.entities[i];
         let d = data().def(e.def);
         let owner = e.owner;
@@ -234,11 +247,7 @@ impl World {
                         && !data().def(a.def).data.icbm)));
             }
         });
-        for t in targets {
-            let mh = self.max_hp(self.get(t).unwrap());
-            let o = self.get_mut(t).unwrap();
-            o.hp = (o.hp + heal).min(mh);
-        }
+        heals.extend(targets.into_iter().map(|t| (t, heal)));
     }
 
     fn recount_gatherers(&mut self) {

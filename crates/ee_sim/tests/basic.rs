@@ -1111,9 +1111,9 @@ fn formation_shapes_and_rally_rotation() {
     assert!(near(a) >= 1 && near(b) >= 1, "both rally points used: {} at a, {} at b", near(a), near(b));
 }
 
-/// Production buildings repair their own kind nearby, and overlapping areas add up.
+/// Production buildings repair their own kind nearby; overlapping areas don't add up.
 #[test]
-fn facility_healing_stacks() {
+fn facility_healing_does_not_stack() {
     let healed = |factories: usize| -> i32 {
         let mut w = World::new(MatchConfig::skirmish(5, 2));
         let s = w.starts[0];
@@ -1141,5 +1141,5 @@ fn facility_healing_stacks() {
     let two = healed(2);
     eprintln!("healed in 10 s: one factory {one}, two {two}");
     assert!(one > 0, "a tank factory repairs vehicles nearby");
-    assert!(two >= one * 2 - 12, "two factories repair about twice as fast ({one} vs {two})");
+    assert_eq!(one, two, "a second factory in range doesn't speed up repairs");
 }

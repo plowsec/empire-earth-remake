@@ -15,7 +15,7 @@ fn finish(w: &mut World, building: u32, key: &str) {
 }
 
 #[test]
-fn matching_facilities_stack_repairs_and_clamp_hp() {
+fn matching_facilities_repair_without_stacking_and_clamp_hp() {
     for (building, unit, other) in [("naval_yard", "submarine", "tank"), ("tank_factory", "tank", "rifleman"),
         ("airport", "helicopter", "tank"), ("barracks", "rifleman", "tank")] {
         let mut w = World::new(MatchConfig::skirmish(5, 2));
@@ -34,7 +34,8 @@ fn matching_facilities_stack_repairs_and_clamp_hp() {
         }
         w.tick = 20;
         step(&mut w);
-        assert_eq!(w.get(id).unwrap().hp, 10 + 2 * data().def(facility).data.heal, "{building}");
+        // two finished facilities in range: only the best one applies
+        assert_eq!(w.get(id).unwrap().hp, 10 + data().def(facility).data.heal, "{building}");
         for u in [wrong, enemy, far] { assert_eq!(w.get(u).unwrap().hp, 10, "wrong target healed at {building}"); }
         w.get_mut(id).unwrap().pos = pos;
         let max = w.max_hp(w.get(id).unwrap());
@@ -189,7 +190,7 @@ fn attacked_submarine_gets_idle_helpers_without_stealing_busy_units() {
 }
 
 #[test]
-fn repair_auras_also_stack_on_aircraft_in_hangars() {
+fn repair_auras_reach_aircraft_in_hangars_without_stacking() {
     let mut w = World::new(MatchConfig::skirmish(5, 2));
     let pos = FVec::tile_center(20, 20);
     let a = w.spawn(data().id("airport"), 0, pos);
@@ -201,7 +202,8 @@ fn repair_auras_also_stack_on_aircraft_in_hangars() {
     let hangar_repair = w.max_hp(w.get(plane).unwrap()) / 40 + 1;
     w.tick = 20;
     step(&mut w);
-    assert_eq!(w.get(plane).unwrap().hp, 10 + hangar_repair + 24);
+    // the hangar's own repair plus one airfield aura (two airfields don't add up)
+    assert_eq!(w.get(plane).unwrap().hp, 10 + hangar_repair + data().def(data().id("airport")).data.heal);
 }
 
 #[test]
