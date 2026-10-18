@@ -16,6 +16,6 @@ mv -f game/bin/.ee_godot.dll.tmp game/bin/ee_godot.dll
 echo "installed game/bin/ee_godot.dll"
 if [ "$1" = "--export" ]; then
   mkdir -p build/windows
-  godot --headless --path game --export-release "Windows Desktop" "$(pwd)/build/windows/EmpireEarthAtomic.exe"
+  godot --headless --path game --export-release "Windows Desktop" "$(pwd)/build/windows/IronAtolls.exe"
   echo "exported: build/windows/ (copy the whole folder to the Windows machine)"
 fi

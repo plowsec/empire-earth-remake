@@ -1,7 +1,7 @@
-# Empire Earth: Atomic Conquest
+# Iron Atolls
 
-A modern remake of *Empire Earth* (2001) focused on the **Atomic Modern** age on
-**Big Islands** maps: one human against up to three AI opponents, with armies of
+An independent real-time strategy game about modern combined-arms warfare across
+large islands: one human against up to three AI opponents, with armies of
 thousands of units fighting on land, at sea and in the air.
 
 - **Engine:** Godot 4.7 (Forward+, Metal) for rendering, UI and audio.
@@ -89,7 +89,7 @@ economy and loot for every player, with history sampled every 30 seconds. When t
 match ends, the end screen ranks every player with score breakdowns, honours,
 military/economy tables and history charts.
 
-Production facilities have stacking repair zones within 10 tiles of their centers:
+Production facilities have repair zones within 10 tiles of their centers (overlapping zones don't stack: the best one in range applies):
 naval yards restore 20 HP/s to ships, tank factories 12 HP/s to vehicles, airfields
 12 HP/s to aircraft, and barracks 6 HP/s to infantry. Nearby airfields also help planes
 in hangars. Hospitals retain their general healing aura. Guard towers and fortresses
@@ -244,7 +244,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 ## Credits
 
-Homage to *Empire Earth* by Stainless Steel Studios. All gameplay code here is original.
+All gameplay code here is original.
 
 - Music by Kevin MacLeod (incompetech.com), licensed CC BY 4.0: Heroic Age, Prelude and
   Action, Five Armies, Volatile Reaction, Rynos Theme, Clash Defiant.

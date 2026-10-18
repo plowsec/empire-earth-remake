@@ -161,10 +161,10 @@ func _build_ui() -> void:
 	title_box.position = Vector2(90, 90)
 	title_box.add_theme_constant_override("separation", -6)
 	root.add_child(title_box)
-	var t1 := _lbl("EMPIRE EARTH", 96, Color(0.95, 0.83, 0.56), font_title)
+	var t1 := _lbl("IRON ATOLLS", 96, Color(0.95, 0.83, 0.56), font_title)
 	t1.add_theme_constant_override("shadow_offset_y", 4)
 	title_box.add_child(t1)
-	var t2 := _lbl("A T O M I C   C O N Q U E S T", 30, Color(0.85, 0.85, 0.82), font_bold)
+	var t2 := _lbl("L A N D   ·   S E A   ·   A I R", 30, Color(0.85, 0.85, 0.82), font_bold)
 	title_box.add_child(t2)
 	var rule := ColorRect.new()
 	rule.custom_minimum_size = Vector2(560, 2)
@@ -389,7 +389,7 @@ func _build_credits(root: Control) -> void:
 	txt.fit_content = true
 	txt.add_theme_font_override("normal_font", font_body)
 	txt.add_theme_font_size_override("normal_font_size", 19)
-	txt.text = "A modern homage to [b]Empire Earth[/b] (Stainless Steel Studios, 2001).\n\nEngine: Godot 4 + Rust simulation core\nModels: procedurally generated in Blender\nTextures & sky: Poly Haven (CC0)\nFonts: Cinzel, Rajdhani (SIL Open Font License)\nMusic: Kevin MacLeod (incompetech.com), CC BY 4.0 —\n  Heroic Age, Prelude and Action, Five Armies,\n  Volatile Reaction, Rynos Theme, Clash Defiant\nSound effects: procedurally synthesized\n\nAll gameplay code is original."
+	txt.text = "[b]Iron Atolls[/b]\nCombined-arms strategy across contested islands.\n\nEngine: Godot 4 + Rust simulation core\nModels: procedurally generated in Blender\nTextures & sky: Poly Haven (CC0)\nFonts: Cinzel, Rajdhani (SIL Open Font License)\nMusic: Kevin MacLeod (incompetech.com), CC BY 4.0 —\n  Heroic Age, Prelude and Action, Five Armies,\n  Volatile Reaction, Rynos Theme, Clash Defiant\nSound effects: procedurally synthesized\n\nAll gameplay code is original."
 	v.add_child(txt)
 	var hb := HBoxContainer.new()
 	hb.alignment = BoxContainer.ALIGNMENT_END

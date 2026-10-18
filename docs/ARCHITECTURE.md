@@ -1,4 +1,4 @@
-# Empire Earth Remake — Architecture
+# Iron Atolls — Architecture
 
 Scope: Atomic Age (Atomic WWII → Atomic Modern), "Big Islands" random maps,
 human vs AI. Designed for deterministic lockstep multiplayer (not implemented yet).
